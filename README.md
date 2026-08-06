@@ -8,8 +8,8 @@
 
 <br/>
 
-<a href="https://trendshift.io/repositories/20652" target="_blank">
-  <img src="https://trendshift.io/api/badge/repositories/20652" alt="MetrolistGroup/Metrolist | Trendshift" width="250" height="55" />
+<a href="https://www.blacksmith.sh">
+  <img src="https://github.com/MetrolistGroup/Metrolist/blob/main/assets/blacksmith-powered.png" alt="CI powered by Blacksmith" width="280" />
 </a>
 
 <br/>
@@ -289,8 +289,18 @@
       <td align="center"><a href="https://github.com/ZemerTeam/zemer-cipher"><strong>zemer-cipher</strong></a></td>
       <td>YouTube cipher deobfuscation and PoToken generation</td>
     </tr>
+    <tr>
+      <td align="center"><a href="https://www.blacksmith.sh"><strong>Blacksmith</strong></a></td>
+      <td>High-performance GitHub Actions runners powering our CI</td>
+    </tr>
   </tbody>
 </table>
+
+<br/>
+
+<a href="https://www.blacksmith.sh">
+  <img src="https://github.com/MetrolistGroup/Metrolist/blob/main/assets/blacksmith-powered.png" alt="CI powered by Blacksmith" width="280" />
+</a>
 
 <h3>We also thank the entire open-source community! For every library, tool, and API that powers this project.</h3>
 
