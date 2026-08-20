@@ -730,8 +730,8 @@ interface DatabaseDao {
     fun getSongByIdBlocking(songId: String): Song?
 
     @Transaction
-    @Query("SELECT * FROM song WHERE id IN (:songIds)")
-    suspend fun getSongsByIds(songIds: List<String>): List<Song>
+    @Query("SELECT * FROM song WHERE dateDownload IS NOT NULL")
+    fun cachePlaylistSongs(): Flow<List<Song>>
 
     @Query("SELECT id FROM song WHERE id IN (:songIds)")
     suspend fun existingSongIds(songIds: List<String>): List<String>
