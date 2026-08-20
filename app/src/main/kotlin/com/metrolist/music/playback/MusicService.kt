@@ -1677,9 +1677,10 @@ class MusicService :
                 ?: -1
 
         database.query {
-            if (song == null && mediaMetadata != null) {
+            if (mediaMetadata != null && (song == null || song.orderedArtists.isEmpty())) {
                 insert(mediaMetadata.copy(duration = duration))
-            } else if (song != null) {
+            }
+            if (song != null) {
                 var updatedSong = song.song
                 if (song.song.duration == -1) {
                     updatedSong = updatedSong.copy(duration = duration)
