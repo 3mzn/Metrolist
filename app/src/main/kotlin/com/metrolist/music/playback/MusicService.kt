@@ -3540,7 +3540,8 @@ class MusicService :
         scope.launch(Dispatchers.IO) {
             val (freshSongId, freshIsPlaying) = withContext(Dispatchers.Main.immediate) {
                 player.currentMetadata?.id to player.isPlaying
-            } ?: return@launch
+            }
+            if (freshSongId == null) return@launch
             val song = database.song(freshSongId).first() ?: return@launch
             updateDiscordRPC(song, freshIsPlaying)
         }
