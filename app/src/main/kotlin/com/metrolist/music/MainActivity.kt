@@ -250,7 +250,7 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var navController: NavHostController
     private var pendingIntent: Intent? = null
-    private var latestVersionName by mutableStateOf(BuildConfig.VERSION_NAME)
+    private var latestVersionName by mutableStateOf(BuildConfig.BASE_VERSION_NAME)
 
     // Keep PlayerConnection as regular property - NOT mutableStateOf to prevent UI recomposition
     // when it becomes null during onStop. Only update the snapshot for Compose when needed.
@@ -418,7 +418,7 @@ class MainActivity : ComponentActivity() {
         // Defer migration and version tracking to avoid blocking first frame
         lifecycleScope.launch(Dispatchers.IO) {
             val preferences = dataStore.data.first()
-            val currentVersion = BuildConfig.VERSION_NAME
+            val currentVersion = BuildConfig.BASE_VERSION_NAME
 
             // SimpMusic Removal Migration
             if (preferences[SimpMusicMigrationDoneKey] != true) {
@@ -448,7 +448,7 @@ class MainActivity : ComponentActivity() {
 
         lifecycleScope.launch(Dispatchers.IO) {
             safeDataStoreEdit { settings ->
-                settings[LastSeenVersionKey] = BuildConfig.VERSION_NAME
+                settings[LastSeenVersionKey] = BuildConfig.BASE_VERSION_NAME
             }
         }
 
@@ -526,7 +526,7 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 } else {
-                    onLatestVersionNameChange(BuildConfig.VERSION_NAME)
+                    onLatestVersionNameChange(BuildConfig.BASE_VERSION_NAME)
                     kmpRelease = null
                 }
             }
@@ -691,7 +691,7 @@ class MainActivity : ComponentActivity() {
 
                 LaunchedEffect(Unit) {
                     val lastSeenVersion = dataStore.data.first()[LastSeenVersionKey] ?: ""
-                    val currentVersion = BuildConfig.VERSION_NAME
+                    val currentVersion = BuildConfig.BASE_VERSION_NAME
                     if (lastSeenVersion != currentVersion) {
                         showChangelog.value = true
                     }
@@ -727,8 +727,8 @@ class MainActivity : ComponentActivity() {
                 val tabOpenedFromShortcut =
                     remember {
                         when (intent?.action) {
-                            ACTION_SEARCH -> NavigationTab.LIBRARY
-                            ACTION_LIBRARY -> NavigationTab.SEARCH
+                            ACTION_SEARCH -> NavigationTab.SEARCH
+                            ACTION_LIBRARY -> NavigationTab.LIBRARY
                             else -> null
                         }
                     }
@@ -1054,7 +1054,7 @@ class MainActivity : ComponentActivity() {
                                             }
                                             IconButton(onClick = { showAccountDialog = true }) {
                                                 BadgedBox(badge = {
-                                                    if (latestVersionName != BuildConfig.VERSION_NAME) {
+                                                    if (latestVersionName != BuildConfig.BASE_VERSION_NAME) {
                                                         Badge()
                                                     }
                                                 }) {
@@ -1306,8 +1306,8 @@ class MainActivity : ComponentActivity() {
                                     startDestination =
                                         when (tabOpenedFromShortcut ?: defaultOpenTab) {
                                             NavigationTab.HOME -> Screens.Home
+                                            NavigationTab.SEARCH -> Screens.Search
                                             NavigationTab.LIBRARY -> Screens.Library
-                                            else -> Screens.Home
                                         }.route,
                                     enterTransition = {
                                         val currentRouteIndex = routeIndexMap[targetState.destination.route] ?: -1
