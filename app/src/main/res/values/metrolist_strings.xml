@@ -997,6 +997,12 @@
     <string name="widget_playlists">Playlists</string>
     <string name="widget_playlists_description">Playlist shortcuts with mini-player controls</string>
     <string name="choose_something_below">Choose something below</string>
+    <string name="choose_youtube_channel">Choose a YouTube channel</string>
+    <string name="choose_youtube_channel_description">This Google account has multiple channels. Pick the one you want to use.</string>
+    <string name="switch_youtube_channel">Switch YouTube channel</string>
+    <string name="youtube_channels_failed">Couldn\'t retrieve the YouTube channels for this account. Please try again.</string>
+    <string name="authentication_data_extraction_failed">Couldn\'t read the YouTube Music session. Please try again.</string>
+    <string name="login_failed_with_error">Login failed: %1$s</string>
     <string name="stream_client">Stream client</string>
     <string name="format_player_hash">Player hash</string>
     <string name="format_cipher_support_added">Cipher support added</string>

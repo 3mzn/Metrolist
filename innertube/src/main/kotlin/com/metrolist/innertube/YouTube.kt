@@ -25,10 +25,12 @@ import com.metrolist.innertube.models.TasteProfile
 import com.metrolist.innertube.models.WatchEndpoint
 import com.metrolist.innertube.models.WatchEndpoint.WatchEndpointMusicSupportedConfigs.WatchEndpointMusicConfig.Companion.MUSIC_VIDEO_TYPE_ATV
 import com.metrolist.innertube.models.YTItem
+import com.metrolist.innertube.models.YouTubeAccount
 import com.metrolist.innertube.models.YouTubeClient
 import com.metrolist.innertube.models.YouTubeClient.Companion.WEB
 import com.metrolist.innertube.models.YouTubeClient.Companion.WEB_REMIX
 import com.metrolist.innertube.models.YouTubeLocale
+import com.metrolist.innertube.models.extractYouTubeAccounts
 import com.metrolist.innertube.models.getContinuation
 import com.metrolist.innertube.models.getItems
 import com.metrolist.innertube.models.oddElements
@@ -109,6 +111,11 @@ object YouTube {
         get() = innerTube.dataSyncId
         set(value) {
             innerTube.dataSyncId = value
+        }
+    var authUser: String
+        get() = innerTube.authUser
+        set(value) {
+            innerTube.authUser = value
         }
     var cookie: String?
         get() = innerTube.cookie
@@ -3352,6 +3359,13 @@ object YouTube {
                 .header
                 ?.activeAccountHeaderRenderer
                 ?.toAccountInfo()!!
+        }
+
+    suspend fun accountsList(): Result<List<YouTubeAccount>> =
+        runCatching {
+            Json
+                .parseToJsonElement(innerTube.accountsList().bodyAsText())
+                .extractYouTubeAccounts()
         }
 
     suspend fun feedback(tokens: List<String>): Result<Boolean> =
