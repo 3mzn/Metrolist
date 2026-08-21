@@ -418,8 +418,17 @@ dependencies {
     implementation(platform(libs.firebase.bom))
     implementation(libs.firebase.auth)
     implementation(libs.firebase.firestore) {
-        // protolite-well-known-types bundles com.google.protobuf classes already
-        // provided by protobuf-javalite (used by Listen Together), causing duplicates.
+        // protolite-well-known-types ships a stale copy of com.google.protobuf.DescriptorProtos
+        // (101 classes) that duplicates protobuf-javalite and fails dexing.  javalite cannot be
+        // dropped or downgraded instead: NewPipeExtractor requires 4.33+, and 4.x gencode refuses
+        // to run against a 3.x runtime (RuntimeVersion.validateProtobufGencodeVersion).
+        //
+        // Excluding the module also removes the only two classes Firestore actually needs from it:
+        // com.google.type.LatLng (a field of firestore.v1.Value, so every value) and
+        // com.google.rpc.Status (a field of firestore.v1.TargetChange, so every snapshot
+        // listener).  Without them Firestore throws NoClassDefFoundError on first use.  Both are
+        // vendored as protobuf-lite gencode under app/src/main/java/com/google -- see
+        // app/src/main/proto/README.md for the sources and the regeneration command.
         exclude(group = "com.google.firebase", module = "protolite-well-known-types")
     }
     implementation(libs.firebase.messaging)
