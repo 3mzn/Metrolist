@@ -13,6 +13,7 @@ import com.google.firebase.auth.FirebaseAuth
 import com.metrolist.music.utils.SongNotificationHelper
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
+import kotlinx.coroutines.CancellationException
 import timber.log.Timber
 import java.util.concurrent.TimeUnit
 
@@ -68,10 +69,17 @@ class SongListenedNotificationWorker @AssistedInject constructor(
             }
 
             Result.success()
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Timber.e(e, "Error checking for listened songs")
-            // Retry on failure
+            // Transient (network, Firestore unavailable) - retry on the next run.
             Result.retry()
+        } catch (e: Throwable) {
+            // A linkage failure such as NoClassDefFoundError is not transient and would otherwise
+            // escape doWork and crash the process on every scheduled run. Fail permanently instead.
+            Timber.e(e, "Listened-song notification worker disabled after an unrecoverable failure")
+            Result.failure()
         }
     }
 }

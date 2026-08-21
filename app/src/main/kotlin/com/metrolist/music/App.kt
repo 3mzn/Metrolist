@@ -5,6 +5,7 @@
 
 package com.metrolist.music
 
+import android.app.ActivityManager
 import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -62,6 +63,7 @@ import java.net.PasswordAuthentication
 import java.net.Proxy
 import java.util.Locale
 import javax.inject.Inject
+import javax.inject.Provider
 
 @HiltAndroidApp
 class App :
@@ -80,24 +82,45 @@ class App :
             .setWorkerFactory(workerFactory)
             .build()
 
+    /**
+     * Injected lazily on purpose. Hilt injects this Application in *every* process, and creating the
+     * notifier reaches [FirebaseFirestore]. `FirebaseInitProvider` is a ContentProvider, so it only
+     * runs in the main process — eagerly building this in the ":crash" process threw
+     * "Default FirebaseApp is not initialized", which killed the crash reporter itself and turned any
+     * crash into an unrecoverable restart loop that hid the original stack trace.
+     */
     @Inject
-    lateinit var songListenedRealTimeNotifier: com.metrolist.music.social.SongListenedRealTimeNotifier
+    lateinit var songListenedRealTimeNotifier: Provider<com.metrolist.music.social.SongListenedRealTimeNotifier>
 
-    override fun onCreate() {
-        super.onCreate()
+    /**
+     * False in the ":crash" process that hosts [com.metrolist.music.ui.screens.CrashActivity].
+     *
+     * Secondary process names carry a ":suffix"; the main process is named after the applicationId.
+     * Defaults to true when the name can't be determined, so main-process behaviour is never skipped.
+     */
+    private val isMainProcess: Boolean
+        get() {
+            val processName = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                getProcessName()
+            } else {
+                getSystemService(ActivityManager::class.java)
+                    ?.runningAppProcesses
+                    ?.firstOrNull { it.pid == android.os.Process.myPid() }
+                    ?.processName
+            }
+            return processName == null || !processName.contains(':')
+        }
 
-        // Force initialization of the real-time "friend listened" notifier so its
-        // Firebase auth listener registers (starts worker on login, stops on logout).
-        @Suppress("UNUSED_EXPRESSION")
-        songListenedRealTimeNotifier
-
-        // Install crash handler first
-        CrashHandler.install(this)
-        ArtistNameAliases.initialize(this)
-
-        // Initialize Firebase with Firestore offline persistence
+    /**
+     * Enables Firestore offline persistence and starts the real-time "friend listened" notifier.
+     *
+     * Order matters: Firestore rejects a settings change once a query has been issued, and creating
+     * the notifier registers a Firebase auth listener that starts querying as soon as the auth state
+     * resolves. Settings therefore have to be applied first.
+     */
+    private fun initializeSocialFeatures() {
         val firestore = FirebaseFirestore.getInstance()
-        val settings =
+        firestore.firestoreSettings =
             FirebaseFirestoreSettings.Builder()
                 .setSslEnabled(true)
                 .setLocalCacheSettings(
@@ -106,8 +129,24 @@ class App :
                         .build(),
                 )
                 .build()
-        firestore.firestoreSettings = settings
         Timber.d("Firebase Firestore initialized with offline persistence")
+
+        // Registers the auth listener that starts the worker on login and stops it on logout.
+        songListenedRealTimeNotifier.get()
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+
+        // Install crash handler first
+        CrashHandler.install(this)
+        ArtistNameAliases.initialize(this)
+
+        // Skipped in the ":crash" process, which has no Firebase and must not duplicate the auth
+        // listener or the WorkManager jobs the notifier schedules.
+        if (isMainProcess) {
+            initializeSocialFeatures()
+        }
 
         // preferencesDataStore uses filesDir/datastore; proactive mkdir reduces failures on odd ROM states
         try {

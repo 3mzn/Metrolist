@@ -9,6 +9,7 @@ import android.content.Context
 import com.google.firebase.auth.FirebaseAuth
 import com.metrolist.music.utils.SongNotificationHelper
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -90,8 +91,14 @@ class SongListenedRealTimeNotifier @Inject constructor(
                             songSharingRepository.markNotificationSent(sentSong.id)
                         }
                     }
-                } catch (e: Exception) {
-                    Timber.e(e, "Error in notification listener")
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    // Throwable, not Exception: a missing Firestore dependency surfaces as
+                    // NoClassDefFoundError, which an Exception guard lets through to the default
+                    // handler. Friend notifications are ancillary, so a failure here must degrade
+                    // the social feature rather than take down playback.
+                    Timber.e(e, "Real-time listened-song notifications disabled after a failure")
                 }
             }
     }
