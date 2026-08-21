@@ -2189,7 +2189,7 @@ class MusicService :
                     return@let
                 }
 
-                val song = songEntity.toggleLike()
+                val song = songEntity.toggleLike(syncToYouTube = false)
 
                 updateNotification(isLiked = song.liked)
                 updateWidgetUI(player.isPlaying, isLiked = song.liked)
