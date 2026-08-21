@@ -4,34 +4,8 @@
       "collectionGroup": "sentSongs",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "toUid", "order": "ASCENDING" },
-        { "fieldPath": "completedAt", "order": "ASCENDING" },
-        { "fieldPath": "sentAt", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "sentSongs",
-      "queryScope": "COLLECTION",
-      "fields": [
         { "fieldPath": "fromUid", "order": "ASCENDING" },
         { "fieldPath": "sentAt", "order": "ASCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "sentSongs",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "toUid", "order": "ASCENDING" },
-        { "fieldPath": "songId", "order": "ASCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "friendRequests",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "fromUid", "order": "ASCENDING" },
-        { "fieldPath": "toUid", "order": "ASCENDING" },
-        { "fieldPath": "status", "order": "ASCENDING" }
       ]
     }
   ],
