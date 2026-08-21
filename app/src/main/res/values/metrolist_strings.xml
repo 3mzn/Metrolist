@@ -1030,4 +1030,59 @@
     <string name="stream_source_web_creator_desc">Creator web client.</string>
     <string name="stream_source_android_creator">ANDROID_CREATOR</string>
     <string name="stream_source_android_creator_desc">Android creator client. Off by default; needs DroidGuard.</string>
+
+    <string name="song_listened_channel_name">Friend Listened Notifications</string>
+    <string name="song_listened_channel_description">Notifications when a friend listens to a song you sent</string>
+    <string name="friend_listened_notification_title">Friend listened to your song!</string>
+    <string name="friend_listened_to_song_message">%1$s listened to %2$s</string>
+    <string name="song_listened_fallback_friend">A friend</string>
+    <string name="song_listened_fallback_song">a song you sent</string>
+
+    <string name="send_to_friends">Send to friends</string>
+    <string name="no_friends_to_send">No friends yet. Add friends to send them songs.</string>
+    <string name="select_friends_to_send">Select friends to send this to</string>
+    <string name="send">Send</string>
+    <string name="selected">Selected</string>
+    <string name="not_selected">Not selected</string>
+    <plurals name="send_n_songs_to_friends">
+        <item quantity="one">Send %d song to friends</item>
+        <item quantity="other">Send %d songs to friends</item>
+    </plurals>
+    <plurals name="send_to_n_friends">
+        <item quantity="one">Send to %d friend</item>
+        <item quantity="other">Send to %d friends</item>
+    </plurals>
+    <string name="sent_n_songs_to_friends">Sent %1$d songs to %2$d friends</string>
+
+    <!-- Social: account -->
+    <string name="social">Social</string>
+    <string name="social_sign_in_title">Metrolist Social</string>
+    <string name="social_email">Email</string>
+    <string name="social_register">Register</string>
+    <string name="social_login_failed">Login failed</string>
+    <string name="social_registration_failed">Registration failed</string>
+    <string name="social_logout">Log out</string>
+    <string name="social_profile_setup_title">Set up your profile</string>
+    <string name="social_profile_save_failed">Failed to save profile</string>
+
+    <!-- Social: friends -->
+    <string name="social_greeting">Hello, %1$s!</string>
+    <string name="social_unknown_user">Unknown user</string>
+    <string name="social_add_friend">Add friend</string>
+    <string name="social_friends">Friends</string>
+    <string name="social_no_friends_yet">No friends yet</string>
+    <string name="social_remove_friend">Remove friend</string>
+    <string name="social_requests">Requests</string>
+    <string name="social_requests_with_count">Requests (%1$d)</string>
+    <string name="social_friend_requests">Friend requests</string>
+    <string name="social_no_pending_requests">No pending requests</string>
+    <string name="social_request_from">Request from %1$s</string>
+    <string name="social_accept">Accept</string>
+    <string name="social_send_request">Request</string>
+    <string name="social_request_sent">Requested</string>
+
+    <string name="import_from_json">Import from JSON</string>
+    <string name="enter_playlist_name">Enter playlist name</string>
+    <string name="import_playlist_name_explanation">If a playlist with this name exists, songs will be added to it. Otherwise, a new playlist will be created.</string>
+    <string name="failed_imports">Failed Imports</string>
 </resources>

@@ -22,6 +22,8 @@ import com.metrolist.music.listentogether.ListenTogetherClient
 import com.metrolist.music.listentogether.ListenTogetherManager
 import com.metrolist.music.utils.dataStore
 import com.metrolist.music.utils.get
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.FirebaseFirestore
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -208,4 +210,12 @@ object AppModule {
         @ApplicationContext context: Context,
         client: ListenTogetherClient,
     ): ListenTogetherManager = ListenTogetherManager(client, context)
+
+    @Singleton
+    @Provides
+    fun provideFirestore(): FirebaseFirestore = FirebaseFirestore.getInstance()
+
+    @Singleton
+    @Provides
+    fun provideFirebaseAuth(): FirebaseAuth = FirebaseAuth.getInstance()
 }

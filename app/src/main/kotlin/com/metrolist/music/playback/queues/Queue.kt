@@ -12,6 +12,9 @@ import com.metrolist.music.models.MediaMetadata
 interface Queue {
     val preloadItem: MediaMetadata?
 
+    /** The local playlist ID this queue was built from, if any. Used by social playback tracking. */
+    val sourcePlaylistId: String? get() = null
+
     suspend fun getInitialStatus(): Status
 
     fun hasNextPage(): Boolean

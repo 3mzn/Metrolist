@@ -35,6 +35,7 @@ plugins {
     alias(libs.plugins.kotlin.ksp)
     alias(libs.plugins.compose.compiler)
     alias(libs.plugins.kotlin.serialization)
+    alias(libs.plugins.google.services)
 }
 
 abstract class GenerateProtoTask : DefaultTask() {
@@ -391,6 +392,9 @@ dependencies {
     implementation(libs.hilt)
     implementation(libs.jsoup)
     ksp(libs.hilt.compiler)
+    implementation(libs.hilt.work)
+    ksp(libs.hilt.work.compiler)
+    implementation(libs.work.runtime)
 
     implementation(project(":innertube"))
     implementation(project(":kugou"))
@@ -409,6 +413,16 @@ dependencies {
     // Protobuf for message serialization (lite version for Android)
     implementation(libs.protobuf.javalite)
     implementation(libs.protobuf.kotlin.lite)
+
+    // Firebase
+    implementation(platform(libs.firebase.bom))
+    implementation(libs.firebase.auth)
+    implementation(libs.firebase.firestore) {
+        // protolite-well-known-types bundles com.google.protobuf classes already
+        // provided by protobuf-javalite (used by Listen Together), causing duplicates.
+        exclude(group = "com.google.firebase", module = "protolite-well-known-types")
+    }
+    implementation(libs.firebase.messaging)
 
     coreLibraryDesugaring(libs.desugaring)
 

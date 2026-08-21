@@ -110,6 +110,18 @@ fun NavGraphBuilder.navigationBuilder(
         ListenTogetherScreen(navController, showTopBar = true)
     }
 
+    composable(Screens.Social.route) {
+        SocialScreen(navController)
+    }
+
+    composable(SOCIAL_USERS_ROUTE) {
+        UserListScreen(navController)
+    }
+
+    composable(SOCIAL_REQUESTS_ROUTE) {
+        FriendRequestsScreen(navController)
+    }
+
     composable("history") {
         HistoryScreen(navController)
     }

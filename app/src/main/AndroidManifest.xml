@@ -46,6 +46,18 @@
             android:name="org.apache.http.legacy"
             android:required="false" />
 
+        <!-- Use Hilt's WorkManager configuration (HiltWorkerFactory) instead of the default initializer -->
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            android:exported="false"
+            tools:node="merge">
+            <meta-data
+                android:name="androidx.work.WorkManagerInitializer"
+                android:value="androidx.startup"
+                tools:node="remove" />
+        </provider>
+
         <activity
             android:name=".ui.screens.CrashActivity"
             android:exported="false"
@@ -255,6 +267,15 @@
             <intent-filter>
                 <action android:name="androidx.media3.exoplayer.downloadService.action.RESTART" />
                 <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </service>
+
+        <!-- Firebase Cloud Messaging for "friend listened" notifications -->
+        <service
+            android:name=".services.SongListenedMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
             </intent-filter>
         </service>
 

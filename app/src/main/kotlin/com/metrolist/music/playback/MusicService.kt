@@ -293,6 +293,9 @@ class MusicService :
     @Inject
     lateinit var listenTogetherManager: com.metrolist.music.listentogether.ListenTogetherManager
 
+    @Inject
+    lateinit var playbackProgressTracker: com.metrolist.music.playback.PlaybackProgressTracker
+
     private lateinit var audioManager: AudioManager
     private var audioFocusRequest: AudioFocusRequest? = null
     private var lastAudioFocusState = AudioManager.AUDIOFOCUS_NONE
@@ -336,6 +339,13 @@ class MusicService :
 
     private var currentQueue: Queue = EmptyQueue
     var queueTitle: String? = null
+
+    /**
+     * The local playlist ID of the currently playing queue, if it was built from a local playlist.
+     * Used by social playback tracking to detect "To Listen" playlist playback.
+     */
+    val currentPlaylistId: String?
+        get() = currentQueue.sourcePlaylistId
 
     val currentMediaMetadata = MutableStateFlow<com.metrolist.music.models.MediaMetadata?>(null)
     private val currentSong =
@@ -1285,6 +1295,17 @@ class MusicService :
                 delay(10.seconds)
                 if (cachedPersistentQueue && player.isPlaying) {
                     saveQueueToDisk()
+                }
+            }
+        }
+
+        // Social playback tracking: poll progress every second for To Listen milestone handling
+        scope.launch {
+            while (isActive) {
+                delay(1000)
+                // Skip social playback tracking during Listen Together sessions to avoid conflicts
+                if (!listenTogetherManager.isInRoom) {
+                    playbackProgressTracker.trackProgress(player, scope, currentPlaylistId)
                 }
             }
         }
@@ -2491,6 +2512,11 @@ class MusicService :
         retryJob = null
         updateInitialBufferRecovery(player.playbackState)
 
+        // Social playback tracking: notify tracker of media item transition
+        if (!listenTogetherManager.isInRoom) {
+            playbackProgressTracker.onMediaItemTransition(mediaItem, reason, currentPlaylistId)
+        }
+
         previousEpisodeId?.let { episodeId ->
             if (previousEpisodePosition > 0) {
                 saveEpisodePosition(episodeId, previousEpisodePosition)
@@ -2629,6 +2655,11 @@ class MusicService :
 
         if (playbackState == Player.STATE_IDLE || playbackState == Player.STATE_ENDED) {
             scrobbleManager?.onSongStop()
+        }
+
+        // Social playback tracking: stop tracking on idle/ended
+        if (!listenTogetherManager.isInRoom) {
+            playbackProgressTracker.onPlaybackStateChanged(playbackState)
         }
     }
 
@@ -4192,6 +4223,8 @@ class MusicService :
                 database.updatePlaybackPosition(currentMetadata.id, player.currentPosition)
             }
         }
+
+        playbackProgressTracker.cleanup()
 
         try {
             unregisterReceiver(screenStateReceiver)

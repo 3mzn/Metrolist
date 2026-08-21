@@ -698,6 +698,7 @@ class MainActivity : ComponentActivity() {
                 }
 
                 val homeViewModel: HomeViewModel = hiltViewModel()
+                val songSharingViewModel: com.metrolist.music.viewmodels.SongSharingViewModel = hiltViewModel()
                 val accountImageUrl by homeViewModel.accountImageUrl.collectAsStateWithLifecycle()
                 val navBackStackEntry by navController.currentBackStackEntryAsState()
                 val (previousTab, setPreviousTab) = rememberSaveable { mutableStateOf("home") }
@@ -739,6 +740,7 @@ class MainActivity : ComponentActivity() {
                             Screens.Home.route,
                             Screens.Library.route,
                             Screens.ListenTogether.route,
+                            Screens.Social.route,
                             "settings",
                         )
                     }
@@ -980,6 +982,7 @@ class MainActivity : ComponentActivity() {
                             Screens.Search.route -> R.string.search
                             Screens.Library.route -> R.string.filter_library
                             Screens.ListenTogether.route -> R.string.together
+                            Screens.Social.route -> R.string.social
                             else -> null
                         }
                     }

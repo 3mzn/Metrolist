@@ -5,10 +5,14 @@
 
 package com.metrolist.music.ui.screens.library
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsetsSides
@@ -31,6 +35,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -76,6 +81,8 @@ import com.metrolist.music.constants.YtmSyncKey
 import com.metrolist.music.db.entities.Playlist
 import com.metrolist.music.db.entities.PlaylistEntity
 import com.metrolist.music.ui.component.CreatePlaylistDialog
+import com.metrolist.music.ui.dialog.JsonImportFlow
+import android.net.Uri
 import com.metrolist.music.ui.component.LibrarySearchEmptyPlaceholder
 import com.metrolist.music.ui.component.LibrarySearchHeader
 import com.metrolist.music.ui.component.LibraryPlaylistGridItem
@@ -316,6 +323,14 @@ fun LibraryPlaylistsScreen(
 
     var showCreatePlaylistDialog by rememberSaveable { mutableStateOf(false) }
 
+    var jsonImportUri by remember { mutableStateOf<Uri?>(null) }
+    val jsonFilePicker =
+        rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri != null) {
+                jsonImportUri = uri
+            }
+        }
+
     if (showCreatePlaylistDialog) {
         CreatePlaylistDialog(
             onDismiss = { showCreatePlaylistDialog = false },
@@ -327,6 +342,11 @@ fun LibraryPlaylistsScreen(
             }
         )
     }
+
+    JsonImportFlow(
+        fileUri = jsonImportUri,
+        onUriConsumed = { jsonImportUri = null },
+    )
 
     val headerContent = @Composable {
         LibrarySearchHeader(
@@ -540,21 +560,34 @@ fun LibraryPlaylistsScreen(
             }
         }
 
-        // Always visible + button (no scroll hiding)
-        FloatingActionButton(
-            onClick = { showCreatePlaylistDialog = true },
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .windowInsetsPadding(
-                    LocalPlayerAwareWindowInsets.current
-                        .only(WindowInsetsSides.Bottom + WindowInsetsSides.Horizontal)
-                )
-                .padding(16.dp)
+        Column(
+            modifier =
+                Modifier
+                    .align(Alignment.BottomEnd)
+                    .windowInsetsPadding(
+                        LocalPlayerAwareWindowInsets.current
+                            .only(WindowInsetsSides.Bottom + WindowInsetsSides.Horizontal)
+                    )
+                    .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Icon(
-                painter = painterResource(R.drawable.add),
-                contentDescription = stringResource(R.string.create_playlist),
-            )
+            SmallFloatingActionButton(
+                onClick = { jsonFilePicker.launch(arrayOf("application/json")) },
+            ) {
+                Icon(
+                    painter = painterResource(R.drawable.upload),
+                    contentDescription = stringResource(R.string.import_from_json),
+                )
+            }
+
+            FloatingActionButton(
+                onClick = { showCreatePlaylistDialog = true },
+            ) {
+                Icon(
+                    painter = painterResource(R.drawable.add),
+                    contentDescription = stringResource(R.string.create_playlist),
+                )
+            }
         }
     }
 }

@@ -20,6 +20,8 @@ import coil3.memory.MemoryCache
 import coil3.request.CachePolicy
 import coil3.request.allowHardware
 import coil3.request.crossfade
+import androidx.hilt.work.HiltWorkerFactory
+import androidx.work.Configuration
 import com.metrolist.innertube.YouTube
 import com.metrolist.innertube.models.ArtistConjunctions
 import com.metrolist.innertube.models.YouTubeLocale
@@ -32,11 +34,15 @@ import com.metrolist.music.extensions.toEnum
 import com.metrolist.music.extensions.toInetSocketAddress
 import com.metrolist.music.utils.CrashHandler
 import com.metrolist.music.utils.ArtistNameAliases
+import com.metrolist.music.utils.SongNotificationHelper
 import com.metrolist.music.utils.YTPlayerUtils
 import com.metrolist.music.utils.cipher.CipherDeobfuscator
 import com.metrolist.music.utils.dataStore
 import com.metrolist.music.utils.safeDataStoreEdit
 import com.metrolist.music.utils.reportException
+import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.FirebaseFirestoreSettings
+import com.google.firebase.firestore.PersistentCacheSettings
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -60,17 +66,48 @@ import javax.inject.Inject
 @HiltAndroidApp
 class App :
     Application(),
-    SingletonImageLoader.Factory {
+    SingletonImageLoader.Factory,
+    Configuration.Provider {
     @Inject
     @ApplicationScope
     lateinit var applicationScope: CoroutineScope
 
+    @Inject
+    lateinit var workerFactory: HiltWorkerFactory
+
+    override val workManagerConfiguration: Configuration
+        get() = Configuration.Builder()
+            .setWorkerFactory(workerFactory)
+            .build()
+
+    @Inject
+    lateinit var songListenedRealTimeNotifier: com.metrolist.music.social.SongListenedRealTimeNotifier
+
     override fun onCreate() {
         super.onCreate()
+
+        // Force initialization of the real-time "friend listened" notifier so its
+        // Firebase auth listener registers (starts worker on login, stops on logout).
+        @Suppress("UNUSED_EXPRESSION")
+        songListenedRealTimeNotifier
 
         // Install crash handler first
         CrashHandler.install(this)
         ArtistNameAliases.initialize(this)
+
+        // Initialize Firebase with Firestore offline persistence
+        val firestore = FirebaseFirestore.getInstance()
+        val settings =
+            FirebaseFirestoreSettings.Builder()
+                .setSslEnabled(true)
+                .setLocalCacheSettings(
+                    PersistentCacheSettings.newBuilder()
+                        .setSizeBytes(100 * 1024 * 1024) // 100MB cache
+                        .build(),
+                )
+                .build()
+        firestore.firestoreSettings = settings
+        Timber.d("Firebase Firestore initialized with offline persistence")
 
         // preferencesDataStore uses filesDir/datastore; proactive mkdir reduces failures on odd ROM states
         try {
@@ -200,6 +237,16 @@ class App :
             }
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(channel)
+
+        val songListenedChannel =
+            NotificationChannel(
+                SongNotificationHelper.CHANNEL_ID,
+                getString(R.string.song_listened_channel_name),
+                NotificationManager.IMPORTANCE_DEFAULT,
+            ).apply {
+                description = getString(R.string.song_listened_channel_description)
+            }
+        nm.createNotificationChannel(songListenedChannel)
     }
 
     private fun observeSettingsChanges() {
