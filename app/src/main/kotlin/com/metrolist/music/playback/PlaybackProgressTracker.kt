@@ -11,6 +11,7 @@ import com.metrolist.music.db.MusicDatabase
 import com.metrolist.music.db.entities.PlaylistEntity
 import com.metrolist.music.social.SongSharingRepository
 import com.google.firebase.auth.FirebaseAuth
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -27,10 +28,21 @@ import javax.inject.Singleton
  * Handles the 50% milestone notification and 100% auto-deletion.
  */
 @Singleton
-class PlaybackProgressTracker @Inject constructor(
+class PlaybackProgressTracker(
     private val songSharingRepository: SongSharingRepository,
     private val database: MusicDatabase,
+    /**
+     * Dispatcher the Room and Firestore lookups run on. Overridable so tests can drive the async
+     * checks deterministically instead of racing a real background thread.
+     */
+    private val ioDispatcher: CoroutineDispatcher,
 ) {
+    @Inject
+    constructor(
+        songSharingRepository: SongSharingRepository,
+        database: MusicDatabase,
+    ) : this(songSharingRepository, database, Dispatchers.IO)
+
     private val TAG = "PlaybackProgressTracker"
 
     private var trackingJob: Job? = null
@@ -94,7 +106,7 @@ class PlaybackProgressTracker @Inject constructor(
         Timber.tag(TAG).i("[checkAndStartTracking] Starting async check for song: $songId")
 
         trackingJob =
-            CoroutineScope(Dispatchers.IO).launch {
+            CoroutineScope(ioDispatcher).launch {
                 try {
                     val uid = FirebaseAuth.getInstance().currentUser?.uid ?: "NotLoggedIn"
                     Timber.tag(TAG).i("[User: $uid] Checking tracking for $songId in playlist $currentPlaylistId")
@@ -156,7 +168,7 @@ class PlaybackProgressTracker @Inject constructor(
                     // Set flag BEFORE launching coroutine to prevent a race condition.
                     trackingInitialized.set(true)
                     Timber.tag(TAG).i("Tracking is inactive but we're in the right playlist. Attempting to start...")
-                    scope.launch(Dispatchers.IO) {
+                    scope.launch(ioDispatcher) {
                         try {
                             checkAndStartTracking(mediaId, currentPlaylistId)
                         } finally {
@@ -208,13 +220,13 @@ class PlaybackProgressTracker @Inject constructor(
                 has50PercentTriggered = true // Ensure both are marked if 95% is reached quickly
                 Timber.tag(TAG).i("95% Completion Triggered for $currentTrackingSongId")
                 // Use an independent IO scope to avoid Main dispatcher issues.
-                CoroutineScope(Dispatchers.IO).launch {
+                CoroutineScope(ioDispatcher).launch {
                     handle100PercentCompletion()
                 }
             } else if (!has50PercentTriggered && maxProgressReached >= 50f) {
                 has50PercentTriggered = true
                 Timber.tag(TAG).i("50% Milestone Triggered for $currentTrackingSongId")
-                CoroutineScope(Dispatchers.IO).launch {
+                CoroutineScope(ioDispatcher).launch {
                     handle50PercentMilestone()
                 }
             }
@@ -234,7 +246,7 @@ class PlaybackProgressTracker @Inject constructor(
         if (sentSongId == null) {
             Timber.tag(TAG).w("[50% Handler] currentSentSongId is null, retrying initialization...")
             trackingInitialized.set(false)
-            withContext(Dispatchers.IO) {
+            withContext(ioDispatcher) {
                 checkAndStartTracking(songId, PlaylistEntity.TO_LISTEN_PLAYLIST_ID)
             }
             sentSongId = currentSentSongId
@@ -264,7 +276,7 @@ class PlaybackProgressTracker @Inject constructor(
         if (sentSongId == null) {
             Timber.tag(TAG).w("[100% Handler] currentSentSongId is null, retrying initialization...")
             trackingInitialized.set(false)
-            withContext(Dispatchers.IO) {
+            withContext(ioDispatcher) {
                 checkAndStartTracking(songId, PlaylistEntity.TO_LISTEN_PLAYLIST_ID)
             }
             sentSongId = currentSentSongId
