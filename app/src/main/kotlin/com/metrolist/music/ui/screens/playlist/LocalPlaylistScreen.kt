@@ -672,6 +672,7 @@ fun LocalPlaylistScreen(
                                                         title = playlist!!.playlist.name,
                                                         items = songs.map { it.song.toMediaItem() },
                                                         startIndex = songs.indexOfFirst { it.map.id == song.map.id },
+                                                        sourcePlaylistId = playlist!!.playlist.id,
                                                     ),
                                                 )
                                             }
@@ -1332,6 +1333,7 @@ fun LocalPlaylistHeader(
                         ListQueue(
                             title = playlist.playlist.name,
                             items = songs.shuffled().map { it.song.toMediaItem() },
+                            sourcePlaylistId = playlist.playlist.id,
                         ),
                     )
                 },
@@ -1358,6 +1360,7 @@ fun LocalPlaylistHeader(
                         ListQueue(
                             title = playlist.playlist.name,
                             items = songs.map { it.song.toMediaItem() },
+                            sourcePlaylistId = playlist.playlist.id,
                         ),
                     )
                 },

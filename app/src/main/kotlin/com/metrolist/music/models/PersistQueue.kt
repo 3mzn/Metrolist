@@ -24,6 +24,14 @@ sealed class QueueType : Serializable {
 }
 
 sealed class QueueData : Serializable {
+    /**
+     * Extra data for [QueueType.LIST] queues. Carries the local playlist a queue was built from
+     * so playlist context survives a queue restore, which social playback tracking depends on.
+     */
+    data class ListData(
+        val sourcePlaylistId: String? = null
+    ) : QueueData()
+
     data class YouTubeData(
         val endpoint: String,
         val continuation: String? = null

@@ -27,7 +27,8 @@ fun Queue.toPersistQueue(
             items = items,
             mediaItemIndex = mediaItemIndex,
             position = position,
-            queueType = QueueType.LIST
+            queueType = QueueType.LIST,
+            queueData = QueueData.ListData(sourcePlaylistId = sourcePlaylistId)
         )
         is YouTubeQueue -> {
             // Since endpoint is private, we'll store a simplified version
@@ -84,7 +85,8 @@ fun PersistQueue.toQueue(): Queue {
             title = title,
             items = items.map { it.toMediaItem() },
             startIndex = mediaItemIndex,
-            position = position
+            position = position,
+            sourcePlaylistId = (queueData as? QueueData.ListData)?.sourcePlaylistId
         )
         is QueueType.YOUTUBE -> {
             // For now, fallback to ListQueue since we can't reconstruct YouTubeQueue properly
