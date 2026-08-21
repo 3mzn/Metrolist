@@ -5,8 +5,6 @@
 
 package com.metrolist.music.ui.screens.library
 
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -80,9 +78,8 @@ import com.metrolist.music.constants.ShowUploadedPlaylistKey
 import com.metrolist.music.constants.YtmSyncKey
 import com.metrolist.music.db.entities.Playlist
 import com.metrolist.music.db.entities.PlaylistEntity
+import com.metrolist.music.ui.screens.Screens
 import com.metrolist.music.ui.component.CreatePlaylistDialog
-import com.metrolist.music.ui.dialog.JsonImportFlow
-import android.net.Uri
 import com.metrolist.music.ui.component.LibrarySearchEmptyPlaceholder
 import com.metrolist.music.ui.component.LibrarySearchHeader
 import com.metrolist.music.ui.component.LibraryPlaylistGridItem
@@ -323,14 +320,6 @@ fun LibraryPlaylistsScreen(
 
     var showCreatePlaylistDialog by rememberSaveable { mutableStateOf(false) }
 
-    var jsonImportUri by remember { mutableStateOf<Uri?>(null) }
-    val jsonFilePicker =
-        rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-            if (uri != null) {
-                jsonImportUri = uri
-            }
-        }
-
     if (showCreatePlaylistDialog) {
         CreatePlaylistDialog(
             onDismiss = { showCreatePlaylistDialog = false },
@@ -342,11 +331,6 @@ fun LibraryPlaylistsScreen(
             }
         )
     }
-
-    JsonImportFlow(
-        fileUri = jsonImportUri,
-        onUriConsumed = { jsonImportUri = null },
-    )
 
     val headerContent = @Composable {
         LibrarySearchHeader(
@@ -572,10 +556,12 @@ fun LibraryPlaylistsScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             SmallFloatingActionButton(
-                onClick = { jsonFilePicker.launch(arrayOf("application/json")) },
+                // Hands off to the Import tab, which owns the picker and reports the result. Keeps
+                // this as an in-context shortcut without a second import implementation.
+                onClick = { navController.navigate(Screens.Import.route) },
             ) {
                 Icon(
-                    painter = painterResource(R.drawable.upload),
+                    painter = painterResource(R.drawable.import_playlist_outlined),
                     contentDescription = stringResource(R.string.import_from_json),
                 )
             }

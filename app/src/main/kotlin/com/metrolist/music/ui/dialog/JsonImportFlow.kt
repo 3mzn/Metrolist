@@ -27,11 +27,14 @@ import com.metrolist.music.viewmodels.JsonImportViewModel.SyncState
  *
  * @param fileUri The JSON file picked by the user (null when not picking).
  * @param onUriConsumed Called after the flow has consumed the URI, so the caller can clear its state.
+ * @param showProgressDialog Whether to show the modal progress dialog. Hosts that render progress
+ *   inline (the Import tab) pass false so the dialog does not cover their own UI.
  */
 @Composable
 fun JsonImportFlow(
     fileUri: Uri?,
     onUriConsumed: () -> Unit,
+    showProgressDialog: Boolean = true,
     viewModel: JsonImportViewModel = hiltViewModel(),
 ) {
     var showNameDialog by remember { mutableStateOf(false) }
@@ -49,7 +52,7 @@ fun JsonImportFlow(
     }
 
     // Show progress dialog while syncing
-    if (isSyncing) {
+    if (isSyncing && showProgressDialog) {
         DefaultDialog(
             onDismiss = { },
             title = { Text(stringResource(R.string.importing_playlist)) },

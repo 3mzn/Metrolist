@@ -96,6 +96,7 @@ import com.metrolist.music.ui.component.NewAction
 import com.metrolist.music.ui.component.NewActionGrid
 import com.metrolist.music.ui.component.SongListItem
 import com.metrolist.music.ui.component.TextFieldDialog
+import com.metrolist.music.ui.dialog.SendToFriendsHost
 import com.metrolist.music.ui.utils.ShowMediaInfo
 import com.metrolist.music.utils.ArtistNameAliases
 import com.metrolist.music.viewmodels.CachePlaylistViewModel
@@ -235,6 +236,18 @@ fun SongMenu(
 
     var showChoosePlaylistDialog by rememberSaveable {
         mutableStateOf(false)
+    }
+
+    var showSendToFriendsDialog by rememberSaveable {
+        mutableStateOf(false)
+    }
+
+    if (showSendToFriendsDialog) {
+        SendToFriendsHost(
+            songs = listOf(song),
+            onDismiss = { showSendToFriendsDialog = false },
+            onSent = onDismiss,
+        )
     }
 
     var showErrorPlaylistAddDialog by rememberSaveable {
@@ -519,7 +532,7 @@ fun SongMenu(
         item {
             NewActionGrid(
                 actions =
-                    listOf(
+                    listOfNotNull(
                         NewAction(
                             icon = {
                                 Icon(
@@ -544,6 +557,24 @@ fun SongMenu(
                             text = stringResource(R.string.add_to_playlist),
                             onClick = { showChoosePlaylistDialog = true },
                         ),
+                        // A local file has no YouTube id for the recipient to resolve, so there is
+                        // nothing worth offering to send.
+                        if (song.song.isLocal) {
+                            null
+                        } else {
+                            NewAction(
+                                icon = {
+                                    Icon(
+                                        painter = painterResource(R.drawable.group),
+                                        contentDescription = null,
+                                        modifier = Modifier.size(28.dp),
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                },
+                                text = stringResource(R.string.send_to_friends),
+                                onClick = { showSendToFriendsDialog = true },
+                            )
+                        },
                         NewAction(
                             icon = {
                                 Icon(

@@ -741,6 +741,7 @@ class MainActivity : ComponentActivity() {
                             Screens.Library.route,
                             Screens.ListenTogether.route,
                             Screens.Social.route,
+                            Screens.Import.route,
                             "settings",
                         )
                     }
@@ -983,6 +984,7 @@ class MainActivity : ComponentActivity() {
                             Screens.Library.route -> R.string.filter_library
                             Screens.ListenTogether.route -> R.string.together
                             Screens.Social.route -> R.string.social
+                            Screens.Import.route -> R.string.import_playlists
                             else -> null
                         }
                     }

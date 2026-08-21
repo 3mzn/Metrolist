@@ -122,6 +122,10 @@ fun NavGraphBuilder.navigationBuilder(
         FriendRequestsScreen(navController)
     }
 
+    composable(Screens.Import.route) {
+        ImportScreen(navController)
+    }
+
     composable("history") {
         HistoryScreen(navController)
     }

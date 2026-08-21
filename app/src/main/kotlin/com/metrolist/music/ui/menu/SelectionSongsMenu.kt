@@ -27,7 +27,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -65,24 +64,11 @@ import com.metrolist.music.ui.component.Material3MenuGroup
 import com.metrolist.music.ui.component.Material3MenuItemData
 import com.metrolist.music.ui.component.NewAction
 import com.metrolist.music.ui.component.NewActionGrid
-import com.metrolist.music.ui.dialog.SendToFriendsDialog
-import com.metrolist.music.social.SocialRepository
-import com.metrolist.music.social.SongSharingRepository
-import dagger.hilt.EntryPoint
-import dagger.hilt.InstallIn
-import dagger.hilt.android.EntryPointAccessors
-import dagger.hilt.components.SingletonComponent
+import com.metrolist.music.ui.dialog.SendToFriendsHost
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.time.LocalDateTime
-
-@EntryPoint
-@InstallIn(SingletonComponent::class)
-interface SocialRepositoryEntryPoint {
-    fun socialRepository(): SocialRepository
-    fun songSharingRepository(): SongSharingRepository
-}
 
 @SuppressLint("MutableCollectionMutableState")
 @Composable
@@ -178,66 +164,12 @@ fun SelectionSongMenu(
     }
 
     if (showSendToFriendsDialog) {
-        val socialRepository = remember {
-            EntryPointAccessors.fromApplication(
-                context.applicationContext,
-                SocialRepositoryEntryPoint::class.java,
-            ).socialRepository()
-        }
-        val songSharingRepository = remember {
-            EntryPointAccessors.fromApplication(
-                context.applicationContext,
-                SocialRepositoryEntryPoint::class.java,
-            ).songSharingRepository()
-        }
-        val relationshipState by socialRepository.observeRelationships().collectAsState(
-            initial = com.metrolist.music.social.RelationshipState(emptyMap(), emptyMap(), emptySet()),
-        )
-        val allUsers by socialRepository.getAllUsers().collectAsState(initial = emptyList())
-        val friendProfiles = remember(allUsers, relationshipState) {
-            allUsers.filter { it.uid in relationshipState.friends }
-                .associateBy { it.uid }
-        }
-
-        SendToFriendsDialog(
-            songCount = songSelection.size,
-            relationshipState = relationshipState,
-            friendProfiles = friendProfiles,
+        SendToFriendsHost(
+            songs = songSelection,
             onDismiss = { showSendToFriendsDialog = false },
-            onSend = { selectedFriendUids ->
-                coroutineScope.launch {
-                    try {
-                        val songsToSend = songSelection.filterNot { it.song.isLocal }.map { it.toMediaMetadata() }
-                        if (songsToSend.isEmpty()) return@launch
-
-                        val successCount =
-                            songSharingRepository.sendSongsToFriends(
-                                songs = songsToSend,
-                                friendUids = selectedFriendUids,
-                                friendProfiles = friendProfiles,
-                            )
-
-                        withContext(Dispatchers.Main) {
-                            Toast.makeText(
-                                context,
-                                context.getString(R.string.sent_n_songs_to_friends, successCount, selectedFriendUids.size),
-                                Toast.LENGTH_SHORT,
-                            ).show()
-                        }
-
-                        showSendToFriendsDialog = false
-                        onDismiss()
-                        clearAction()
-                    } catch (e: Exception) {
-                        withContext(Dispatchers.Main) {
-                            Toast.makeText(
-                                context,
-                                "Error sending songs: ${e.message}",
-                                Toast.LENGTH_LONG,
-                            ).show()
-                        }
-                    }
-                }
+            onSent = {
+                onDismiss()
+                clearAction()
             },
         )
     }

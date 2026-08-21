@@ -1053,6 +1053,8 @@
         <item quantity="other">Send to %d friends</item>
     </plurals>
     <string name="sent_n_songs_to_friends">Sent %1$d songs to %2$d friends</string>
+    <string name="send_to_friends_failed">Couldn\'t send. Check your connection and try again.</string>
+    <string name="local_songs_cannot_be_sent">Local files can\'t be sent to friends.</string>
 
     <!-- Social: account -->
     <string name="social">Social</string>
@@ -1085,4 +1087,17 @@
     <string name="enter_playlist_name">Enter playlist name</string>
     <string name="import_playlist_name_explanation">If a playlist with this name exists, songs will be added to it. Otherwise, a new playlist will be created.</string>
     <string name="failed_imports">Failed Imports</string>
+
+    <!-- Import tab -->
+    <string name="import_playlists">Import</string>
+    <string name="import_json_title">Import from a JSON file</string>
+    <string name="import_json_description">Pick a JSON file of tracks and Metrolist will match each one on YouTube Music and add it to a playlist.</string>
+    <string name="import_choose_file">Choose JSON file</string>
+    <string name="import_expected_format">Expected format</string>
+    <string name="import_expected_format_description">A list of objects, each with a title and an artist. Extra fields are ignored.</string>
+    <string name="import_last_run">Last import</string>
+    <string name="import_status_idle">No import run yet.</string>
+    <string name="import_matched_n_of_m">Matched %1$d of %2$d tracks</string>
+    <string name="import_view_failures">View %1$d that didn\'t match</string>
+    <string name="import_in_progress">Importing…</string>
 </resources>

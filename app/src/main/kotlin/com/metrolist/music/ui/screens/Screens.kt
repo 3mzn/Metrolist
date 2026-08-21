@@ -52,7 +52,14 @@ sealed class Screens(
         route = "social"
     )
 
+    object Import : Screens(
+        titleId = R.string.import_playlists,
+        iconIdInactive = R.drawable.import_playlist_outlined,
+        iconIdActive = R.drawable.import_playlist_filled,
+        route = "import"
+    )
+
     companion object {
-        val MainScreens = listOf(Home, Search, ListenTogether, Library, Social)
+        val MainScreens = listOf(Home, Search, ListenTogether, Library, Social, Import)
     }
 }
