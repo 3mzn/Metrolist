@@ -78,6 +78,7 @@ import com.metrolist.music.constants.ListItemHeight
 import com.metrolist.music.constants.ListThumbnailSize
 import com.metrolist.music.db.entities.ArtistEntity
 import com.metrolist.music.db.entities.Event
+import com.metrolist.music.db.entities.PlaylistEntity
 import com.metrolist.music.db.entities.PlaylistSong
 import com.metrolist.music.db.entities.PodcastEntity
 import com.metrolist.music.db.entities.Song
@@ -822,7 +823,11 @@ fun SongMenu(
                                 ),
                             )
                         }
-                        if (playlistSong != null) {
+                        // "To Listen" is managed by the social feature — songs leave it only once
+                        // they've actually been listened to, so manual removal is not offered.
+                        if (playlistSong != null &&
+                            playlistSong.map.playlistId != PlaylistEntity.TO_LISTEN_PLAYLIST_ID
+                        ) {
                             add(
                                 Material3MenuItemData(
                                     title = { Text(text = stringResource(R.string.remove_from_playlist)) },

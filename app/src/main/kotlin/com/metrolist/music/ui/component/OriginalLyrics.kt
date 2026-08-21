@@ -142,6 +142,7 @@ import com.metrolist.music.constants.PlayerBackgroundStyleKey
 import com.metrolist.music.constants.TranslateLanguageKey
 import com.metrolist.music.constants.TranslateModeKey
 import com.metrolist.music.db.entities.LyricsEntity.Companion.LYRICS_NOT_FOUND
+import com.metrolist.music.db.entities.PlaylistEntity
 import com.metrolist.music.lyrics.LyricsEntry
 import com.metrolist.music.lyrics.LyricsResyncHelper
 import com.metrolist.music.lyrics.LyricsTranslationHelper
@@ -204,6 +205,11 @@ fun OriginalLyrics(
     val configuration = LocalWindowInfo.current
     val listenTogetherManager = LocalListenTogetherManager.current
     val isGuest = listenTogetherManager?.isInRoom == true && !listenTogetherManager.isHost
+
+    // "To Listen" playlist: click-to-seek is disabled so a shared song can't be scrubbed past the
+    // 50%/95% listen milestones.
+    val activePlaylistId by playerConnection.currentPlaylistId.collectAsStateWithLifecycle()
+    val seekRestricted = isGuest || activePlaylistId == PlaylistEntity.TO_LISTEN_PLAYLIST_ID
     val shareLyricsStr = stringResource(R.string.share_lyrics)
     val failedToCreateImageTemplate = stringResource(R.string.failed_to_create_image)
 
@@ -921,7 +927,7 @@ fun OriginalLyrics(
                                                     showMaxSelectionToast = true
                                                 }
                                             }
-                                        } else if (isSynced && changeLyrics && !isGuest) {
+                                        } else if (isSynced && changeLyrics && !seekRestricted) {
                                             // Professional seek action with smooth animation
                                             val lyricsOffset = currentSong?.song?.lyricsOffset ?: 0
                                             playerConnection.seekTo((item.time - lyricsOffset).coerceAtLeast(0))

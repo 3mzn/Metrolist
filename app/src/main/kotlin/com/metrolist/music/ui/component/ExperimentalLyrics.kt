@@ -109,6 +109,7 @@ import com.metrolist.music.constants.ShowIntervalIndicatorKey
 import com.metrolist.music.constants.TranslateLanguageKey
 import com.metrolist.music.constants.TranslateModeKey
 import com.metrolist.music.db.entities.LyricsEntity.Companion.LYRICS_NOT_FOUND
+import com.metrolist.music.db.entities.PlaylistEntity
 import com.metrolist.music.lyrics.LyricsResyncHelper
 import com.metrolist.music.lyrics.LyricsTranslationHelper
 import com.metrolist.music.lyrics.LyricsUtils.findActiveLineIndices
@@ -159,6 +160,11 @@ fun ExperimentalLyrics(
     val configuration = LocalConfiguration.current
     val listenTogetherManager = LocalListenTogetherManager.current
     val isGuest = listenTogetherManager?.isInRoom == true && !listenTogetherManager.isHost
+
+    // "To Listen" playlist: click-to-seek is disabled so a shared song can't be scrubbed past the
+    // 50%/95% listen milestones.
+    val activePlaylistId by playerConnection.currentPlaylistId.collectAsStateWithLifecycle()
+    val seekRestricted = isGuest || activePlaylistId == PlaylistEntity.TO_LISTEN_PLAYLIST_ID
 
     val lyricsTextPosition by rememberEnumPreference(LyricsTextPositionKey, LyricsPosition.CENTER)
     val changeLyrics by rememberPreference(LyricsClickKey, true)
@@ -793,7 +799,7 @@ fun ExperimentalLyrics(
                                                     if (selectedIndices.isEmpty()) isSelectionModeActive = false
                                                 } else if (selectedIndices.size < maxSelectionLimit) selectedIndices.add(index)
                                                 else showMaxSelectionToast = true
-                                            } else if (changeLyrics && !isGuest) {
+                                            } else if (changeLyrics && !seekRestricted) {
                                                 if (item.time < playerConnection.player.duration + 30000L) {
                                                     playerConnection.seekTo((item.time - (currentSong?.song?.lyricsOffset ?: 0)).coerceAtLeast(0))
                                                 } else {

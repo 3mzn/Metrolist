@@ -52,6 +52,7 @@ import com.metrolist.music.LocalListenTogetherManager
 import com.metrolist.music.LocalPlayerConnection
 import com.metrolist.music.R
 import com.metrolist.music.db.entities.Playlist
+import com.metrolist.music.db.entities.PlaylistEntity
 import com.metrolist.music.db.entities.PlaylistSong
 import com.metrolist.music.db.entities.Song
 import com.metrolist.music.db.entities.SpeedDialItem
@@ -113,6 +114,10 @@ fun PlaylistMenu(
     }
 
     val editable: Boolean = playlist.playlist.isEditable == true
+
+    // The "To Listen" playlist is managed by the social feature: songs arrive when a friend shares
+    // them and leave once listened, so it can't be renamed or deleted by hand.
+    val isToListenPlaylist: Boolean = playlist.playlist.id == PlaylistEntity.TO_LISTEN_PLAYLIST_ID
 
     val isPinned by database.speedDialDao.isPinned(playlist.id).collectAsStateWithLifecycle(initialValue = false)
 
@@ -337,6 +342,7 @@ fun PlaylistMenu(
                                             ListQueue(
                                                 title = playlist.playlist.name,
                                                 items = songs.map(Song::toMediaItem),
+                                                sourcePlaylistId = playlist.playlist.id,
                                             ),
                                         )
                                     }
@@ -359,6 +365,7 @@ fun PlaylistMenu(
                                             ListQueue(
                                                 title = playlist.playlist.name,
                                                 items = songs.shuffled().map(Song::toMediaItem),
+                                                sourcePlaylistId = playlist.playlist.id,
                                             ),
                                         )
                                     }
@@ -477,7 +484,7 @@ fun PlaylistMenu(
             Material3MenuGroup(
                 items =
                     buildList {
-                        if (editable && autoPlaylist != true && !isGuest) {
+                        if (editable && autoPlaylist != true && !isGuest && !isToListenPlaylist) {
                             add(
                                 Material3MenuItemData(
                                     title = { Text(text = stringResource(R.string.edit)) },
@@ -609,7 +616,7 @@ fun PlaylistMenu(
                                 onClick = { showExportDialog = true },
                             ),
                         )
-                        if (autoPlaylist != true && !isGuest) {
+                        if (autoPlaylist != true && !isGuest && !isToListenPlaylist) {
                             add(
                                 Material3MenuItemData(
                                     title = { Text(text = stringResource(R.string.delete)) },

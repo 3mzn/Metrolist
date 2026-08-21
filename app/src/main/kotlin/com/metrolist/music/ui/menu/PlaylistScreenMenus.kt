@@ -35,6 +35,7 @@ import androidx.media3.exoplayer.offline.Download
 import com.metrolist.music.LocalListenTogetherManager
 import com.metrolist.music.R
 import com.metrolist.music.db.entities.Playlist
+import com.metrolist.music.db.entities.PlaylistEntity
 import com.metrolist.music.db.entities.PlaylistSong
 import com.metrolist.music.db.entities.Song
 import com.metrolist.music.ui.component.DefaultDialog
@@ -124,24 +125,30 @@ fun LocalPlaylistMenu(
 
     val isYouTubePlaylist = playlist.playlist.browseId != null
 
+    // The "To Listen" playlist is managed by the social feature: songs arrive when a friend shares
+    // them and leave once listened, so it can't be renamed or deleted by hand.
+    val isToListenPlaylist = playlist.playlist.id == PlaylistEntity.TO_LISTEN_PLAYLIST_ID
+
     val menuItems =
         buildList {
-            add(
-                Material3MenuItemData(
-                    title = { Text(stringResource(R.string.edit)) },
-                    description = { Text(stringResource(R.string.edit_playlist)) },
-                    icon = {
-                        Icon(
-                            painter = painterResource(R.drawable.edit),
-                            contentDescription = null,
-                        )
-                    },
-                    onClick = {
-                        onEdit()
-                        onDismiss()
-                    },
-                ),
-            )
+            if (!isToListenPlaylist) {
+                add(
+                    Material3MenuItemData(
+                        title = { Text(stringResource(R.string.edit)) },
+                        description = { Text(stringResource(R.string.edit_playlist)) },
+                        icon = {
+                            Icon(
+                                painter = painterResource(R.drawable.edit),
+                                contentDescription = null,
+                            )
+                        },
+                        onClick = {
+                            onEdit()
+                            onDismiss()
+                        },
+                    ),
+                )
+            }
 
             // Show sync button only for YouTube playlists
             if (isYouTubePlaylist) {
@@ -228,22 +235,24 @@ fun LocalPlaylistMenu(
                 ),
             )
 
-            add(
-                Material3MenuItemData(
-                    title = { Text(stringResource(R.string.delete)) },
-                    description = { Text(stringResource(R.string.delete_playlist_desc)) },
-                    icon = {
-                        Icon(
-                            painter = painterResource(R.drawable.delete),
-                            contentDescription = null,
-                        )
-                    },
-                    onClick = {
-                        onDelete()
-                        onDismiss()
-                    },
-                ),
-            )
+            if (!isToListenPlaylist) {
+                add(
+                    Material3MenuItemData(
+                        title = { Text(stringResource(R.string.delete)) },
+                        description = { Text(stringResource(R.string.delete_playlist_desc)) },
+                        icon = {
+                            Icon(
+                                painter = painterResource(R.drawable.delete),
+                                contentDescription = null,
+                            )
+                        },
+                        onClick = {
+                            onDelete()
+                            onDismiss()
+                        },
+                    ),
+                )
+            }
         }
 
     Material3MenuGroup(items = menuItems)

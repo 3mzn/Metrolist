@@ -81,6 +81,7 @@ import com.metrolist.music.constants.PlayerHorizontalPadding
 import com.metrolist.music.constants.SeekExtraSeconds
 import com.metrolist.music.constants.SwipeThumbnailKey
 import com.metrolist.music.constants.ThumbnailCornerRadius
+import com.metrolist.music.db.entities.PlaylistEntity
 import com.metrolist.music.listentogether.RoomRole
 import com.metrolist.music.ui.component.CastButton
 import com.metrolist.music.utils.rememberEnumPreference
@@ -507,6 +508,12 @@ private fun ThumbnailItem(
     var skipMultiplier by remember { mutableIntStateOf(1) }
     var lastTapTime by remember { mutableLongStateOf(0L) }
 
+    // "To Listen" playlist: double-tap seeking is disabled so a shared song can't be scrubbed past
+    // the 50%/95% listen milestones. Swiping to change tracks stays available.
+    val activePlaylistId by playerConnection.currentPlaylistId.collectAsStateWithLifecycle()
+    val seekRestricted = isListenTogetherGuest ||
+        activePlaylistId == PlaylistEntity.TO_LISTEN_PLAYLIST_ID
+
     Box(
         modifier = modifier
             .then(
@@ -526,7 +533,7 @@ private fun ThumbnailItem(
             .pointerInput(Unit) {
                 detectTapGestures(
                     onDoubleTap = { offset ->
-                        if (isListenTogetherGuest) return@detectTapGestures
+                        if (seekRestricted) return@detectTapGestures
 
                         val currentPosition = playerConnection.player.currentPosition
                         val duration = playerConnection.player.duration

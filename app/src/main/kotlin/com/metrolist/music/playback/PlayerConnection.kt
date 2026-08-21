@@ -176,6 +176,13 @@ class PlayerConnection(
         }.stateIn(scope, SharingStarted.Lazily, null)
 
     val queueTitle = MutableStateFlow<String?>(null)
+
+    /**
+     * The local playlist the current queue was built from, if any. Observable mirror of
+     * [MusicService.currentPlaylistId] so the UI can react to playlist context — used to
+     * restrict seeking while playing the "To Listen" playlist.
+     */
+    val currentPlaylistId = MutableStateFlow<String?>(null)
     val queueWindows = MutableStateFlow<List<Timeline.Window>>(emptyList())
     val currentMediaItemIndex = MutableStateFlow(-1)
     val currentWindowIndex = MutableStateFlow(-1)
@@ -229,6 +236,7 @@ class PlayerConnection(
         playWhenReady.value = newPlayer.playWhenReady
         mediaMetadata.value = newPlayer.currentMetadata
         queueTitle.value = service.queueTitle
+        currentPlaylistId.value = service.currentPlaylistId
         queueWindows.value = newPlayer.getQueueWindows()
         currentWindowIndex.value = newPlayer.getCurrentQueueIndex()
         currentMediaItemIndex.value = newPlayer.currentMediaItemIndex
@@ -624,6 +632,7 @@ class PlayerConnection(
     ) {
         queueWindows.value = player.getQueueWindows()
         queueTitle.value = service.queueTitle
+        currentPlaylistId.value = service.currentPlaylistId
         currentMediaItemIndex.value = player.currentMediaItemIndex
         currentWindowIndex.value = player.getCurrentQueueIndex()
         updateCanSkipPreviousAndNext()
