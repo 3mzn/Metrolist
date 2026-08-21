@@ -14,7 +14,7 @@
       "queryScope": "COLLECTION",
       "fields": [
         { "fieldPath": "fromUid", "order": "ASCENDING" },
-        { "fieldPath": "sentAt", "order": "DESCENDING" }
+        { "fieldPath": "sentAt", "order": "ASCENDING" }
       ]
     },
     {
