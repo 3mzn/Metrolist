@@ -34,7 +34,9 @@ class SongSharingRepository @Inject constructor(
     /**
      * Initialize "To Listen" playlist if it doesn't exist.
      */
-    suspend fun initializeToListenPlaylist() {
+    suspend fun initializeToListenPlaylist() = withContext(Dispatchers.IO) {
+        // playlistBlocking and query both hit Room synchronously, and the caller is a viewModelScope
+        // coroutine on the main dispatcher, so this has to be confined to IO or Room rejects it.
         val existingPlaylist = database.playlistBlocking(PlaylistEntity.TO_LISTEN_PLAYLIST_ID)
 
         if (existingPlaylist == null) {
