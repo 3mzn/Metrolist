@@ -259,7 +259,7 @@ class PlaybackProgressTracker(
 
         try {
             // Update Firestore directly using the document ID we have.
-            songSharingRepository.markSongAsListened(sentSongId)
+            songSharingRepository.markSongAsListened(sentSongId, songId)
             Timber.tag(TAG).i("[50% Handler] Firestore update completed successfully")
         } catch (e: Exception) {
             Timber.tag(TAG).e(e, "[50% Handler] Error handling 50% milestone")

@@ -75,15 +75,6 @@ class SongSharingRepository @Inject constructor(
             throw Exception("User not logged in")
         }
 
-        // Test Firestore connectivity
-        try {
-            firestore.collection("sentSongs").document("test").get().await()
-            Timber.tag(TAG).d("Firestore connection successful")
-        } catch (e: Exception) {
-            Timber.e(e, "Firestore connection failed")
-            throw Exception("Firestore connection failed: ${e.message}")
-        }
-
         val currentUsername = getCurrentUsername() ?: "Unknown"
         var successCount = 0
 
@@ -220,14 +211,55 @@ class SongSharingRepository @Inject constructor(
         }
 
     /**
-     * Mark song as listened (50% milestone reached).
+     * Every still-pending document this user holds for [songId].
+     *
+     * A song can arrive from more than one friend, or twice from the same friend, which means several
+     * documents share one songId. The playlist only ever holds one row for it, so acting on a single
+     * document would leave the others pending forever: the sender would never be told it was heard,
+     * and once the song left the playlist the incoming-songs listener would add it straight back.
+     *
+     * Equality-only filters, so Firestore serves this by merging single-field indexes -- no composite
+     * index required.
      */
-    suspend fun markSongAsListened(sentSongId: String) {
+    private suspend fun pendingSentSongIdsFor(songId: String): List<String> {
+        val currentUid = auth.currentUser?.uid ?: return emptyList()
+
+        return try {
+            sentSongsCollection
+                .whereEqualTo("toUid", currentUid)
+                .whereEqualTo("songId", songId)
+                .get()
+                .await()
+                .documents
+                .filter { it.get("completedAt") == null }
+                .map { it.id }
+        } catch (e: Exception) {
+            Timber.tag(TAG).e(e, "Could not list pending documents for song $songId")
+            emptyList()
+        }
+    }
+
+    /**
+     * Mark song as listened (50% milestone reached).
+     *
+     * @param songId when given, every pending document for this song is marked, so each friend who
+     *   sent it is notified rather than only the most recent one.
+     */
+    suspend fun markSongAsListened(sentSongId: String, songId: String? = null) {
         withContext(Dispatchers.IO) {
             try {
-                sentSongsCollection.document(sentSongId).update(
-                    mapOf("listenedAt" to System.currentTimeMillis()),
-                ).await()
+                val ids = if (songId == null) {
+                    listOf(sentSongId)
+                } else {
+                    (pendingSentSongIdsFor(songId) + sentSongId).distinct()
+                }
+
+                val listenedAt = System.currentTimeMillis()
+                ids.forEach { id ->
+                    sentSongsCollection.document(id).update(
+                        mapOf("listenedAt" to listenedAt),
+                    ).await()
+                }
                 Timber.tag(TAG).d("Marked song $sentSongId as listened")
             } catch (e: Exception) {
                 Timber.e(e, "Error marking song as listened")
@@ -238,11 +270,26 @@ class SongSharingRepository @Inject constructor(
 
     /**
      * Mark song as completed and remove from "To Listen" playlist.
+     *
+     * Completes every pending document for [songId], not just [sentSongId]: the song is about to
+     * leave the playlist, and any document left pending would be re-added by the incoming-songs
+     * listener on the next launch.
      */
     suspend fun markSongAsCompleted(sentSongId: String, songId: String) {
         withContext(Dispatchers.IO) {
             try {
-                // Perform local removal first
+                val ids = (pendingSentSongIdsFor(songId) + sentSongId).distinct()
+
+                // Firestore first: if these updates fail the song stays in the playlist and can be
+                // retried, whereas removing it locally first would strand the documents as pending.
+                val completedAt = System.currentTimeMillis()
+                ids.forEach { id ->
+                    sentSongsCollection.document(id).update(
+                        mapOf("completedAt" to completedAt),
+                    ).await()
+                }
+                Timber.tag(TAG).d("Cloud: Marked ${ids.size} document(s) for $songId as completed")
+
                 database.transaction {
                     val playlistSongs = database.playlistSongsBlocking(PlaylistEntity.TO_LISTEN_PLAYLIST_ID)
                     val songToRemove = playlistSongs.find { it.song.id == songId }
@@ -259,12 +306,6 @@ class SongSharingRepository @Inject constructor(
                         Timber.tag(TAG).d("Local: Removed song $songId from To Listen playlist")
                     }
                 }
-
-                // Update Firestore
-                sentSongsCollection.document(sentSongId).update(
-                    mapOf("completedAt" to System.currentTimeMillis()),
-                ).await()
-                Timber.tag(TAG).d("Cloud: Marked song $sentSongId as completed")
             } catch (e: Exception) {
                 Timber.e(e, "Error marking song as completed")
                 throw e // Re-throw so caller knows it failed
@@ -274,33 +315,36 @@ class SongSharingRepository @Inject constructor(
 
     /**
      * Clear all songs from "To Listen" playlist and mark them as completed in Firestore.
+     *
+     * Marking comes first and is allowed to throw: clearing locally while documents were still
+     * pending would only have the incoming-songs listener add every song back.
      */
-    suspend fun clearToListenPlaylist() {
-        val currentUid = auth.currentUser?.uid ?: return
+    suspend fun clearToListenPlaylist() = withContext(Dispatchers.IO) {
+        val currentUid = auth.currentUser?.uid
 
         try {
-            // 1. Get all pending documents from Firestore for this user
-            val snapshot =
-                sentSongsCollection
-                    .whereEqualTo("toUid", currentUid)
-                    .get()
-                    .await()
+            // Signed out there is nothing to reconcile, and no listener running to undo the clear.
+            if (currentUid != null) {
+                val snapshot =
+                    sentSongsCollection
+                        .whereEqualTo("toUid", currentUid)
+                        .get()
+                        .await()
 
-            val pendingDocs = snapshot.documents.filter { doc ->
-                doc.get("completedAt") == null
-            }
-
-            // 2. Mark them as completed in Firestore using a batch
-            if (pendingDocs.isNotEmpty()) {
-                val batch = firestore.batch()
-                val now = System.currentTimeMillis()
-                pendingDocs.forEach { doc ->
-                    batch.update(doc.reference, "completedAt", now)
+                val pendingDocs = snapshot.documents.filter { doc ->
+                    doc.get("completedAt") == null
                 }
-                batch.commit().await()
+
+                if (pendingDocs.isNotEmpty()) {
+                    val batch = firestore.batch()
+                    val now = System.currentTimeMillis()
+                    pendingDocs.forEach { doc ->
+                        batch.update(doc.reference, "completedAt", now)
+                    }
+                    batch.commit().await()
+                }
             }
 
-            // 3. Clear local database entries for this playlist
             database.transaction {
                 clearPlaylist(PlaylistEntity.TO_LISTEN_PLAYLIST_ID)
             }

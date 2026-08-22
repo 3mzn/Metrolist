@@ -5,6 +5,8 @@
 
 package com.metrolist.music.ui.screens.settings
 
+import android.text.format.Formatter
+import android.widget.Toast
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -39,8 +41,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import coil3.SingletonImageLoader
 import coil3.annotation.DelicateCoilApi
@@ -53,22 +57,26 @@ import com.metrolist.music.R
 import com.metrolist.music.constants.EnableSongCacheKey
 import com.metrolist.music.constants.MaxImageCacheSizeKey
 import com.metrolist.music.constants.MaxSongCacheSizeKey
+import com.metrolist.music.db.entities.PlaylistEntity
 import com.metrolist.music.extensions.tryOrNull
 import com.metrolist.music.ui.component.ActionPromptDialog
 import com.metrolist.music.ui.component.IconButton
 import com.metrolist.music.ui.component.Material3SettingsGroup
 import com.metrolist.music.ui.component.Material3SettingsItem
-import android.text.format.Formatter
+import com.metrolist.music.ui.dialog.SocialRepositoryEntryPoint
 import com.metrolist.music.ui.utils.backToMain
 import com.metrolist.music.utils.rememberPreference
+import dagger.hilt.android.EntryPointAccessors
+import java.io.File
+import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import okio.ByteString.Companion.encodeUtf8
-import java.io.File
-import kotlin.math.roundToInt
+import timber.log.Timber
 
 @OptIn(ExperimentalCoilApi::class, ExperimentalMaterial3Api::class, DelicateCoilApi::class)
 @Composable
@@ -100,6 +108,17 @@ fun StorageSettings(
     var clearDownloads by remember { mutableStateOf(false) }
     var clearCacheDialog by remember { mutableStateOf(false) }
     var clearImageCacheDialog by remember { mutableStateOf(false) }
+    var clearToListenDialog by remember { mutableStateOf(false) }
+
+    val songSharingRepository = remember {
+        EntryPointAccessors.fromApplication(
+            context.applicationContext,
+            SocialRepositoryEntryPoint::class.java,
+        ).songSharingRepository()
+    }
+    val toListenSongs by remember {
+        database.playlistSongs(PlaylistEntity.TO_LISTEN_PLAYLIST_ID)
+    }.collectAsStateWithLifecycle(initialValue = emptyList())
 
     // State for the confirmation dialog
     var showCacheWarningDialog by remember { mutableStateOf(false) }
@@ -170,6 +189,35 @@ fun StorageSettings(
         }
     }
 
+    if (clearToListenDialog) {
+        ActionPromptDialog(
+            title = stringResource(R.string.clear_to_listen),
+            onDismiss = { clearToListenDialog = false },
+            onConfirm = {
+                coroutineScope.launch {
+                    try {
+                        songSharingRepository.clearToListenPlaylist()
+                    } catch (e: Exception) {
+                        // Nothing was cleared, so tell the user rather than leaving the list
+                        // looking emptied when the senders' copies are still pending.
+                        Timber.e(e, "Failed to clear the To Listen playlist")
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(
+                                context,
+                                context.getString(R.string.clear_to_listen_failed),
+                                Toast.LENGTH_SHORT,
+                            ).show()
+                        }
+                    }
+                }
+                clearToListenDialog = false
+            },
+            onCancel = { clearToListenDialog = false },
+            content = {
+                Text(text = stringResource(R.string.clear_to_listen_dialog))
+            },
+        )
+    }
     if (clearDownloads) {
         ActionPromptDialog(
             title = stringResource(R.string.clear_all_downloads),
@@ -312,6 +360,22 @@ fun StorageSettings(
                         title = { Text(stringResource(R.string.clear_all_downloads)) },
                         onClick = {
                             clearDownloads = true
+                        },
+                    ),
+                    Material3SettingsItem(
+                        icon = painterResource(R.drawable.clear_all),
+                        title = { Text(stringResource(R.string.clear_to_listen)) },
+                        description = {
+                            Text(
+                                text = pluralStringResource(
+                                    R.plurals.n_song,
+                                    toListenSongs.size,
+                                    toListenSongs.size,
+                                ),
+                            )
+                        },
+                        onClick = {
+                            clearToListenDialog = true
                         },
                     ),
                 ),

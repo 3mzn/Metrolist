@@ -191,6 +191,18 @@
 -keep class com.metrolist.music.listentogether.proto.** { *; }
 -keepclassmembers class com.metrolist.music.listentogether.proto.** { *; }
 
+## Firestore well-known types, vendored under app/src/main/java/com/google
+## (see metroproto/vendor/README.md for why they are not taken from protolite-well-known-types).
+## protobuf-lite reaches these through the generated message schema rather than direct calls, and
+## nothing on the classpath keeps them: protobuf-javalite is a jar, so it carries no consumer rules,
+## and the firebase-firestore aar only contributes -dontwarn lines.  Without these keeps R8 is free
+## to strip com.google.type.LatLng, which every Firestore value depends on.
+-keep class com.google.type.LatLng { *; }
+-keep class com.google.rpc.Status { *; }
+-keepclassmembers class * extends com.google.protobuf.GeneratedMessageLite {
+    <fields>;
+}
+
 ## Shazam Models
 -keep class com.metrolist.shazamkit.models.** { *; }
 -keepclassmembers class com.metrolist.shazamkit.models.** {

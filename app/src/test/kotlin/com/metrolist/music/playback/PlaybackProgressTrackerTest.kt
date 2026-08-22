@@ -149,7 +149,7 @@ class PlaybackProgressTrackerTest {
         tracker.trackProgress(player, scope, toListen)
         advanceUntilIdle()
 
-        coVerify(exactly = 1) { repository.markSongAsListened(sentSongId) }
+        coVerify(exactly = 1) { repository.markSongAsListened(sentSongId, songId) }
     }
 
     @Test
@@ -163,7 +163,7 @@ class PlaybackProgressTrackerTest {
         }
         advanceUntilIdle()
 
-        coVerify(exactly = 1) { repository.markSongAsListened(sentSongId) }
+        coVerify(exactly = 1) { repository.markSongAsListened(sentSongId, songId) }
     }
 
     @Test
@@ -182,7 +182,7 @@ class PlaybackProgressTrackerTest {
         tracker.trackProgress(player, scope, toListen)
         advanceUntilIdle()
 
-        coVerify(exactly = 1) { repository.markSongAsListened(sentSongId) }
+        coVerify(exactly = 1) { repository.markSongAsListened(sentSongId, songId) }
     }
 
     @Test
@@ -210,7 +210,7 @@ class PlaybackProgressTrackerTest {
         advanceUntilIdle()
 
         coVerify(exactly = 1) { repository.markSongAsCompleted(sentSongId, songId) }
-        coVerify(exactly = 0) { repository.markSongAsListened(any()) }
+        coVerify(exactly = 0) { repository.markSongAsListened(any(), any()) }
     }
 
     @Test
@@ -223,7 +223,7 @@ class PlaybackProgressTrackerTest {
         tracker.trackProgress(player, scope, toListen)
         advanceUntilIdle()
 
-        coVerify(exactly = 0) { repository.markSongAsListened(any()) }
+        coVerify(exactly = 0) { repository.markSongAsListened(any(), any()) }
         coVerify(exactly = 0) { repository.markSongAsCompleted(any(), any()) }
     }
 

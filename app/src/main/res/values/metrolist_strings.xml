@@ -230,6 +230,9 @@
     <string name="clear_song_cache_dialog">Are you sure you want to clear all cached songs?</string>
     <string name="clear_image_cache_dialog">Are you sure you want to clear all cached images?</string>
     <string name="clear_downloads_dialog">Are you sure you want to clear all downloads?</string>
+    <string name="clear_to_listen">Clear To Listen playlist</string>
+    <string name="clear_to_listen_dialog">Remove every song friends have sent you from the To Listen playlist? They will be marked as heard, so senders stop waiting on them, and they will not come back.</string>
+    <string name="clear_to_listen_failed">Couldn\'t clear the playlist. Check your connection and try again.</string>
 
     <string name="disable">Disable</string>
 
