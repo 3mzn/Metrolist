@@ -20,10 +20,16 @@ object SongNotificationHelper {
     const val CHANNEL_ID = "song_listened_notifications"
     const val NOTIFICATION_ID_BASE = 3000
 
-    fun showNotification(context: Context, sentSong: SentSong) {
+    fun showNotification(
+        context: Context,
+        sentSong: SentSong,
+        partnerFallback: String? = null,
+    ) {
         showNotification(
             context,
-            sentSong.fromUsername.ifEmpty { context.getString(R.string.song_listened_fallback_friend) },
+            sentSong.fromUsername.ifEmpty {
+                partnerFallback ?: context.getString(R.string.song_listened_fallback_friend)
+            },
             sentSong.songTitle.ifEmpty { context.getString(R.string.song_listened_fallback_song) },
             sentSong.id.hashCode(),
         )

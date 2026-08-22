@@ -7,6 +7,8 @@ package com.metrolist.music.services
 
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
+import com.metrolist.music.R
+import com.metrolist.music.social.PartnerResolver
 import com.metrolist.music.utils.SongNotificationHelper
 import timber.log.Timber
 
@@ -43,7 +45,12 @@ class SongListenedMessagingService : FirebaseMessagingService() {
      * Handle "song listened" notification.
      */
     private fun handleSongListenedNotification(data: Map<String, String>) {
-        val friendName = data[KEY_FRIEND_NAME] ?: "A friend"
+        // FCM payloads omit the sender name when it's empty; fall back to the cached partner
+        // name so the notification always names a person, never "A friend".
+        val friendName =
+            data[KEY_FRIEND_NAME]
+                ?: PartnerResolver.cachedPartnerNameBlocking(this)
+                ?: getString(R.string.song_listened_fallback_friend)
         val songTitle = data[KEY_SONG_TITLE] ?: "your song"
 
         Timber.d("SongListenedMessaging", "Song listened notification: $friendName listened to $songTitle")

@@ -29,6 +29,7 @@ class SongListenedRealTimeNotifier @Inject constructor(
     private val songSharingRepository: SongSharingRepository,
     private val auth: FirebaseAuth,
     private val notificationManager: SongListenedNotificationManager,
+    private val partnerResolver: PartnerResolver,
 ) {
     private var listenerJob: Job? = null
     private var currentUserId: String? = null
@@ -84,9 +85,14 @@ class SongListenedRealTimeNotifier @Inject constructor(
                                 song.listenedAt != null && song.listenedAt > oneDayAgo
                             }
 
-                        // Show notification for each recent song
+                        // Show notification for each recent song. The partner name doubles as a
+                        // personalized fallback when the sender's username field is empty.
                         recentSongs.forEach { sentSong ->
-                            SongNotificationHelper.showNotification(context, sentSong)
+                            SongNotificationHelper.showNotification(
+                                context,
+                                sentSong,
+                                partnerFallback = partnerResolver.identity.value.partnerName,
+                            )
                             // Mark as notified
                             songSharingRepository.markNotificationSent(sentSong.id)
                         }

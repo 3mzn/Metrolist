@@ -5,12 +5,15 @@
 
 package com.metrolist.music.social
 
+import android.content.Context
+import com.metrolist.music.R
 import com.metrolist.music.db.MusicDatabase
 import com.metrolist.music.db.entities.PlaylistEntity
 import com.metrolist.music.db.entities.PlaylistSongMap
 import com.metrolist.music.models.MediaMetadata
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
@@ -27,31 +30,50 @@ class SongSharingRepository @Inject constructor(
     private val firestore: FirebaseFirestore,
     private val auth: FirebaseAuth,
     private val database: MusicDatabase,
+    @ApplicationContext private val context: Context,
+    private val partnerResolver: PartnerResolver,
 ) {
     private val sentSongsCollection get() = firestore.collection("sentSongs")
     private val TAG = "SongSharingRepository"
 
     /**
-     * Initialize "To Listen" playlist if it doesn't exist.
+     * Create the shared-songs playlist if it doesn't exist, and keep its label directional:
+     * "From aswini" on eman's device, "From eman" on aswini's. Idempotent — runs at every app
+     * start, so both fresh installs and pre-existing "To Listen" rows converge.
      */
-    suspend fun initializeToListenPlaylist() = withContext(Dispatchers.IO) {
-        // playlistBlocking and query both hit Room synchronously, and the caller is a viewModelScope
-        // coroutine on the main dispatcher, so this has to be confined to IO or Room rejects it.
+    suspend fun initializeToListenPlaylist() {
+        val desiredName =
+            partnerResolver.identity.value.partnerName
+                ?.let { context.getString(R.string.from_partner_format, it) }
+
         val existingPlaylist = database.playlistBlocking(PlaylistEntity.TO_LISTEN_PLAYLIST_ID)
 
-        if (existingPlaylist == null) {
-            Timber.tag(TAG).d("Creating 'To Listen' playlist")
-            val toListenPlaylist =
-                PlaylistEntity(
-                    id = PlaylistEntity.TO_LISTEN_PLAYLIST_ID,
-                    name = "To Listen",
-                    browseId = null,
-                    isEditable = false, // Users cannot manually edit this playlist
-                    bookmarkedAt = LocalDateTime.now(),
-                    isLocal = true,
+        when {
+            existingPlaylist == null -> {
+                // Logged out or identity unresolved yet; next launch retries.
+                desiredName ?: return
+                Timber.tag(TAG).d("Creating shared-songs playlist '$desiredName'")
+                val toListenPlaylist =
+                    PlaylistEntity(
+                        id = PlaylistEntity.TO_LISTEN_PLAYLIST_ID,
+                        name = desiredName,
+                        browseId = null,
+                        isEditable = false, // Users cannot manually edit this playlist
+                        bookmarkedAt = LocalDateTime.now(),
+                        isLocal = true,
+                    )
+                database.query {
+                    insert(toListenPlaylist)
+                }
+            }
+
+            existingPlaylist.playlist.name != desiredName && desiredName != null -> {
+                Timber.tag(TAG).d(
+                    "Renaming shared-songs playlist '${existingPlaylist.playlist.name}' -> '$desiredName'",
                 )
-            database.query {
-                insert(toListenPlaylist)
+                database.query {
+                    update(existingPlaylist.playlist.copy(name = desiredName))
+                }
             }
         }
     }
