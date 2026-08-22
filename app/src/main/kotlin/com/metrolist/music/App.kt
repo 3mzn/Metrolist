@@ -141,7 +141,7 @@ class App :
 
         // CrashActivity runs in a separate process. Starting the full app there can make that
         // process claim WebView's data directory and crash the next main-process WebView.
-        if (!isMainProcess()) return
+        if (!isMainProcess) return
 
         // Install crash handler first
         CrashHandler.install(this)
@@ -468,23 +468,5 @@ class App :
             }
             Timber.d("forgetAccount: Logout process complete")
         }
-    }
-
-    private fun isMainProcess(): Boolean {
-        val processName =
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                Application.getProcessName()
-            } else {
-                runCatching {
-                    File("/proc/self/cmdline").readText().substringBefore('\u0000')
-                }.getOrNull()?.takeIf(String::isNotBlank)
-                    ?: run {
-                        val activityManager = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-                        activityManager.runningAppProcesses
-                            ?.firstOrNull { it.pid == Process.myPid() }
-                            ?.processName
-                    }
-            }
-        return processName == packageName
     }
 }
