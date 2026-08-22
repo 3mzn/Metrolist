@@ -32,6 +32,7 @@ import timber.log.Timber
 interface SocialRepositoryEntryPoint {
     fun socialRepository(): SocialRepository
     fun songSharingRepository(): SongSharingRepository
+    fun partnerResolver(): com.metrolist.music.social.PartnerResolver
 }
 
 /**

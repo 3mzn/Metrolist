@@ -27,6 +27,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -38,11 +39,18 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import com.metrolist.music.R
+import com.metrolist.music.ui.dialog.SocialRepositoryEntryPoint
 import com.metrolist.music.viewmodels.AuthViewModel
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.runtime.remember
+import dagger.hilt.android.EntryPointAccessors
 
 /**
  * Claims a username for a freshly registered account. Friends discover each other by username, so
  * [SocialScreen] keeps showing this until one is set.
+ *
+ * The field arrives prefilled via the PartnerResolver email heuristic: an account whose email
+ * contains "eman" is eman's, anything else is aswini's — so the right name is already waiting.
  */
 @Composable
 fun ProfileSetupScreen(
@@ -50,7 +58,14 @@ fun ProfileSetupScreen(
     authViewModel: AuthViewModel = hiltViewModel(),
     modifier: Modifier = Modifier,
 ) {
-    var username by rememberSaveable { mutableStateOf("") }
+    val context = LocalContext.current
+    val suggestedName = remember {
+        EntryPointAccessors.fromApplication(
+            context.applicationContext,
+            SocialRepositoryEntryPoint::class.java,
+        ).partnerResolver().suggestedMyName().orEmpty()
+    }
+    var username by rememberSaveable { mutableStateOf(suggestedName) }
     var isSaving by rememberSaveable { mutableStateOf(false) }
     var error by rememberSaveable { mutableStateOf<String?>(null) }
 
