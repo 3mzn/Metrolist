@@ -8,11 +8,11 @@ Metrolist is a 3rd party YouTube Music client written in Kotlin. It follows mate
 2. Commit names should be clear and follow the format: `type(scope): short description`. For example: `feat(ui): add dark mode support`. Including the scope is optional.
 3. All string edits should be made to the `Metrolist/app/src/main/res/values/metrolist_strings.xml` file, NOT `Metrolist/app/src/main/res/values/strings.xml`. Do not touch other `strings.xml` or `metrolist_strings.xml` files in the project. ONLY edit the default (English) `metrolist_strings.xml` file, DO NOT EDIT OTHER LANGUAGES.
 4. You are to follow best practices for Kotlin and Android development.
-5. DO NOT EDIT THE APP'S DATABASE SCHEMA.
+5. DO NOT EDIT THE APP'S DATABASE SCHEMA UNLESS NECESSARY. 
 
 ## AI-only guidelines
 
-1. You are strictly prohibited from making ANY changes to the readme/markdown files, including this one. This is to ensure that the documentation remains accurate and consistent for all contributors.
+1. You are strictly prohibited from making ANY changes to the readme/markdown files, including this one. This is to ensure that the documentation remains accurate and consistent for all contributors. But you are allowed to edit markdown files if they are SPEC FILES NEEDED TO IMPLEMENT A FEATURE. 
 2. Unless explicitly requested, you are not allowed to commit, push, or merge any changes to any branch. If you are explicitly requested and authorized to commit/push/merge, you have the right to do so; the responsibility then lies with the author who requested it.
    - You should absolutely NOT use any commands that would modify the git history, do force pushes (except for rebases on your own branch), or delete branches without explicit instructions from a human.
 3. Always follow the guidelines and instructions provided by human contributors.

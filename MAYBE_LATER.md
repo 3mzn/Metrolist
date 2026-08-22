@@ -3,7 +3,8 @@
 Couple-oriented feature ideas for our private modded fork.
 Two users only: **eman** (sender) & **aswini** (receiver). All personalization uses full lowercase names.
 
-Build order: 13 → 3 → 4 → 5 → 6 → 7 → 8
+Build order: 13 → 3 → 5 → 6 → 4 → 7 → 8
+(#6 hard-depends on #5; #4 soft-depends on #5 for presence-based skip conditions)
 
 ---
 
