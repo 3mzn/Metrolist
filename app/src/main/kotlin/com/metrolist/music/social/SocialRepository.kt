@@ -10,6 +10,7 @@ import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.tasks.await
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -236,5 +237,37 @@ class SocialRepository @Inject constructor(
             .addOnFailureListener { e ->
                 onResult(false, e.message ?: "Failed to remove friend")
             }
+    }
+
+    /**
+     * Wipe every cloud document this account owns, as part of account deletion.
+     *
+     * Removes the profile doc, both friendship edges and all friend requests involving the user.
+     * Sent songs are deliberately left orphaned: their rules forbid client deletes, and in a
+     * two-person build the leftovers are invisible to everyone except the partner.
+     */
+    suspend fun wipeMyCloudData(uid: String) {
+        usersCollection.document(uid).delete().await()
+
+        friendsCollection
+            .whereArrayContains("members", uid)
+            .get()
+            .await()
+            .documents
+            .forEach { it.reference.delete().await() }
+
+        friendRequestsCollection
+            .whereEqualTo("fromUid", uid)
+            .get()
+            .await()
+            .documents
+            .forEach { it.reference.delete().await() }
+
+        friendRequestsCollection
+            .whereEqualTo("toUid", uid)
+            .get()
+            .await()
+            .documents
+            .forEach { it.reference.delete().await() }
     }
 }

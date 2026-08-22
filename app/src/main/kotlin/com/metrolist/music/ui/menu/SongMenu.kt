@@ -97,6 +97,7 @@ import com.metrolist.music.ui.component.NewActionGrid
 import com.metrolist.music.ui.component.SongListItem
 import com.metrolist.music.ui.component.TextFieldDialog
 import com.metrolist.music.ui.dialog.SendToFriendsHost
+import com.metrolist.music.ui.dialog.rememberPartnerIdentity
 import com.metrolist.music.ui.utils.ShowMediaInfo
 import com.metrolist.music.viewmodels.CachePlaylistViewModel
 import kotlinx.coroutines.Dispatchers
@@ -238,6 +239,8 @@ fun SongMenu(
     var showSendToFriendsDialog by rememberSaveable {
         mutableStateOf(false)
     }
+
+    val partnerIdentity = rememberPartnerIdentity()
 
     if (showSendToFriendsDialog) {
         SendToFriendsHost(
@@ -562,8 +565,9 @@ fun SongMenu(
                             onClick = { showChoosePlaylistDialog = true },
                         ),
                         // A local file has no YouTube id for the recipient to resolve, so there is
-                        // nothing worth offering to send.
-                        if (song.song.isLocal) {
+                        // nothing worth offering to send. Hidden entirely until the partner
+                        // identity resolves (i.e. logged in) so the label always has a name.
+                        if (song.song.isLocal || partnerIdentity.partnerName == null) {
                             null
                         } else {
                             NewAction(
@@ -575,7 +579,7 @@ fun SongMenu(
                                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
                                 },
-                                text = stringResource(R.string.send_to_friends),
+                                text = stringResource(R.string.send_to_friends, partnerIdentity.partnerName),
                                 onClick = { showSendToFriendsDialog = true },
                             )
                         },

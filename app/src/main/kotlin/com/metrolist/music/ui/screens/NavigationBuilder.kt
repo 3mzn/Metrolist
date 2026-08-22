@@ -114,14 +114,6 @@ fun NavGraphBuilder.navigationBuilder(
         SocialScreen(navController)
     }
 
-    composable(SOCIAL_USERS_ROUTE) {
-        UserListScreen(navController)
-    }
-
-    composable(SOCIAL_REQUESTS_ROUTE) {
-        FriendRequestsScreen(navController)
-    }
-
     composable(Screens.Import.route) {
         ImportScreen(navController)
     }

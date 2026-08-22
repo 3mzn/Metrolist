@@ -19,10 +19,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -31,34 +32,47 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.navigation.NavController
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.navigation.NavController
 import coil3.compose.AsyncImage
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.FirebaseAuthRecentLoginRequiredException
 import com.metrolist.music.LocalPlayerAwareWindowInsets
 import com.metrolist.music.R
 import com.metrolist.music.constants.AppBarHeight
-import com.metrolist.music.social.UserProfile
+import com.metrolist.music.ui.dialog.SocialRepositoryEntryPoint
+import com.metrolist.music.ui.dialog.rememberPartnerIdentity
 import com.metrolist.music.viewmodels.AuthViewModel
-import com.metrolist.music.viewmodels.SocialViewModel
+import dagger.hilt.android.EntryPointAccessors
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
+import android.widget.Toast
 
 /**
  * Bottom-nav destination for the social features. Routes between sign-in, one-time username setup,
- * and the friends dashboard depending on how far the Firebase session has progressed.
+ * and a minimal account dashboard (profile card, logout, delete account).
  *
- * The top app bar comes from [com.metrolist.music.MainActivity] like the other main screens, so this
- * only draws content.
+ * The two-person build has no friend discovery: songs always go to the partner, so the friends
+ * list and request flows are gone. The top app bar comes from [com.metrolist.music.MainActivity]
+ * like the other main screens, so this only draws content.
  */
 @Composable
 fun SocialScreen(
@@ -81,7 +95,6 @@ fun SocialScreen(
 
         else ->
             SocialDashboard(
-                navController = navController,
                 displayName = profile?.username.orEmpty(),
                 email = profile?.email ?: user?.email.orEmpty(),
                 photoUrl = profile?.photoUrl,
@@ -92,19 +105,16 @@ fun SocialScreen(
 
 @Composable
 private fun SocialDashboard(
-    navController: NavController,
     displayName: String,
     email: String,
     photoUrl: String?,
     onLogout: () -> Unit,
-    socialViewModel: SocialViewModel = hiltViewModel(),
 ) {
-    val relationships by socialViewModel.relationships.collectAsStateWithLifecycle()
-    val users by socialViewModel.users.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    var showDeleteConfirm by remember { mutableStateOf(false) }
+    var isDeleting by remember { mutableStateOf(false) }
     val windowInsets = LocalPlayerAwareWindowInsets.current
-
-    val friends = users.filter { it.uid in relationships.friends }
-    val pendingRequestCount = relationships.incomingRequests.values.count { it.status == "pending" }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -125,73 +135,89 @@ private fun SocialDashboard(
             )
         }
 
-        item("actions") {
-            Row(
+        item("danger_zone") {
+            OutlinedButton(
+                onClick = { showDeleteConfirm = true },
+                enabled = !isDeleting,
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                colors = ButtonDefaults.outlinedButtonColors(
+                    contentColor = MaterialTheme.colorScheme.error,
+                ),
             ) {
-                Button(
-                    onClick = { navController.navigate(SOCIAL_USERS_ROUTE) },
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Icon(
-                        painter = painterResource(R.drawable.group_add),
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text(stringResource(R.string.social_add_friend))
-                }
-
-                OutlinedButton(
-                    onClick = { navController.navigate(SOCIAL_REQUESTS_ROUTE) },
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Text(
-                        text = if (pendingRequestCount > 0) {
-                            stringResource(R.string.social_requests_with_count, pendingRequestCount)
-                        } else {
-                            stringResource(R.string.social_requests)
-                        },
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-            }
-        }
-
-        item("friends_header") {
-            Text(
-                text = "${stringResource(R.string.social_friends)} (${friends.size})",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary,
-            )
-        }
-
-        if (friends.isEmpty()) {
-            item("friends_empty") {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 32.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        text = stringResource(R.string.social_no_friends_yet),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        } else {
-            items(friends, key = { it.uid }) { friend ->
-                FriendRow(
-                    friend = friend,
-                    onRemove = { socialViewModel.removeFriend(friend.uid) },
+                Icon(
+                    painter = painterResource(R.drawable.delete),
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
                 )
+                Spacer(Modifier.width(8.dp))
+                Text(stringResource(R.string.delete_account))
             }
         }
+    }
+
+    if (showDeleteConfirm) {
+        val partnerName = rememberPartnerIdentity().partnerName ?: "your partner"
+
+        AlertDialog(
+            onDismissRequest = { if (!isDeleting) showDeleteConfirm = false },
+            title = {
+                Text(stringResource(R.string.delete_account_confirm_title))
+            },
+            text = {
+                Text(
+                    stringResource(
+                        R.string.delete_account_confirm_message,
+                        partnerName,
+                    ),
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val firebaseUser = FirebaseAuth.getInstance().currentUser ?: return@Button
+                        isDeleting = true
+                        coroutineScope.launch {
+                            try {
+                                EntryPointAccessors.fromApplication(
+                                    context.applicationContext,
+                                    SocialRepositoryEntryPoint::class.java,
+                                ).socialRepository().wipeMyCloudData(firebaseUser.uid)
+                                firebaseUser.delete().await()
+                                // Auth listeners fire everywhere; SocialScreen swaps to the
+                                // login screen on its own. Nothing to navigate manually.
+                            } catch (e: FirebaseAuthRecentLoginRequiredException) {
+                                Toast.makeText(
+                                    context,
+                                    context.getString(R.string.delete_account_requires_recent_login),
+                                    Toast.LENGTH_LONG,
+                                ).show()
+                            } catch (e: Exception) {
+                                Toast.makeText(
+                                    context,
+                                    context.getString(R.string.delete_account_failed),
+                                    Toast.LENGTH_SHORT,
+                                ).show()
+                            } finally {
+                                isDeleting = false
+                                showDeleteConfirm = false
+                            }
+                        }
+                    },
+                    enabled = !isDeleting,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError,
+                    ),
+                ) {
+                    Text(stringResource(R.string.delete))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteConfirm = false }) {
+                    Text(stringResource(android.R.string.cancel))
+                }
+            },
+        )
     }
 }
 
@@ -253,52 +279,6 @@ private fun ProfileCard(
     }
 }
 
-@Composable
-private fun FriendRow(
-    friend: UserProfile,
-    onRemove: () -> Unit,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        SocialAvatar(
-            name = friend.username.ifBlank { friend.email },
-            photoUrl = friend.photoUrl,
-        )
-
-        Spacer(Modifier.width(12.dp))
-
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = friend.username.ifBlank { friend.email },
-                style = MaterialTheme.typography.titleMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            if (friend.username.isNotBlank() && friend.email.isNotBlank()) {
-                Text(
-                    text = friend.email,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-        }
-
-        IconButton(onClick = onRemove) {
-            Icon(
-                painter = painterResource(R.drawable.person_remove),
-                contentDescription = stringResource(R.string.social_remove_friend),
-                tint = MaterialTheme.colorScheme.error,
-            )
-        }
-    }
-}
-
 /**
  * Profile picture, falling back to the first letter of [name] the way the Listen Together user
  * avatars do.
@@ -338,8 +318,3 @@ internal fun SocialAvatar(
         }
     }
 }
-
-// Namespaced under the tab's own route so the navigation rail keeps the Social tab highlighted while
-// a sub-screen is open — see `isRouteSelected` in AppNavigation.kt.
-internal const val SOCIAL_USERS_ROUTE = "social/users"
-internal const val SOCIAL_REQUESTS_ROUTE = "social/requests"

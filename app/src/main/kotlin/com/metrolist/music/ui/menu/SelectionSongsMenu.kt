@@ -65,6 +65,7 @@ import com.metrolist.music.ui.component.Material3MenuItemData
 import com.metrolist.music.ui.component.NewAction
 import com.metrolist.music.ui.component.NewActionGrid
 import com.metrolist.music.ui.dialog.SendToFriendsHost
+import com.metrolist.music.ui.dialog.rememberPartnerIdentity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -140,6 +141,8 @@ fun SelectionSongMenu(
     var showSendToFriendsDialog by rememberSaveable {
         mutableStateOf(false)
     }
+
+    val partnerIdentity = rememberPartnerIdentity()
 
     AddToPlaylistDialog(
         isVisible = showChoosePlaylistDialog,
@@ -388,20 +391,26 @@ fun SelectionSongMenu(
                                 showChoosePlaylistDialog = true
                             },
                         ),
-                        NewAction(
-                            icon = {
-                                Icon(
-                                    painter = painterResource(R.drawable.share),
-                                    contentDescription = null,
-                                    modifier = Modifier.size(28.dp),
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            },
-                            text = stringResource(R.string.send_to_friends),
-                            onClick = {
-                                showSendToFriendsDialog = true
-                            },
-                        ),
+                        // Hidden until the partner identity resolves (i.e. logged in) so the
+                        // label always carries a real name.
+                        if (partnerIdentity.partnerName != null) {
+                            NewAction(
+                                icon = {
+                                    Icon(
+                                        painter = painterResource(R.drawable.share),
+                                        contentDescription = null,
+                                        modifier = Modifier.size(28.dp),
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                },
+                                text = stringResource(R.string.send_to_friends, partnerIdentity.partnerName),
+                                onClick = {
+                                    showSendToFriendsDialog = true
+                                },
+                            )
+                        } else {
+                            null
+                        },
                     ),
                 modifier = Modifier.padding(horizontal = 4.dp, vertical = 16.dp),
             )

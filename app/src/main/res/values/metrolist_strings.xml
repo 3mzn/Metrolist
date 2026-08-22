@@ -987,23 +987,23 @@
     <string name="song_listened_fallback_friend">A friend</string>
     <string name="song_listened_fallback_song">a song you sent</string>
 
-    <string name="send_to_friends">Send to friends</string>
-    <string name="no_friends_to_send">No friends yet. Add friends to send them songs.</string>
-    <string name="select_friends_to_send">Select friends to send this to</string>
+    <string name="send_to_friends">Send to %1$s</string>
+    <string name="no_friends_to_send">%1$s isn\'t set up yet</string>
     <string name="send">Send</string>
-    <string name="selected">Selected</string>
-    <string name="not_selected">Not selected</string>
     <plurals name="send_n_songs_to_friends">
-        <item quantity="one">Send %d song to friends</item>
-        <item quantity="other">Send %d songs to friends</item>
+        <item quantity="one">Send %1$d song to %2$s</item>
+        <item quantity="other">Send %1$d songs to %2$s</item>
     </plurals>
-    <plurals name="send_to_n_friends">
-        <item quantity="one">Send to %d friend</item>
-        <item quantity="other">Send to %d friends</item>
-    </plurals>
-    <string name="sent_n_songs_to_friends">Sent %1$d songs to %2$d friends</string>
+    <string name="sent_n_songs_to_friends">Sent %1$d songs to %2$s</string>
     <string name="send_to_friends_failed">Couldn\'t send. Check your connection and try again.</string>
     <string name="local_songs_cannot_be_sent">Local files can\'t be sent to friends.</string>
+
+    <string name="from_partner_format">From %1$s</string>
+    <string name="delete_account">Delete account</string>
+    <string name="delete_account_confirm_title">Delete your account?</string>
+    <string name="delete_account_confirm_message">Your profile, friendships and pending requests will be removed. Songs already delivered stay on %1$s\'s device.</string>
+    <string name="delete_account_requires_recent_login">For safety, log out and sign back in, then retry deletion.</string>
+    <string name="delete_account_failed">Couldn\'t delete the account. Try again.</string>
 
     <!-- Social: account -->
     <string name="social">Social</string>
