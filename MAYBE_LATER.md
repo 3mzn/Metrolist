@@ -6,7 +6,7 @@ Two users only: **eman** (sender) & **aswini** (receiver). All personalization u
 Build order: 13 → 3 → 5 → 6 → 4 → 7 → 8
 (#6 hard-depends on #5; #4 soft-depends on #5 for presence-based skip conditions)
 
-Progress: 13 ✅ · 3 ✅ · 5+6 ✅ (shipped as one Partner widget feature) · next: **W-SCALE** → 4 → 7 → 8
+Progress: 13 ✅ · 3 ✅ · 5+6 ✅ (shipped as one Partner widget feature) · next: **W-SCALE** → 4 → 7 → 8 → **9 VIZ**
 
 ---
 
@@ -26,6 +26,25 @@ proportionally instead of truncating with "…". Chosen over scrolling-marquee +
 
 Where: `PartnerWidgetManager.composeUnifiedWidget` (live-text block only; idle/compact untouched).
 Zero battery cost, works identically on every launcher.
+
+---
+
+## 9. VIZ — Native visualizer for downloaded songs (LAST in build order)
+
+Real frequency-band visualizer for **downloaded songs only**, built from the local audio file
+instead of live-audio capture — no RECORD_AUDIO permission, works fully offline.
+
+1. On download completion: background job decodes the audio file (MediaCodec) → PCM → FFT over
+   ~50ms windows → compact per-song frequency-band array cached as a sidecar file next to the
+   download (~50–200KB; follows the existing download-sidecar pattern, avoids DB schema change)
+2. Playback: `player.currentPosition` → index into cached bands → draw bars. Pure array lookup
+   + Canvas — trivially cheap at 60fps
+3. Seeks just work — jump anywhere and the bars match that exact moment instantly
+4. Deterministic: same song always renders identically; sample-accurate sync beats the live-tap API
+5. Streamed songs: fall back to simulated bars (or none) — no local file exists to analyze
+6. Effort ≈ 1 day: decode pipeline ~200 lines, textbook FFT ~50 lines, renderer with a few styles
+
+Why LAST: beautiful polish, but everything above it ships more value per hour.
 
 ---
 
