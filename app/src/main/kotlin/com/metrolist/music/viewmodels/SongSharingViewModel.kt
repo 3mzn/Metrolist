@@ -89,6 +89,11 @@ class SongSharingViewModel @Inject constructor(
             }
         }
 
+        // Housekeeping: keep Firestore lean by pruning completed documents older than 30 days.
+        viewModelScope.launch {
+            songSharingRepository.pruneCompletedSentSongs()
+        }
+
         // The playlist is created/renamed lazily because the partner name may be unknown at app
         // start (logged out, email heuristic unavailable, username authority still loading).
         // Re-run initialization every time the identity resolves or changes: fresh accounts get

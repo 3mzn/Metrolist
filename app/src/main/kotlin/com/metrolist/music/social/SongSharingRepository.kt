@@ -23,6 +23,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.time.LocalDateTime
+import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -384,6 +385,36 @@ class SongSharingRepository @Inject constructor(
             throw e // Re-throw to show error in UI
         }
     }
+
+    /**
+     * Delete this user's completed sent-song documents older than [olderThanDays].
+     *
+     * Housekeeping that keeps the incoming-songs snapshot bounded: without pruning, every
+     * delivered song would be re-downloaded on each app open forever. Completed documents have
+     * served their purpose (the sender was already notified), so removal is safe.
+     */
+    suspend fun pruneCompletedSentSongs(olderThanDays: Long = 30) =
+        withContext(Dispatchers.IO) {
+            try {
+                val uid = auth.currentUser?.uid ?: return@withContext
+                val cutoff = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(olderThanDays)
+
+                val stale = sentSongsCollection
+                    .whereEqualTo("toUid", uid)
+                    .whereLessThan("completedAt", cutoff)
+                    .get()
+                    .await()
+
+                if (stale.isEmpty) return@withContext
+
+                val batch = firestore.batch()
+                stale.documents.forEach { batch.delete(it.reference) }
+                batch.commit().await()
+                Timber.tag(TAG).d("Pruned ${stale.size()} completed sent-song documents")
+            } catch (e: Exception) {
+                Timber.tag(TAG).w(e, "Pruning completed sent-songs failed (index may still be building)")
+            }
+        }
 
     /**
      * Broadcast what this device is currently playing, for the partner's widget.

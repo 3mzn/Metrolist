@@ -75,7 +75,9 @@ service cloud.firestore {
         && request.resource.data.toUid == resource.data.toUid
         && request.resource.data.songId == resource.data.songId;
 
-      allow delete: if false;
+      // Recipient may prune their own completed copies (housekeeping keeps reads bounded).
+      allow delete: if request.auth != null
+        && request.auth.uid == resource.data.toUid;
     }
   }
 }
