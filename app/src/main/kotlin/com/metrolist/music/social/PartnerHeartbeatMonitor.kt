@@ -71,7 +71,17 @@ class PartnerHeartbeatMonitor @Inject constructor(
                     .document(partnerUid)
                     .addSnapshotListener { snapshot, error ->
                         if (error != null) {
-                            Timber.tag(TAG).e(error, "status listener failed")
+                            // Permission-denied (freshly deployed rules, revoked access…) cancels
+                            // the registration PERMANENTLY. Re-attach after a delay so a rules fix
+                            // propagates without needing an app restart.
+                            Timber.tag(TAG).e(error, "status listener failed — retrying in 60s")
+                            statusRegistration?.remove()
+                            statusRegistration = null
+                            _attachedTo = null
+                            scope.launch {
+                                kotlinx.coroutines.delay(60_000)
+                                start()
+                            }
                             return@addSnapshotListener
                         }
                         val doc = snapshot ?: return@addSnapshotListener
