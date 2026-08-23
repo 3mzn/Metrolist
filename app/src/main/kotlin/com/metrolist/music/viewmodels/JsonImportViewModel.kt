@@ -19,8 +19,6 @@ import com.metrolist.music.sync.JsonTrack
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -59,40 +57,6 @@ class JsonImportViewModel @Inject constructor(
             ignoreUnknownKeys = true
             isLenient = true
         }
-
-    // ---------------------------------------------------------------- concurrency machinery
-
-    /** Upper bound on simultaneous YouTube Music searches. Kept modest to stay a polite client. */
-    private companion object {
-        const val MAX_CONCURRENT_SEARCHES = 5
-        const val MATCH_RETRY_DELAY_MS = 750L
-        const val MAX_ADAPTIVE_DELAY_MS = 4_000L
-        const val INSERT_CHUNK_SIZE = 25
-    }
-
-    /** Next track index to be claimed by a worker. */
-    private val nextIndex = java.util.concurrent.atomic.AtomicInteger(0)
-
-    /**
-     * Adaptive pause applied before each search. Rises when the backend pushes back (exceptions)
-     * and decays after clean rounds, degrading gracefully toward sequential pacing instead of
-     * tripping YouTube's bot detection.
-     */
-    private val adaptiveDelayMs = java.util.concurrent.atomic.AtomicLong(0)
-
-    /** Results slot per track index — keeps output ordered regardless of completion order. */
-    private lateinit var matchResults: Array<SongItem?>
-
-    /** In-run memoization: identical search queries inside one file share a single lookup. */
-    private val searchCache =
-        java.util.concurrent.ConcurrentHashMap<String, SongItem?>()
-
-    /** Thread-safe failure collection, re-sorted by original position when the import ends. */
-    private val failedQueue =
-        java.util.concurrent.ConcurrentLinkedQueue<Pair<Int, ImportResult.Failed>>()
-
-    /** Tracks claimed/completed work for progress reporting. */
-    private val processedCount = java.util.concurrent.atomic.AtomicInteger(0)
 
     /**
      * Import playlist from JSON file.
@@ -190,12 +154,7 @@ class JsonImportViewModel @Inject constructor(
         }
 
     /**
-     * Import tracks: bounded-concurrent YouTube matching first (results land in JSON order via
-     * indexed slots), then a single batched Room commit that inserts library rows, appends to the
-     * playlist and skips duplicates — one disk sync per chunk instead of one per track.
-     *
-     * The adaptive delay rises whenever the backend pushes back and decays on clean rounds,
-     * degrading gracefully toward sequential pacing instead of tripping bot detection.
+     * Import tracks and add to playlist with retry logic, duplicate detection, and error handling.
      */
     private suspend fun performJsonImport(
         tracks: List<JsonTrack>,
@@ -204,124 +163,81 @@ class JsonImportViewModel @Inject constructor(
     ) {
         withContext(Dispatchers.IO) {
             _statusText.value = "Matching songs with YouTube Music..."
-            val total = tracks.size
-            matchResults = arrayOfNulls(total)
-            nextIndex.set(0)
-            adaptiveDelayMs.set(0)
-            failedQueue.clear()
-            searchCache.clear()
-
-            val workerCount = minOf(MAX_CONCURRENT_SEARCHES, total)
-
-            // ---- Phase A: bounded-concurrent matching ----
-            repeat(workerCount) {
-                launch {
-                    while (true) {
-                        currentCoroutineContext().ensureActive()
-
-                        val index = nextIndex.getAndIncrement()
-                        if (index >= total) return@launch
-                        val track = tracks[index]
-
-                        try {
-                            val query = track.toSearchQuery()
-
-                            // Adaptive pause before hitting the network.
-                            val pauseMs = adaptiveDelayMs.get()
-                            if (pauseMs > 0) {
-                                kotlinx.coroutines.delay(kotlin.random.Random.nextLong(0, pauseMs))
-                                currentCoroutineContext().ensureActive()
-                            }
-
-                            // In-run memoization: identical queries share one lookup.
-                            // (Only successful matches are cached — ConcurrentHashMap
-                            // cannot hold null values.)
-                            val queryCached = searchCache.containsKey(query)
-                            val matched =
-                                if (queryCached) {
-                                    searchCache[query]
-                                } else {
-                                    val fresh = matchJsonTrackWithRetry(track)
-                                    if (fresh != null) searchCache[query] = fresh
-                                    fresh
-                                }
-
-                            if (matched != null) {
-                                matchResults[index] = matched
-                            } else {
-                                failedQueue.add(
-                                    index to
-                                        ImportResult.Failed(
-                                            track,
-                                            "No match found on YouTube Music after retries",
-                                        ),
-                                )
-                            }
-                        } catch (e: kotlinx.coroutines.CancellationException) {
-                            throw e
-                        } catch (e: Exception) {
-                            adaptiveDelayMs.updateAndGet { current ->
-                                minOf(current + 500, MAX_ADAPTIVE_DELAY_MS)
-                            }
-                            failedQueue.add(
-                                index to ImportResult.Failed(track, "Search error: ${e.message}"),
-                            )
-                        } finally {
-                            val processed = processedCount.incrementAndGet()
-                            _progress.value = processed.toFloat() / total * 0.8f
-                            _statusText.value = "Matching [${processed + 1}/$total]: ${track.displayName()}"
-                        }
-                    }
-                }
-            }
-
-            // ---- Phase B: batched insertion in original JSON order ----
-            val matchedEntries =
-                buildList {
-                    for (index in 0 until total) {
-                        matchResults[index]?.let { song -> add(index to song) }
-                    }
-                }
-
             var songsImported = 0
             var songsSkipped = 0
+            val totalSongs = tracks.size
+            val failed = mutableListOf<ImportResult.Failed>()
 
-            val playlist = database.playlistBlocking(playlistId)
-            if (playlist == null) {
-                _failedImports.value = failedQueue.toList().sortedBy { it.first }.map { it.second }
-                _syncState.value = SyncState.Error("Playlist vanished during import")
-                return@withContext
-            }
+            tracks.forEachIndexed { index, track ->
+                // Check for cancellation
+                if (!currentImportJob?.isActive!!) {
+                    return@withContext
+                }
 
-            database.transaction {
-                matchedEntries.forEachIndexed { position, (_, songItem) ->
-                    if (database.checkInPlaylist(playlistId, songItem.id) > 0) {
-                        songsSkipped++
-                    } else {
-                        if (database.getSongByIdBlocking(songItem.id) == null) {
-                            database.insert(songItem.toMediaMetadata())
+                try {
+                    _progress.value = index.toFloat() / totalSongs
+                    _statusText.value = "Matching [${index + 1}/$totalSongs]: ${track.displayName()}"
+
+                    // Match with retry logic
+                    val matchedSong = matchJsonTrackWithRetry(track, maxAttempts = 2)
+
+                    if (matchedSong != null) {
+                        // Check for duplicates
+                        val isDuplicate = database.checkInPlaylist(playlistId, matchedSong.id) > 0
+
+                        if (isDuplicate) {
+                            songsSkipped++
+                            _statusText.value = "Skipped duplicate [${index + 1}/$totalSongs]: ${track.displayName()}"
+                        } else {
+                            val metadata = matchedSong.toMediaMetadata()
+
+                            // Insert song into library if not exists
+                            val existing = database.song(matchedSong.id).firstOrNull()
+                            if (existing == null) {
+                                try {
+                                    database.insert(mediaMetadata = metadata)
+                                } catch (e: Exception) {
+                                    failed.add(ImportResult.Failed(track, "Database error: ${e.message}"))
+                                    return@forEachIndexed
+                                }
+                            }
+
+                            // Add to playlist
+                            try {
+                                val playlist = database.playlist(playlistId).first()
+                                if (playlist != null) {
+                                    database.query {
+                                        addSongToPlaylist(playlist, listOf(matchedSong.id))
+                                    }
+                                    songsImported++
+                                    _syncState.value =
+                                        SyncState.Syncing(songsImported, totalSongs, matchedSong.title)
+                                } else {
+                                    failed.add(ImportResult.Failed(track, "Playlist not found"))
+                                }
+                            } catch (e: Exception) {
+                                failed.add(ImportResult.Failed(track, "Failed to add to playlist: ${e.message}"))
+                            }
                         }
-                        database.addSongToPlaylist(playlist, listOf(songItem.id))
-                        songsImported++
+                    } else {
+                        failed.add(ImportResult.Failed(track, "No match found on YouTube Music after retries"))
                     }
-
-                    if ((position + 1) % INSERT_CHUNK_SIZE == 0) {
-                        _progress.value = 0.8f + 0.2f * ((position + 1).toFloat() / matchedEntries.size)
-                        _statusText.value = "Adding [${position + 1}/${matchedEntries.size}]..."
-                    }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e // Re-throw cancellation
+                } catch (e: Exception) {
+                    failed.add(ImportResult.Failed(track, "Unexpected error: ${e.message}"))
+                    _statusText.value = "Error processing ${track.displayName()}: ${e.message}"
                 }
             }
 
-            val failed =
-                failedQueue.toList().sortedBy { it.first }.map { it.second }
             _failedImports.value = failed
-            _progress.value = 1f
             _syncState.value = SyncState.Success
 
+            // Build status message
             val parts = mutableListOf<String>()
             if (songsImported > 0) parts.add("Added $songsImported songs")
             if (songsSkipped > 0) parts.add("skipped $songsSkipped duplicates")
-            if (failed.isNotEmpty()) parts.add("${failed.size} failed")
+            if (failed.size > 0) parts.add("${failed.size} failed")
 
             _statusText.value = "Import complete! ${parts.joinToString(", ")} to \"$playlistName\"."
         }
@@ -329,32 +245,29 @@ class JsonImportViewModel @Inject constructor(
 
     /**
      * Match a JSON track with YouTube Music with retry logic.
-     *
-     * Exceptions propagate to the caller (feeding the adaptive delay and failure list) — only a
-     * clean "no results" response returns null, so throttling never masquerades as a bad match.
      */
     private suspend fun matchJsonTrackWithRetry(track: JsonTrack, maxAttempts: Int = 2): SongItem? {
-        var lastError: Exception? = null
         repeat(maxAttempts) { attempt ->
             try {
                 val result = matchJsonTrack(track)
-                // Clean round: let the adaptive pause decay.
-                adaptiveDelayMs.updateAndGet { current -> current / 2 }
-                return result
+                if (result != null) {
+                    return result
+                }
+                // If no result but no error, wait before retry
+                if (attempt < maxAttempts - 1) {
+                    kotlinx.coroutines.delay(500)
+                }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e // Don't retry on cancellation
             } catch (e: Exception) {
-                lastError = e
-                // Network or other error - push back before retrying if attempts remain
-                adaptiveDelayMs.updateAndGet { current ->
-                    minOf(current + 500, MAX_ADAPTIVE_DELAY_MS)
+                // Network or other error - retry if attempts remain
+                if (attempt == maxAttempts - 1) {
+                    return null
                 }
-                if (attempt < maxAttempts - 1) {
-                    kotlinx.coroutines.delay(MATCH_RETRY_DELAY_MS)
-                }
+                kotlinx.coroutines.delay(500)
             }
         }
-        throw lastError ?: Exception("Search failed")
+        return null
     }
 
     /**
