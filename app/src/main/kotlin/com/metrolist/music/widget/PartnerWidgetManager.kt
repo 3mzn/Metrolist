@@ -13,6 +13,7 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapShader
 import android.graphics.Canvas
+import android.graphics.LinearGradient
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
@@ -66,7 +67,7 @@ data class PartnerTrackStatus(
  * Renders and refreshes the Partner home-screen widget.
  *
  * Layout mirrors a chat-bubble style card: the partner's cover art on the left, and on the right
- * a panel whose background color is extracted from that same artwork via androidx Palette â€” the
+ * a panel whose background color is extracted from that same artwork via androidx Palette ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â the
  * same extraction family Metrolist uses for its dynamic player theme. Title and artist lines
  * marquee-scroll when long; tapping the widget plays the partner's current song.
  */
@@ -136,7 +137,7 @@ class PartnerWidgetManager @Inject constructor(
         }
     }
 
-    /** Below ~2 cells wide there is no room for text â€” fall back to cover-only rendering. */
+    /** Below ~2 cells wide there is no room for text ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â fall back to cover-only rendering. */
     private fun isCompact(options: Bundle): Boolean =
         options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH) in 1..179
 
@@ -186,32 +187,67 @@ class PartnerWidgetManager @Inject constructor(
             }
         val titleColor = swatch?.titleTextColor ?: Color.WHITE
         val bodyColor = swatch?.bodyTextColor ?: Color.WHITE
+        val edgeColor =
+            if (live && cover != null) rightEdgeColor(cover) else null
+
+        val coverSide = height.toFloat()
 
         val radius = height * 0.14f
+        val cardRect = RectF(0f, 0f, width.toFloat(), height.toFloat())
         val cardPath = android.graphics.Path().apply {
-            addRoundRect(
-                RectF(0f, 0f, width.toFloat(), height.toFloat()),
-                radius,
-                radius,
-                android.graphics.Path.Direction.CW,
-            )
+            addRoundRect(cardRect, radius, radius, android.graphics.Path.Direction.CW)
         }
-        canvas.drawPath(cardPath, Paint().apply { isAntiAlias = true; color = cardColor })
 
-        // Cover fills the left square completely, clipped by the card's rounded corners — flush
-        // against the text surface with no gap.
-        val coverSide = height.toFloat()
-        if (cover != null) {
-            canvas.save()
-            canvas.clipPath(cardPath)
-            canvas.drawBitmap(
-                cover,
+        canvas.save()
+        canvas.clipPath(cardPath)
+
+        // Base surface: flows out of the cover's own right-edge tone, then settles into the
+        // album's dominant color ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the seam is tonally continuous by construction.
+        val basePaint = Paint()
+        if (live && edgeColor != null && swatch?.rgb != null) {
+            basePaint.shader = LinearGradient(
+                coverSide, 0f, width.toFloat(), 0f,
+                intArrayOf(edgeColor, swatch.rgb),
                 null,
-                RectF(0f, 0f, coverSide, coverSide),
-                Paint().apply { isAntiAlias = true; isFilterBitmap = true },
+                Shader.TileMode.CLAMP,
             )
-            canvas.restore()
+        } else {
+            basePaint.color =
+                if (live) Color.rgb(30, 30, 34)
+                else if (cover != null) Color.argb(255, 24, 24, 28)
+                else Color.rgb(30, 30, 34)
         }
+        canvas.drawRect(cardRect, basePaint)
+
+        // Cover over the left square.
+        if (cover != null) {
+            val coverPaint = Paint().apply {
+                isAntiAlias = true
+                isFilterBitmap = true
+            }
+            canvas.drawBitmap(cover, null, RectF(0f, 0f, coverSide, coverSide), coverPaint)
+
+            if (live && edgeColor != null) {
+                // Feather the cover's right edge into the panel tone ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â kills any residual
+                // texture jump at the seam.
+                val feather = coverSide * 0.20f
+                val featherPaint = Paint().apply {
+                    shader = LinearGradient(
+                        coverSide - feather, 0f, coverSide, 0f,
+                        intArrayOf(Color.TRANSPARENT, edgeColor),
+                        floatArrayOf(0f, 1f),
+                        Shader.TileMode.CLAMP,
+                    )
+                    isAntiAlias = true
+                }
+                canvas.drawRect(
+                    coverSide - feather, 0f, coverSide, height.toFloat(),
+                    featherPaint,
+                )
+            }
+        }
+
+        canvas.restore()
 
         val textX = coverSide + height * 0.09f
         val textWidth = width - textX - height * 0.09f
@@ -336,7 +372,7 @@ class PartnerWidgetManager @Inject constructor(
     // ---------------------------------------------------------------- artwork & palette
 
     /**
-     * Loads the cover as a raw centered square (no shape mask, no dimming) — callers decide how
+     * Loads the cover as a raw centered square (no shape mask, no dimming) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â callers decide how
      * to present it: the unified widget crops it flush into the card, compact mode applies the
      * shape mask on top.
      */
@@ -368,6 +404,26 @@ class PartnerWidgetManager @Inject constructor(
      * Dominant-or-vibrant swatch selection, simplified from PlayerColorExtractor: population
      * decides ties, and the swatch's own text colors guarantee readable panel text.
      */
+    /**
+     * Average color of the cover's right-edge columns â€” the tone the panel must continue with
+     * at the seam for a visually seamless transition.
+     */
+    private fun rightEdgeColor(bitmap: Bitmap): Int {
+        var r = 0L; var g = 0L; var b = 0L; var n = 0L
+        val xStart = bitmap.width - maxOf(1, bitmap.width / 20)
+        var x = xStart
+        while (x < bitmap.width) {
+            var y = 0
+            while (y < bitmap.height) {
+                val px = bitmap.getPixel(x, y)
+                r += Color.red(px); g += Color.green(px); b += Color.blue(px); n++
+                y += 7
+            }
+            x += 3
+        }
+        return if (n == 0L) Color.DKGRAY else Color.rgb((r / n).toInt(), (g / n).toInt(), (b / n).toInt())
+    }
+
     private fun extractSwatch(art: Bitmap): Palette.Swatch? {
         val palette = Palette.from(art).maximumColorCount(24).generate()
         return palette.dominantSwatch
