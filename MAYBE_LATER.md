@@ -6,7 +6,26 @@ Two users only: **eman** (sender) & **aswini** (receiver). All personalization u
 Build order: 13 → 3 → 5 → 6 → 4 → 7 → 8
 (#6 hard-depends on #5; #4 soft-depends on #5 for presence-based skip conditions)
 
-Progress: 13 ✅ · 3 ✅ · 5+6 ✅ (shipped as one Partner widget feature) · next: 4 → 7 → 8
+Progress: 13 ✅ · 3 ✅ · 5+6 ✅ (shipped as one Partner widget feature) · next: **W-SCALE** → 4 → 7 → 8
+
+---
+
+## W-SCALE. Widget text auto-scale — 🔝 NEXT (top priority)
+
+When the song title and/or artist are too long for the panel width, scale BOTH down
+proportionally instead of truncating with "…". Chosen over scrolling-marquee + edge-fade
+(rejected as over-engineered: zero battery cost, zero launcher quirks).
+
+1. Measure title at default size (`height * 0.13f`) against available panel width
+2. Measure artist at its default (`height * 0.085f`)
+3. Overflow in either → compute ONE shared scale factor so both fit; apply to both sizes,
+   preserving the title:artist ratio exactly
+4. Scale floor at ~50% — beyond that, ellipsis ("…") takes over (unreadable otherwise)
+5. Baseline gap between title and artist scales with them so the stack stays visually tight
+6. Header ("Listening: eman") untouched — short by nature
+
+Where: `PartnerWidgetManager.composeUnifiedWidget` (live-text block only; idle/compact untouched).
+Zero battery cost, works identically on every launcher.
 
 ---
 
