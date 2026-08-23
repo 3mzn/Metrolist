@@ -29,17 +29,14 @@ import javax.inject.Singleton
 /**
  * Who am I, and who is my partner?
  *
- * Exactly two people use this build: eman and aswini. Every directional label in the app ("From
- * eman" vs "From aswini", "Send to …", notification fallbacks) derives from [identity] instead of
- * re-implementing the check.
+ * Identity is a pure function of the account email — no usernames, no friend graphs:
+ *  - email contains "eman"   -> this is [HANDLE_EMAN]
+ *  - email contains "test"   -> this is [HANDLE_ASWINI_TEST] (testing stand-in for aswini)
+ *  - email contains "sylesh" -> this is [HANDLE_ASWINI]
  *
- * Resolution happens in two phases:
- * 1. **Instant** (no network): the account email containing "eman" means this device is eman's;
- *    anything else is aswini's. Correct the moment either account logs in, even before profile
- *    setup.
- * 2. **Authoritative** (async): the Firestore username overrides the heuristic once set, and the
- *    partner's UID is resolved from the `users` collection (username match preferred, then "the
- *    only other account"). The UID is cached in DataStore so consumers rarely hit the network.
+ * Every directional surface derives from [identity]: "From eman"/"From aswini" labels, send-dialog
+ * names and notification fallbacks use [PartnerIdentity.partnerName] (display only), while actual
+ * delivery targets [PartnerIdentity.partnerUid].
  */
 data class PartnerIdentity(
     val myName: String? = null,
@@ -76,25 +73,23 @@ class PartnerResolver @Inject constructor(
     }
 
     /**
-     * Suggested display name for the current account based on the email heuristic alone.
-     * Used to prefill the signup username field. Null while logged out.
+     * Display name for the current account based purely on the signup email.
+     * Used to prefill the username field. Null while logged out or unrecognized.
      */
-    fun suggestedMyName(email: String? = auth.currentUser?.email): String? = when {
-        email == null -> null
-        email.contains(EMAN, ignoreCase = true) -> EMAN
-        else -> ASWINI
-    }
+    fun suggestedMyName(email: String? = auth.currentUser?.email): String? =
+        myHandleFromEmail(email)
 
-    /** Re-run both resolution phases. Safe to call repeatedly. */
+    /** Re-run resolution. Safe to call repeatedly. */
     fun refresh() {
         val user = auth.currentUser ?: return
 
-        // Phase 1: instant, offline-correct.
-        val mine = suggestedMyName(user.email)
-        _identity.value = PartnerIdentity(
-            myName = mine,
-            partnerName = if (mine == EMAN) ASWINI else EMAN,
-        )
+        // Phase 1 (instant, offline): derive both names from my own email.
+        val mine = myHandleFromEmail(user.email)
+        _identity.value =
+            PartnerIdentity(
+                myName = mine,
+                partnerName = partnerDisplayName(mine),
+            )
 
         scope.launch {
             // Seed the cached UID first so late-starting consumers aren't blocked on Firestore.
@@ -106,42 +101,24 @@ class PartnerResolver @Inject constructor(
             }
 
             try {
-                // Phase 2a: the claimed username is authoritative over the email heuristic.
-                val myUsername = firestore.collection("users")
-                    .document(user.uid)
-                    .get()
-                    .await()
-                    .getString("username")
-                when (myUsername) {
-                    EMAN -> _identity.value =
-                        _identity.value.copy(myName = EMAN, partnerName = ASWINI)
-
-                    ASWINI -> _identity.value =
-                        _identity.value.copy(myName = ASWINI, partnerName = EMAN)
-                }
-
-                // Phase 2b: find the partner's UID.
+                // Phase 2: find the account holding the partner seat. During testing the seat may
+                // be held by aswinitest instead of aswini, so eman accepts both handles.
                 val snapshot = firestore.collection("users").get().await()
-                val others = snapshot.documents.mapNotNull { doc ->
-                    val uid = doc.id
-                    if (uid == user.uid) return@mapNotNull null
-                    UserProfile(
-                        uid = uid,
-                        email = doc.getString("email") ?: "",
-                        username = doc.getString("username") ?: "",
-                        photoUrl = doc.getString("photoUrl"),
-                    )
+                val candidateUsernames = partnerCandidateHandles(mine)
+                val partnerDoc = snapshot.documents.firstOrNull { doc ->
+                    doc.id != user.uid &&
+                        (
+                            doc.getString("username") in candidateUsernames ||
+                                partnerEmailMatches(doc.getString("email"), mine)
+                            )
                 }
-                val wanted = _identity.value.partnerName
-                val partner = others.firstOrNull { it.username.equals(wanted, ignoreCase = true) }
-                    ?: others.firstOrNull()
 
-                if (partner != null) {
-                    _identity.value = _identity.value.copy(partnerUid = partner.uid)
-                    cachePartner(partner.uid, wanted)
+                partnerDoc?.let { doc ->
+                    _identity.value = _identity.value.copy(partnerUid = doc.id)
+                    cachePartner(doc.id, partnerDisplayName(mine))
                 }
             } catch (e: Exception) {
-                Timber.e(e, "PartnerResolver: authoritative phase failed; keeping heuristic identity")
+                Timber.e(e, "PartnerResolver: Firestore lookup failed; keeping heuristic identity")
             }
         }
     }
@@ -155,11 +132,53 @@ class PartnerResolver @Inject constructor(
             identity.first { it.partnerUid != null }.partnerUid
         }
 
-    private suspend fun cachePartner(uid: String, name: String?) {
+    private fun myHandleFromEmail(email: String?): String? =
+        when {
+            email == null -> null
+            email.contains(EMAIL_TAG_EMAN, ignoreCase = true) -> HANDLE_EMAN
+            email.contains(EMAIL_TAG_TEST, ignoreCase = true) -> HANDLE_ASWINI_TEST
+            email.contains(EMAIL_TAG_SYLESH, ignoreCase = true) -> HANDLE_ASWINI
+            else -> null
+        }
+
+    private fun partnerDisplayName(myHandle: String?): String? =
+        when (myHandle) {
+            HANDLE_EMAN -> HANDLE_ASWINI
+            HANDLE_ASWINI, HANDLE_ASWINI_TEST -> HANDLE_EMAN
+            else -> null
+        }
+
+    /**
+     * Usernames the partner seat may be held under. While testing, aswinitest occupies aswini's
+     * seat; both are accepted so eman pairs correctly whichever exists.
+     */
+    private fun partnerCandidateHandles(myHandle: String?): Set<String> =
+        when (myHandle) {
+            HANDLE_EMAN -> setOf(HANDLE_ASWINI, HANDLE_ASWINI_TEST)
+            else -> setOf(HANDLE_EMAN)
+        }
+
+    /**
+     * Email-based fallback matching for the partner seat, mirroring the same rules: an account
+     * counts as aswini's seat if its email carries the sylesh or test tag.
+     */
+    private fun partnerEmailMatches(email: String?, myHandle: String?): Boolean =
+        when (myHandle) {
+            HANDLE_EMAN ->
+                email != null &&
+                    (
+                        email.contains(EMAIL_TAG_SYLESH, ignoreCase = true) ||
+                            email.contains(EMAIL_TAG_TEST, ignoreCase = true)
+                        )
+
+            else -> email?.contains(EMAIL_TAG_EMAN, ignoreCase = true) == true
+        }
+
+    private suspend fun cachePartner(uid: String, displayName: String?) {
         runCatching {
             context.dataStore.edit { prefs ->
                 prefs[PARTNER_UID_KEY] = uid
-                name?.let { prefs[PARTNER_NAME_KEY] = it }
+                displayName?.let { prefs[PARTNER_NAME_KEY] = it }
             }
         }
     }
@@ -174,14 +193,19 @@ class PartnerResolver @Inject constructor(
     }
 
     companion object {
-        const val EMAN = "eman"
-        const val ASWINI = "aswini"
+        const val HANDLE_EMAN = "eman"
+        const val HANDLE_ASWINI = "aswini"
+        const val HANDLE_ASWINI_TEST = "aswinitest"
+
+        private const val EMAIL_TAG_EMAN = "eman"
+        private const val EMAIL_TAG_SYLESH = "sylesh"
+        private const val EMAIL_TAG_TEST = "test"
 
         /** Cached so background contexts (FCM service) can personalize without Firestore. */
         val PARTNER_UID_KEY = stringPreferencesKey("partner_uid_cached")
         val PARTNER_NAME_KEY = stringPreferencesKey("partner_name_cached")
 
-        /** Blocking read of the cached partner name for non-suspend callers (e.g. FCM service). */
+        /** Blocking read of the cached partner display name for non-suspend callers (e.g. FCM). */
         fun cachedPartnerNameBlocking(context: Context): String? =
             runCatching {
                 kotlinx.coroutines.runBlocking {

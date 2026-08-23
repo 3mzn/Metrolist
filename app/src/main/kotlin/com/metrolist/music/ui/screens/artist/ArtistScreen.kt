@@ -667,7 +667,10 @@ fun ArtistScreen(
                 } else {
                     artistPage?.sections?.forEachIndexed { index, section ->
                         if (section.items.isNotEmpty()) {
-                            item(key = "section_${section.title}") {
+                            // Section index scopes the key: two sections may legitimately share a
+                            // title or contain the same video, and all of these items live in the
+                            // SAME outer LazyColumn key space.
+                            item(key = "section_${index}_${section.title}") {
                                 NavigationTitle(
                                     title = section.title,
                                     modifier = Modifier.animateItem(),
@@ -686,7 +689,7 @@ fun ArtistScreen(
                         if ((section.items.firstOrNull() as? SongItem)?.album != null) {
                             items(
                                 items = distinctItemsBySection.getOrNull(index) ?: section.items,
-                                key = { "youtube_song_${it.id}" },
+                                key = { "youtube_song_${index}_${it.id}" },
                             ) { song ->
                                 YouTubeListItem(
                                     item = song as SongItem,
@@ -739,7 +742,7 @@ fun ArtistScreen(
                                 )
                             }
                         } else {
-                            item(key = "section_list_${section.title}") {
+                            item(key = "section_list_${index}_${section.title}") {
                                 LazyRow(
                                     contentPadding = WindowInsets.systemBars.only(WindowInsetsSides.Horizontal).asPaddingValues(),
                                 ) {

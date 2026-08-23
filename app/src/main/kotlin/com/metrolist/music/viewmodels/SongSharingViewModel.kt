@@ -11,6 +11,7 @@ import com.google.firebase.auth.FirebaseAuth
 import com.metrolist.music.db.MusicDatabase
 import com.metrolist.music.models.MediaMetadata
 import com.metrolist.music.social.AddSongResult
+import com.metrolist.music.social.PartnerResolver
 import com.metrolist.music.social.SentSong
 import com.metrolist.music.social.SongSharingRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -28,6 +29,7 @@ class SongSharingViewModel @Inject constructor(
     private val songSharingRepository: SongSharingRepository,
     private val database: MusicDatabase,
     private val auth: FirebaseAuth,
+    private val partnerResolver: PartnerResolver,
 ) : ViewModel() {
     private val TAG = "SongSharingViewModel"
 
@@ -79,6 +81,22 @@ class SongSharingViewModel @Inject constructor(
                 _isInitialized.value = true
             } catch (e: Exception) {
                 Timber.e(e, "Error initializing song sharing feature")
+            }
+        }
+
+        // The playlist is created/renamed lazily because the partner name may be unknown at app
+        // start (logged out, email heuristic unavailable, username authority still loading).
+        // Re-run initialization every time the identity resolves or changes: fresh accounts get
+        // their playlist right after login, and existing rows get the directional rename.
+        viewModelScope.launch {
+            partnerResolver.identity.collect { identity ->
+                if (identity.partnerName != null) {
+                    runCatching {
+                        songSharingRepository.initializeToListenPlaylist()
+                    }.onFailure {
+                        Timber.e(it, "Failed to sync shared-songs playlist after identity change")
+                    }
+                }
             }
         }
     }
