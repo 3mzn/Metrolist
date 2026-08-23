@@ -11,6 +11,7 @@ import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.google.firebase.auth.FirebaseAuth
 import com.metrolist.music.utils.SongNotificationHelper
+import com.metrolist.music.social.PartnerResolver
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import kotlinx.coroutines.CancellationException
@@ -27,6 +28,7 @@ class SongListenedNotificationWorker @AssistedInject constructor(
     @Assisted workerParams: WorkerParameters,
     private val songSharingRepository: SongSharingRepository,
     private val auth: FirebaseAuth,
+    private val partnerResolver: PartnerResolver,
 ) : CoroutineWorker(context, workerParams) {
 
     companion object {
@@ -64,7 +66,11 @@ class SongListenedNotificationWorker @AssistedInject constructor(
             // One notification per SONG: repeated sends create multiple sentSongs documents for
             // the same track, and 50%-listened marks them all.
             recentSongs.distinctBy { it.songId }.forEach { sentSong ->
-                SongNotificationHelper.showNotification(context, sentSong)
+                SongNotificationHelper.showNotification(
+                    context,
+                    sentSong,
+                    partnerFallback = partnerResolver.identity.value.partnerName,
+                )
                 // Mark every document for this song so unmarked twins don't re-notify later.
                 listenedSongs.filter { it.songId == sentSong.songId }.forEach { twin ->
                     songSharingRepository.markNotificationSent(twin.id)

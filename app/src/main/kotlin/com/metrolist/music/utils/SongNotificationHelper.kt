@@ -27,9 +27,12 @@ object SongNotificationHelper {
     ) {
         showNotification(
             context,
-            sentSong.fromUsername.ifEmpty {
-                partnerFallback ?: context.getString(R.string.song_listened_fallback_friend)
-            },
+            // "listened" events describe what MY PARTNER did — they are the listener of every
+            // song I sent. Their name therefore leads; fromUsername only covers a session where
+            // the resolver hasn't resolved yet.
+            partnerFallback
+                ?: sentSong.fromUsername.takeIf { it.isNotBlank() }
+                ?: context.getString(R.string.song_listened_fallback_friend),
             sentSong.songTitle.ifEmpty { context.getString(R.string.song_listened_fallback_song) },
             sentSong.id.hashCode(),
         )
