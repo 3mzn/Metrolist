@@ -13,6 +13,7 @@ import com.metrolist.music.models.MediaMetadata
 import com.metrolist.music.social.AddSongResult
 import com.metrolist.music.social.PartnerResolver
 import com.metrolist.music.social.SentSong
+import com.metrolist.music.playback.PlaybackProgressTracker
 import com.metrolist.music.social.SongSharingRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
@@ -30,6 +31,7 @@ class SongSharingViewModel @Inject constructor(
     private val database: MusicDatabase,
     private val auth: FirebaseAuth,
     private val partnerResolver: PartnerResolver,
+    private val playbackProgressTracker: PlaybackProgressTracker,
 ) : ViewModel() {
     private val TAG = "SongSharingViewModel"
 
@@ -60,9 +62,12 @@ class SongSharingViewModel @Inject constructor(
                 }
 
                 songSharingRepository.observeIncomingSongs().collect { songs ->
-                    _incomingSongs.value = songs
+                    // One entry per SONG, not per document: repeated sends create twin
+                    // documents, and the badge should count tracks the user still has to hear.
+                    val unique = songs.distinctBy { it.songId }
+                    _incomingSongs.value = unique
 
-                    songs.forEach { sentSong ->
+                    unique.forEach { sentSong ->
                         // Only process songs not yet handled in this session
                         if (!processedDocumentIds.contains(sentSong.id)) {
                             processedDocumentIds.add(sentSong.id)
@@ -140,6 +145,10 @@ class SongSharingViewModel @Inject constructor(
                             }
                             AddSongResult.ERROR -> throw Exception("Repository returned ERROR")
                         }
+
+                        // A resend of the song currently playing just got filed: lift the
+                        // tracker's failure blacklist so mid-session tracking can resume.
+                        playbackProgressTracker.onPossibleLateArrival(sentSong.songId)
                     } catch (e: Exception) {
                         retryCount++
                         if (retryCount < maxRetries) {

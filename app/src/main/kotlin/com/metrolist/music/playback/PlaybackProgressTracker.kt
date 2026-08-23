@@ -72,7 +72,14 @@ class PlaybackProgressTracker(
         Timber.tag(TAG).d("Media item transition: $songId from playlist: $currentPlaylistId")
 
         // Check if this song is from "To Listen" playlist
-        checkAndStartTracking(songId, currentPlaylistId)
+        trackingJob =
+            CoroutineScope(ioDispatcher).launch {
+                try {
+                    checkAndStartTracking(songId, currentPlaylistId)
+                } catch (e: Exception) {
+                    Timber.tag(TAG).e(e, "Error checking song for tracking")
+                }
+            }
     }
 
     /**
@@ -89,8 +96,11 @@ class PlaybackProgressTracker(
 
     /**
      * Check if a song is from the "To Listen" playlist and start tracking.
+     *
+     * Suspend: callers that need the result (milestone retries) can await completion instead of
+     * racing a fire-and-forget launch that leaves [currentSentSongId] null mid-initialization.
      */
-    private fun checkAndStartTracking(songId: String, currentPlaylistId: String?) {
+    private suspend fun checkAndStartTracking(songId: String, currentPlaylistId: String?) {
         Timber.tag(TAG).d("Context check: PlaylistId='$currentPlaylistId' | Expected='${PlaylistEntity.TO_LISTEN_PLAYLIST_ID}'")
 
         if (currentPlaylistId != PlaylistEntity.TO_LISTEN_PLAYLIST_ID) {
@@ -105,50 +115,47 @@ class PlaybackProgressTracker(
 
         Timber.tag(TAG).i("[checkAndStartTracking] Starting async check for song: $songId")
 
-        trackingJob =
-            CoroutineScope(ioDispatcher).launch {
-                try {
-                    val uid = FirebaseAuth.getInstance().currentUser?.uid ?: "NotLoggedIn"
-                    Timber.tag(TAG).i("[User: $uid] Checking tracking for $songId in playlist $currentPlaylistId")
+        try {
+            val uid = FirebaseAuth.getInstance().currentUser?.uid ?: "NotLoggedIn"
+            Timber.tag(TAG).i("[User: $uid] Checking tracking for $songId in playlist $currentPlaylistId")
 
-                    // Double-check: Verify song is actually in "To Listen" playlist locally
-                    val isInToListenPlaylist =
-                        database.checkInPlaylist(
-                            PlaylistEntity.TO_LISTEN_PLAYLIST_ID,
-                            songId,
-                        ) > 0
+            // Double-check: Verify song is actually in "To Listen" playlist locally
+            val isInToListenPlaylist =
+                database.checkInPlaylist(
+                    PlaylistEntity.TO_LISTEN_PLAYLIST_ID,
+                    songId,
+                ) > 0
 
-                    Timber.tag(TAG).i("[Local DB Check] Song $songId in To Listen playlist: $isInToListenPlaylist")
+            Timber.tag(TAG).i("[Local DB Check] Song $songId in To Listen playlist: $isInToListenPlaylist")
 
-                    if (!isInToListenPlaylist) {
-                        Timber.tag(TAG).i("Song $songId not in local To Listen playlist, skipping track.")
-                        lastFailedSongId = songId
-                        return@launch
-                    }
-
-                    // Get the SentSong record from Firestore
-                    val sentSong = songSharingRepository.getSentSongBySongId(songId)
-
-                    if (sentSong == null) {
-                        Timber.tag(TAG).i("No pending SentSong document found for $songId (User: $uid).")
-                        lastFailedSongId = songId
-                        return@launch
-                    }
-
-                    // Start tracking this song. Always start fresh for a new playback session.
-                    currentTrackingSongId = songId
-                    currentSentSongId = sentSong.id
-                    lastFailedSongId = null
-                    has50PercentTriggered = false
-                    has100PercentTriggered = false
-                    maxProgressReached = 0f
-                    lastHeartbeatProgress = -1
-
-                    Timber.tag(TAG).i("[Tracking Start] Song: '${sentSong.songTitle}' | Doc: ${sentSong.id} | Starting fresh tracking")
-                } catch (e: Exception) {
-                    Timber.tag(TAG).e(e, "Error checking song for tracking")
-                }
+            if (!isInToListenPlaylist) {
+                Timber.tag(TAG).i("Song $songId not in local To Listen playlist, skipping track.")
+                lastFailedSongId = songId
+                return
             }
+
+            // Get the SentSong record from Firestore
+            val sentSong = songSharingRepository.getSentSongBySongId(songId)
+
+            if (sentSong == null) {
+                Timber.tag(TAG).i("No pending SentSong document found for $songId (User: $uid).")
+                lastFailedSongId = songId
+                return
+            }
+
+            // Start tracking this song. Always start fresh for a new playback session.
+            currentTrackingSongId = songId
+            currentSentSongId = sentSong.id
+            lastFailedSongId = null
+            has50PercentTriggered = false
+            has100PercentTriggered = false
+            maxProgressReached = 0f
+            lastHeartbeatProgress = -1
+
+            Timber.tag(TAG).i("[Tracking Start] Song: '${sentSong.songTitle}' | Doc: ${sentSong.id} | Starting fresh tracking")
+        } catch (e: Exception) {
+            Timber.tag(TAG).e(e, "Error checking song for tracking")
+        }
     }
 
     /**
@@ -256,7 +263,6 @@ class PlaybackProgressTracker(
             }
             Timber.tag(TAG).i("[50% Handler] Retry succeeded, currentSentSongId: $sentSongId")
         }
-
         try {
             // Update Firestore directly using the document ID we have.
             songSharingRepository.markSongAsListened(sentSongId, songId)
@@ -330,6 +336,19 @@ class PlaybackProgressTracker(
         Timber.tag(TAG).i("[Seek] User performed seek, clearing blacklist for song: $currentTrackingSongId")
         lastFailedSongId = null
         trackingInitialized.set(false)
+    }
+
+    /**
+     * A resend of [songId] just arrived while it may already be playing from the shared
+     * playlist: lift the failure blacklist so the next tracking poll can pick the new
+     * document up mid-session instead of waiting for a track transition.
+     */
+    fun onPossibleLateArrival(songId: String) {
+        if (lastFailedSongId == songId) {
+            Timber.tag(TAG).i("Late arrival for $songId — lifting blacklist")
+            lastFailedSongId = null
+            trackingInitialized.set(false)
+        }
     }
 
     /**
