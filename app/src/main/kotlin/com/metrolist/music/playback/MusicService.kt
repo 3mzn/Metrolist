@@ -875,8 +875,12 @@ class MusicService :
         }
 
         currentSong.debounce(1000).collect(scope) { song ->
-            updateNotification()
-            updateWidgetUI(player.isPlaying)
+            // Guarded per-emission: any throw here would cancel this collector PERMANENTLY,
+            // silently freezing widgets and the partner heartbeat for the rest of the session.
+            runCatching {
+                updateNotification()
+                updateWidgetUI(player.isPlaying)
+            }.onFailure { Timber.e(it, "song-change widget/status update failed") }
         }
 
         combine(
@@ -4645,15 +4649,21 @@ class MusicService :
                     val artistName = songData?.artists?.joinToArtistString(getArtistSeparator(this@MusicService)) { it.name } ?: getString(R.string.tap_to_open)
                     val resolvedIsLiked = isLikedRequested == true
 
-                    widgetManager.updateWidgets(
-                        title = songTitle,
-                        artist = artistName,
-                        artworkUri = song?.thumbnailUrl,
-                        isPlaying = playing,
-                        isLiked = resolvedIsLiked,
-                        duration = if (player.duration != C.TIME_UNSET) player.duration else 0,
-                        currentPosition = player.currentPosition,
-                    )
+                    android.util.Log.i("HEARTBEAT", "updateWidgetUI fired playing=$playing song=${song?.title} local=${song?.isLocal}")
+
+                    try {
+                        widgetManager.updateWidgets(
+                            title = songTitle,
+                            artist = artistName,
+                            artworkUri = song?.thumbnailUrl,
+                            isPlaying = playing,
+                            isLiked = resolvedIsLiked,
+                            duration = if (player.duration != C.TIME_UNSET) player.duration else 0,
+                            currentPosition = player.currentPosition,
+                        )
+                    } catch (e: Exception) {
+                        android.util.Log.e("HEARTBEAT", "updateWidgets threw", e)
+                    }
 
                     // Partner heartbeat: broadcast this song to `status/{uid}` so the partner's
                     // widget mirrors it. One write per song change; skipped entirely when the
@@ -4661,18 +4671,22 @@ class MusicService :
                     val heartbeatEnabled = runBlocking(Dispatchers.IO) {
                         dataStore.data.first()[PartnerWidgetManager.HEARTBEAT_ENABLED_KEY] ?: true
                     }
+                    android.util.Log.i("HEARTBEAT", "enabled=$heartbeatEnabled")
                     if (playing && heartbeatEnabled && song != null && !song.isLocal) {
+                        android.util.Log.i("HEARTBEAT", "broadcasting ${song.id}")
                         songSharingRepository.updateMyStatus(
                             songId = song.id,
                             title = song.title,
                             artist = artistName,
                             coverUrl = song.thumbnailUrl,
                         )
+                        android.util.Log.i("HEARTBEAT", "broadcast done")
                     } else if (!playing || song == null) {
                         songSharingRepository.clearMyStatus()
                     }
                 }
             } catch (e: Exception) {
+                android.util.Log.e("HEARTBEAT", "updateWidgetUI loop failed", e)
             } finally {
                 widgetUpdateInFlight = false
             }
