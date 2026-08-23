@@ -1,27 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    android:id="@+id/widget_partner_root"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_partner_full"
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:padding="4dp"
-    android:orientation="horizontal">
+    android:layout_height="match_parent">
 
-    <!-- Left: partner's cover art (shaped per user preference) -->
     <ImageView
         android:id="@+id/widget_partner_art"
-        android:layout_width="0dp"
+        android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:layout_weight="1"
         android:scaleType="fitCenter"
         android:contentDescription="@string/partner_widget_description" />
-
-    <!-- Right: info panel rendered as a bitmap sized identically to the cover -->
-    <ImageView
-        android:id="@+id/widget_partner_panel"
-        android:layout_width="0dp"
-        android:layout_height="match_parent"
-        android:layout_marginStart="4dp"
-        android:layout_weight="1"
-        android:scaleType="fitCenter"
-        android:contentDescription="@null" />
-</LinearLayout>
+</FrameLayout>

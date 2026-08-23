@@ -107,15 +107,30 @@ class PartnerWidgetManager @Inject constructor(
         if (ids.isEmpty()) return
 
         val live = status != null && status.isLive()
-        val art = loadShapedCover(status?.coverUrl, stale = status != null && !live)
+        val cover = loadCoverSquare(status?.coverUrl)
+        val density = context.resources.displayMetrics.density
 
         ids.forEach { widgetId ->
             val options = appWidgetManager.getAppWidgetOptions(widgetId)
             val views =
                 if (isCompact(options)) {
-                    buildCompactViews(art, status)
+                    buildCompactViews(
+                        cover?.let { applyShape(it, stale = status != null && !live) },
+                        status,
+                    )
                 } else {
-                    buildFullViews(art, status, partnerName)
+                    val widthDp = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH)
+                        .takeIf { it > 0 } ?: 250
+                    val heightDp = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT)
+                        .takeIf { it > 0 } ?: 110
+                    buildUnifiedViews(
+                        widthPx = (widthDp * density).toInt(),
+                        heightPx = (heightDp * density).toInt(),
+                        cover = cover,
+                        stale = status != null && !live,
+                        status = status,
+                        partnerName = partnerName,
+                    )
                 }
             appWidgetManager.updateAppWidget(widgetId, views)
         }
@@ -126,89 +141,100 @@ class PartnerWidgetManager @Inject constructor(
         options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH) in 1..179
 
     /**
-     * Full layout: left = cover art, right = an info panel composed as a bitmap of the SAME
-     * dimensions as the art. Both render through fitCenter in equal-weight cells, so their
-     * rendered sizes can never diverge, regardless of launcher cell geometry.
+     * The whole widget as ONE composed bitmap: a single rounded card where the cover fills the
+     * left square edge-to-edge and the info surface continues seamlessly to the right. One canvas
+     * means the two halves can never render as separate pieces.
      */
-    private fun buildFullViews(
-        art: Bitmap?,
+    private fun buildUnifiedViews(
+        widthPx: Int,
+        heightPx: Int,
+        cover: Bitmap?,
+        stale: Boolean,
         status: PartnerTrackStatus?,
         partnerName: String?,
     ): RemoteViews {
         val views = RemoteViews(context.packageName, R.layout.widget_partner)
-        views.setImageViewBitmap(R.id.widget_partner_art, art)
-
-        val panelSize = art?.width ?: 300
         views.setImageViewBitmap(
-            R.id.widget_partner_panel,
-            buildPanelBitmap(panelSize, status, partnerName, art),
+            R.id.widget_partner_art,
+            composeUnifiedWidget(widthPx, heightPx, cover, stale, status, partnerName),
         )
-
-        views.setOnClickPendingIntent(R.id.widget_partner_root, tapIntentFor(status))
+        views.setOnClickPendingIntent(R.id.widget_partner_full, tapIntentFor(status))
         return views
     }
 
-    /**
-     * Draws the info panel: album-colored rounded background (Palette extraction, same family as
-     * the dynamic player theme) with the header, song title and artist rendered directly into the
-     * bitmap. Long text is ellipsized â€” MIUI hosts reject reflection-based marquee forcing.
-     */
-    private fun buildPanelBitmap(
-        size: Int,
+    private fun composeUnifiedWidget(
+        widthPx: Int,
+        heightPx: Int,
+        cover: Bitmap?,
+        stale: Boolean,
         status: PartnerTrackStatus?,
         partnerName: String?,
-        art: Bitmap?,
     ): Bitmap {
-        val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val width = widthPx.coerceIn(200, 1400)
+        val height = heightPx.coerceIn(100, 600)
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
 
         val live = status != null && status.isLive()
-        val swatch = art?.let { extractSwatch(it) }
+        val swatch = if (live) cover?.let { extractSwatch(it) } else null
 
-        val bgColor =
-            if (status == null || !live) Color.argb(210, 28, 28, 32)
-            else swatch?.rgb ?: Color.argb(235, 32, 32, 36)
+        val cardColor =
+            when {
+                live -> swatch?.rgb ?: Color.rgb(30, 30, 34)
+                cover != null -> Color.argb(255, 24, 24, 28)
+                else -> Color.rgb(30, 30, 34)
+            }
         val titleColor = swatch?.titleTextColor ?: Color.WHITE
         val bodyColor = swatch?.bodyTextColor ?: Color.WHITE
 
-        val bgPaint = Paint().apply {
-            isAntiAlias = true
-            color = bgColor
+        val radius = height * 0.14f
+        val cardPath = android.graphics.Path().apply {
+            addRoundRect(
+                RectF(0f, 0f, width.toFloat(), height.toFloat()),
+                radius,
+                radius,
+                android.graphics.Path.Direction.CW,
+            )
         }
-        val radius = size * 0.14f
-        canvas.drawRoundRect(
-            RectF(0f, 0f, size.toFloat(), size.toFloat()),
-            radius,
-            radius,
-            bgPaint,
-        )
+        canvas.drawPath(cardPath, Paint().apply { isAntiAlias = true; color = cardColor })
 
-        val pad = size * 0.09f
-        val textWidth = size - pad * 2
-
-        val headerPaint = TextPaint().apply {
-            isAntiAlias = true
-            color = bodyColor
-            textSize = size * 0.085f
-        }
-        val titlePaint = TextPaint().apply {
-            isAntiAlias = true
-            color = titleColor
-            textSize = size * 0.145f
-            isFakeBoldText = true
-        }
-        val artistPaint = TextPaint().apply {
-            isAntiAlias = true
-            color = bodyColor
-            textSize = size * 0.095f
+        // Cover fills the left square completely, clipped by the card's rounded corners — flush
+        // against the text surface with no gap.
+        val coverSide = height.toFloat()
+        if (cover != null) {
+            canvas.save()
+            canvas.clipPath(cardPath)
+            canvas.drawBitmap(
+                cover,
+                null,
+                RectF(0f, 0f, coverSide, coverSide),
+                Paint().apply { isAntiAlias = true; isFilterBitmap = true },
+            )
+            canvas.restore()
         }
 
-        if (status == null || !status.isLive()) {
+        val textX = coverSide + height * 0.09f
+        val textWidth = width - textX - height * 0.09f
+
+        if (!live) {
             // Idle: partner name prominent, soft message underneath.
-            val name = partnerName ?: context.getString(R.string.song_listened_fallback_friend)
-            val nameY = size * 0.42f
-            canvas.drawText(name, pad, nameY, headerPaint.apply { textSize = size * 0.12f })
-            val msgPaint = TextPaint(headerPaint).apply { textSize = size * 0.095f }
+            val namePaint = android.text.TextPaint().apply {
+                isAntiAlias = true
+                color = Color.WHITE
+                textSize = height * 0.16f
+                isFakeBoldText = true
+            }
+            val msgPaint = android.text.TextPaint().apply {
+                isAntiAlias = true
+                color = Color.argb(200, 255, 255, 255)
+                textSize = height * 0.115f
+            }
+            canvas.drawText(
+                partnerName ?: context.getString(R.string.song_listened_fallback_friend),
+                textX,
+                height * 0.45f,
+                namePaint,
+            )
             canvas.drawText(
                 TextUtils.ellipsize(
                     context.getString(R.string.partner_widget_idle_message),
@@ -216,37 +242,58 @@ class PartnerWidgetManager @Inject constructor(
                     textWidth,
                     TextUtils.TruncateAt.END,
                 ).toString(),
-                pad,
-                nameY + size * 0.12f,
+                textX,
+                height * 0.45f + msgPaint.textSize * 1.4f,
                 msgPaint,
             )
             return bitmap
         }
 
-        // Live: header, title, artist â€” top-aligned stack.
+        val headerPaint = android.text.TextPaint().apply {
+            isAntiAlias = true
+            color = bodyColor
+            textSize = height * 0.105f
+        }
+        val titlePaint = android.text.TextPaint().apply {
+            isAntiAlias = true
+            color = titleColor
+            textSize = height * 0.17f
+            isFakeBoldText = true
+        }
+        val artistPaint = android.text.TextPaint().apply {
+            isAntiAlias = true
+            color = bodyColor
+            textSize = height * 0.115f
+        }
+
         val headerText =
             context.getString(R.string.partner_widget_listening_label) + " " + (partnerName ?: "")
+        val headerY = height * 0.30f
         canvas.drawText(
             TextUtils.ellipsize(headerText, headerPaint, textWidth, TextUtils.TruncateAt.END).toString(),
-            pad,
-            pad + headerPaint.textSize,
+            textX,
+            headerY,
             headerPaint,
         )
 
-        val titleY = size * 0.52f
+        val titleY = height * 0.56f
         canvas.drawText(
-            TextUtils.ellipsize(status.title.ifBlank { " " }, titlePaint, textWidth, TextUtils.TruncateAt.END).toString(),
-            pad,
+            TextUtils.ellipsize(status.title, titlePaint, textWidth, TextUtils.TruncateAt.END).toString(),
+            textX,
             titleY,
             titlePaint,
         )
 
         canvas.drawText(
-            TextUtils.ellipsize(status.artist.ifBlank { " " }, artistPaint, textWidth, TextUtils.TruncateAt.END).toString(),
-            pad,
-            titleY + size * 0.13f,
+            TextUtils.ellipsize(status.artist, artistPaint, textWidth, TextUtils.TruncateAt.END).toString(),
+            textX,
+            titleY + height * 0.17f,
             artistPaint,
         )
+
+        if (stale) {
+            canvas.drawColor(Color.argb(90, 0, 0, 0))
+        }
         return bitmap
     }
 
@@ -288,12 +335,17 @@ class PartnerWidgetManager @Inject constructor(
 
     // ---------------------------------------------------------------- artwork & palette
 
-    private suspend fun loadShapedCover(coverUrl: String?, stale: Boolean): Bitmap? =
+    /**
+     * Loads the cover as a raw centered square (no shape mask, no dimming) — callers decide how
+     * to present it: the unified widget crops it flush into the card, compact mode applies the
+     * shape mask on top.
+     */
+    private suspend fun loadCoverSquare(coverUrl: String?): Bitmap? =
         withContext(Dispatchers.IO) {
-            if (coverUrl.isNullOrBlank()) return@withContext dimIfStale(defaultCircularIcon(), stale)
+            if (coverUrl.isNullOrBlank()) return@withContext null
 
             if (coverUrl == cachedCoverUrl && cachedSquareArt != null) {
-                return@withContext applyShape(cachedSquareArt!!, stale)
+                return@withContext cachedSquareArt
             }
 
             val square = try {
@@ -305,11 +357,11 @@ class PartnerWidgetManager @Inject constructor(
                 imageLoader.execute(request).image?.toBitmap()
             } catch (e: Exception) {
                 null
-            } ?: return@withContext dimIfStale(defaultCircularIcon(), stale)
+            } ?: return@withContext null
 
             cachedCoverUrl = coverUrl
             cachedSquareArt = square
-            applyShape(square, stale)
+            square
         }
 
     /**
