@@ -312,8 +312,8 @@ class PartnerWidgetManager @Inject constructor(
         val canvas = Canvas(bitmap)
         drawable.setBounds(0, 0, size, size)
         drawable.draw(canvas)
-        val square = cropToSquare(bitmap)
-        return circle(square)
+        // Idle placeholder follows the same shape setting as live covers.
+        return applyShape(cropToSquare(bitmap), stale = false)
     }
 
     private fun cropToSquare(bitmap: Bitmap): Bitmap {
