@@ -301,6 +301,12 @@ class MusicService :
     @Inject
     lateinit var songSharingRepository: com.metrolist.music.social.SongSharingRepository
 
+    @Inject
+    lateinit var partnerResolver: com.metrolist.music.social.PartnerResolver
+
+    @Inject
+    lateinit var partnerWidgetManager: com.metrolist.music.widget.PartnerWidgetManager
+
     private lateinit var audioManager: AudioManager
     private var audioFocusRequest: AudioFocusRequest? = null
     private var lastAudioFocusState = AudioManager.AUDIOFOCUS_NONE
@@ -4714,6 +4720,24 @@ class MusicService :
                             lastBroadcastKey = null
                             heartbeatScope.launch { songSharingRepository.clearMyStatus() }
                         }
+                    }
+
+                    // Widget UI debug test: render THIS device's own playback into the local
+                    // Partner widget so its UI can be inspected without partner activity.
+                    val widgetDebugTest = runBlocking(Dispatchers.IO) {
+                        dataStore.data.first()[PartnerWidgetManager.WIDGET_UI_DEBUG_TEST_KEY] ?: false
+                    }
+                    if (widgetDebugTest && song != null && !song.isLocal) {
+                        partnerWidgetManager.updateFromStatus(
+                            com.metrolist.music.widget.PartnerTrackStatus(
+                                songId = song.id,
+                                title = song.title,
+                                artist = artistName,
+                                coverUrl = song.thumbnailUrl,
+                                updatedAt = System.currentTimeMillis(),
+                            ),
+                            partnerName = partnerResolver.identity.value.myName ?: "me",
+                        )
                     }
                 }
             } catch (e: Exception) {

@@ -66,6 +66,7 @@ import com.metrolist.music.ui.component.Material3SettingsItem
 import com.metrolist.music.ui.dialog.SocialRepositoryEntryPoint
 import com.metrolist.music.ui.utils.backToMain
 import com.metrolist.music.utils.rememberPreference
+import com.metrolist.music.widget.PartnerWidgetManager
 import dagger.hilt.android.EntryPointAccessors
 import java.io.File
 import kotlin.math.roundToInt
@@ -109,6 +110,12 @@ fun StorageSettings(
     var clearCacheDialog by remember { mutableStateOf(false) }
     var clearImageCacheDialog by remember { mutableStateOf(false) }
     var clearToListenDialog by remember { mutableStateOf(false) }
+
+    // Widget UI debug test: render own playback into the Partner widget for visual inspection.
+    var widgetUiDebugTest by rememberPreference(
+        PartnerWidgetManager.WIDGET_UI_DEBUG_TEST_KEY,
+        false,
+    )
 
     val songSharingRepository = remember {
         EntryPointAccessors.fromApplication(
@@ -376,6 +383,30 @@ fun StorageSettings(
                         },
                         onClick = {
                             clearToListenDialog = true
+                        },
+                    ),
+                    Material3SettingsItem(
+                        icon = painterResource(R.drawable.palette),
+                        title = { Text(stringResource(R.string.widget_ui_debug_test_title)) },
+                        description = {
+                            Text(text = stringResource(R.string.widget_ui_debug_test_subtitle))
+                        },
+                        trailingContent = {
+                            Switch(
+                                checked = widgetUiDebugTest,
+                                onCheckedChange = { enabled ->
+                                    widgetUiDebugTest = enabled
+                                    // Toggling off: restore the partner-broadcast view instantly.
+                                    if (!enabled) {
+                                        coroutineScope.launch {
+                                            EntryPointAccessors.fromApplication(
+                                                context.applicationContext,
+                                                SocialRepositoryEntryPoint::class.java,
+                                            ).partnerWidgetManager().renderFromCache()
+                                        }
+                                    }
+                                },
+                            )
                         },
                     ),
                 ),

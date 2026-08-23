@@ -389,6 +389,13 @@ class PartnerWidgetManager @Inject constructor(
         val HEARTBEAT_ENABLED_KEY = booleanPreferencesKey("partner_heartbeat_enabled")
         val PARTNER_WIDGET_SHAPE_KEY = stringPreferencesKey("partner_widget_shape")
 
+        /**
+         * Debug aid: when on, THIS device's own current song is rendered into the local Partner
+         * widget (instead of the partner's broadcast) so the UI can be inspected without waiting
+         * for the partner to play anything.
+         */
+        val WIDGET_UI_DEBUG_TEST_KEY = booleanPreferencesKey("widget_ui_debug_test")
+
         private val PREF_SONG_ID = stringPreferencesKey("partner_status_song_id")
         private val PREF_TITLE = stringPreferencesKey("partner_status_title")
         private val PREF_ARTIST = stringPreferencesKey("partner_status_artist")
