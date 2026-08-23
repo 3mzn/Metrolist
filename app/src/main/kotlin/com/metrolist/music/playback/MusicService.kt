@@ -220,6 +220,7 @@ import com.metrolist.music.utils.get
 import com.metrolist.music.utils.reportException
 import com.metrolist.music.widget.MetrolistWidgetManager
 import com.metrolist.music.widget.MusicWidgetReceiver
+import com.metrolist.music.widget.PartnerWidgetManager
 import com.metrolist.music.widget.PlaylistWidgetReceiver
 import com.metrolist.music.ui.utils.resize
 import dagger.hilt.android.AndroidEntryPoint
@@ -295,6 +296,9 @@ class MusicService :
 
     @Inject
     lateinit var playbackProgressTracker: com.metrolist.music.playback.PlaybackProgressTracker
+
+    @Inject
+    lateinit var songSharingRepository: com.metrolist.music.social.SongSharingRepository
 
     private lateinit var audioManager: AudioManager
     private var audioFocusRequest: AudioFocusRequest? = null
@@ -4650,6 +4654,23 @@ class MusicService :
                         duration = if (player.duration != C.TIME_UNSET) player.duration else 0,
                         currentPosition = player.currentPosition,
                     )
+
+                    // Partner heartbeat: broadcast this song to `status/{uid}` so the partner's
+                    // widget mirrors it. One write per song change; skipped entirely when the
+                    // user turned sharing off.
+                    val heartbeatEnabled = runBlocking(Dispatchers.IO) {
+                        dataStore.data.first()[PartnerWidgetManager.HEARTBEAT_ENABLED_KEY] ?: true
+                    }
+                    if (playing && heartbeatEnabled && song != null && !song.isLocal) {
+                        songSharingRepository.updateMyStatus(
+                            songId = song.id,
+                            title = song.title,
+                            artist = artistName,
+                            coverUrl = song.thumbnailUrl,
+                        )
+                    } else if (!playing || song == null) {
+                        songSharingRepository.clearMyStatus()
+                    }
                 }
             } catch (e: Exception) {
             } finally {

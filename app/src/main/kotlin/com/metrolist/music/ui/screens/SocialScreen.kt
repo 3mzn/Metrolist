@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Metrolist Project (C) 2026
  * Licensed under GPL-3.0 | See git history for contributors
  */
@@ -26,11 +26,13 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -60,7 +62,11 @@ import com.metrolist.music.R
 import com.metrolist.music.constants.AppBarHeight
 import com.metrolist.music.ui.dialog.SocialRepositoryEntryPoint
 import com.metrolist.music.ui.dialog.rememberPartnerIdentity
+import com.metrolist.music.utils.dataStore
+import com.metrolist.music.utils.rememberPreference
 import com.metrolist.music.viewmodels.AuthViewModel
+import com.metrolist.music.widget.PartnerWidgetManager
+import androidx.datastore.preferences.core.edit
 import dagger.hilt.android.EntryPointAccessors
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
@@ -133,6 +139,10 @@ private fun SocialDashboard(
                 photoUrl = photoUrl,
                 onLogout = onLogout,
             )
+        }
+
+        item("partner_widget") {
+            PartnerWidgetOptionsCard()
         }
 
         item("danger_zone") {
@@ -314,6 +324,119 @@ internal fun SocialAvatar(
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+        }
+    }
+}
+
+private val PARTNER_SHAPES =
+    listOf(
+        PartnerWidgetManager.SHAPE_CIRCLE,
+        PartnerWidgetManager.SHAPE_ROUNDED,
+        PartnerWidgetManager.SHAPE_SQUARE,
+    )
+
+/**
+ * Controls for the home-screen widget that mirrors the partner's current song: whether this
+ * device broadcasts its own playback at all, and which shape the widget's cover art takes.
+ */
+@Composable
+private fun PartnerWidgetOptionsCard() {
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    val manager = remember {
+        EntryPointAccessors.fromApplication(
+            context.applicationContext,
+            SocialRepositoryEntryPoint::class.java,
+        ).partnerWidgetManager()
+    }
+
+    val broadcastEnabled by rememberPreference(
+        PartnerWidgetManager.HEARTBEAT_ENABLED_KEY,
+        true,
+    )
+    var shape by rememberPreference(
+        PartnerWidgetManager.PARTNER_WIDGET_SHAPE_KEY,
+        PartnerWidgetManager.SHAPE_CIRCLE,
+    )
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+        ),
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                text = stringResource(R.string.partner_widget_options_title),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+            )
+            Text(
+                text = stringResource(R.string.partner_widget_options_subtitle),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            Spacer(Modifier.height(12.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(stringResource(R.string.partner_heartbeat_broadcast_title))
+                    Text(
+                        text = stringResource(R.string.partner_heartbeat_broadcast_subtitle),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = broadcastEnabled,
+                    onCheckedChange = { enabled ->
+                        // Flip in DataStore; the heartbeat reads it on every song change.
+                        coroutineScope.launch {
+                            context.dataStore.edit {
+                                it[PartnerWidgetManager.HEARTBEAT_ENABLED_KEY] = enabled
+                            }
+                            if (!enabled) {
+                                EntryPointAccessors.fromApplication(
+                                    context.applicationContext,
+                                    SocialRepositoryEntryPoint::class.java,
+                                ).songSharingRepository().clearMyStatus()
+                            }
+                        }
+                    },
+                )
+            }
+
+            Spacer(Modifier.height(12.dp))
+
+            Text(stringResource(R.string.partner_widget_shape_title))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                PARTNER_SHAPES.forEach { candidate ->
+                    FilterChip(
+                        selected = shape == candidate,
+                        onClick = {
+                            shape = candidate
+                            manager.writeShape(candidate)
+                        },
+                        label = {
+                            Text(
+                                when (candidate) {
+                                    PartnerWidgetManager.SHAPE_CIRCLE -> "Circle"
+                                    PartnerWidgetManager.SHAPE_ROUNDED -> "Rounded"
+                                    else -> "Square"
+                                },
+                            )
+                        },
+                    )
+                }
             }
         }
     }

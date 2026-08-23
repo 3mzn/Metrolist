@@ -385,6 +385,42 @@ class SongSharingRepository @Inject constructor(
     }
 
     /**
+     * Broadcast what this device is currently playing, for the partner's widget.
+     * One document per user at `status/{uid}` — written once per song change, never per second.
+     */
+    suspend fun updateMyStatus(
+        songId: String,
+        title: String,
+        artist: String,
+        coverUrl: String?,
+    ) {
+        val currentUid = auth.currentUser?.uid ?: return
+        try {
+            firestore.collection("status").document(currentUid).set(
+                mapOf(
+                    "songId" to songId,
+                    "title" to title,
+                    "artist" to artist,
+                    "coverUrl" to coverUrl,
+                    "updatedAt" to System.currentTimeMillis(),
+                ),
+            ).await()
+        } catch (e: Exception) {
+            Timber.tag(TAG).e(e, "Failed to update my playback status")
+        }
+    }
+
+    /** Stop broadcasting (playback stopped or service shutting down). */
+    suspend fun clearMyStatus() {
+        val currentUid = auth.currentUser?.uid ?: return
+        try {
+            firestore.collection("status").document(currentUid).delete().await()
+        } catch (e: Exception) {
+            Timber.tag(TAG).e(e, "Failed to clear my playback status")
+        }
+    }
+
+    /**
      * Mark notification as sent for a song.
      */
     suspend fun markNotificationSent(sentSongId: String) {

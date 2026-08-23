@@ -93,6 +93,9 @@ class App :
     @Inject
     lateinit var songListenedRealTimeNotifier: Provider<com.metrolist.music.social.SongListenedRealTimeNotifier>
 
+    @Inject
+    lateinit var partnerHeartbeatMonitor: Provider<com.metrolist.music.social.PartnerHeartbeatMonitor>
+
     /**
      * False in the ":crash" process that hosts [com.metrolist.music.ui.screens.CrashActivity].
      *
@@ -134,6 +137,10 @@ class App :
 
         // Registers the auth listener that starts the worker on login and stops it on logout.
         songListenedRealTimeNotifier.get()
+
+        // Registers its own auth listener: watches the partner's status document and repaints
+        // the Partner widget on every change.
+        partnerHeartbeatMonitor.get()
     }
 
     override fun onCreate() {

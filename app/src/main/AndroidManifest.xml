@@ -385,6 +385,20 @@
                 android:resource="@xml/recognizer_widget_info" />
         </receiver>
 
+        <!-- Partner Now-Listening Widget -->
+        <receiver
+            android:name=".widget.PartnerWidgetReceiver"
+            android:exported="false"
+            android:label="@string/widget_partner">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/partner_widget_info" />
+        </receiver>
+
         <service
             android:name=".widget.MusicRecognizerWidgetService"
             android:exported="false"

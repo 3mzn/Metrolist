@@ -1005,6 +1005,14 @@
     <string name="delete_account_requires_recent_login">For safety, log out and sign back in, then retry deletion.</string>
     <string name="delete_account_failed">Couldn\'t delete the account. Try again.</string>
 
+    <string name="partner_widget_description">Cover art of what your partner is listening to. Tap to play along.</string>
+    <string name="widget_partner">Partner</string>
+    <string name="partner_widget_options_title">Partner widget</string>
+    <string name="partner_widget_options_subtitle">Resize on your home screen by long-pressing it.</string>
+    <string name="partner_heartbeat_broadcast_title">Share what I\'m listening to</string>
+    <string name="partner_heartbeat_broadcast_subtitle">Lets their widget show your current song.</string>
+    <string name="partner_widget_shape_title">Widget shape</string>
+
     <!-- Social: account -->
     <string name="social">Social</string>
     <string name="social_sign_in_title">Metrolist Social</string>
