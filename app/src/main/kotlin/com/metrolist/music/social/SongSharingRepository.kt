@@ -41,7 +41,15 @@ class SongSharingRepository @Inject constructor(
      * "From aswini" on eman's device, "From eman" on aswini's. Idempotent — runs at every app
      * start, so both fresh installs and pre-existing "To Listen" rows converge.
      */
-    suspend fun initializeToListenPlaylist() {
+    suspend fun initializeToListenPlaylist() = withContext(Dispatchers.IO) {
+        // playlistBlocking and database.query both hit Room synchronously, and the callers are
+        // viewModelScope coroutines on the main dispatcher — this must stay confined to IO or
+        // Room throws IllegalStateException and the playlist silently never appears.
+        Timber.tag("PLAYLIST_INIT").w(
+            "PLAYLIST_INIT_V3 thread=%s partnerName=%s",
+            Thread.currentThread().name,
+            partnerResolver.identity.value.partnerName,
+        )
         val desiredName =
             partnerResolver.identity.value.partnerName
                 ?.let { context.getString(R.string.from_partner_format, it) }
@@ -51,7 +59,7 @@ class SongSharingRepository @Inject constructor(
         when {
             existingPlaylist == null -> {
                 // Logged out or identity unresolved yet; next launch retries.
-                desiredName ?: return
+                desiredName ?: return@withContext
                 Timber.tag(TAG).d("Creating shared-songs playlist '$desiredName'")
                 val toListenPlaylist =
                     PlaylistEntity(

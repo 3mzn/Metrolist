@@ -131,7 +131,7 @@ fun SendToFriendsHost(
                                 context.getString(
                                     R.string.sent_n_songs_to_friends,
                                     successCount,
-                                    1,
+                                    partnerName,
                                 ),
                                 Toast.LENGTH_SHORT,
                             ).show()
