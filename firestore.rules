@@ -38,6 +38,14 @@ service cloud.firestore {
             || request.auth.uid == resource.data.fromUid);
     }
 
+    // === Playback Status (heartbeat) ===
+    // One document per user describing what they're playing right now, consumed by the
+    // partner's home-screen widget. Contains only now-playing metadata, so reads are open.
+    match /status/{uid} {
+      allow read: if true;
+      allow write: if request.auth != null && request.auth.uid == uid;
+    }
+
     // === Sent Songs ===
     // A song sent between friends. Readable by sender and recipient only.
     // Validates required fields and prevents tampering with sender/recipient.
