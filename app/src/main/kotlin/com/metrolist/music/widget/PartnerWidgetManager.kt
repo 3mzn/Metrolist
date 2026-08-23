@@ -288,23 +288,23 @@ class PartnerWidgetManager @Inject constructor(
         val headerPaint = android.text.TextPaint().apply {
             isAntiAlias = true
             color = bodyColor
-            textSize = height * 0.105f
+            textSize = height * 0.07f
         }
         val titlePaint = android.text.TextPaint().apply {
             isAntiAlias = true
             color = titleColor
-            textSize = height * 0.17f
+            textSize = height * 0.13f
             isFakeBoldText = true
         }
         val artistPaint = android.text.TextPaint().apply {
             isAntiAlias = true
             color = bodyColor
-            textSize = height * 0.115f
+            textSize = height * 0.085f
         }
 
         val headerText =
             context.getString(R.string.partner_widget_listening_label) + " " + (partnerName ?: "")
-        val headerY = height * 0.30f
+        val headerY = height * 0.22f
         canvas.drawText(
             TextUtils.ellipsize(headerText, headerPaint, textWidth, TextUtils.TruncateAt.END).toString(),
             textX,
@@ -312,7 +312,7 @@ class PartnerWidgetManager @Inject constructor(
             headerPaint,
         )
 
-        val titleY = height * 0.56f
+        val titleY = height * 0.52f
         canvas.drawText(
             TextUtils.ellipsize(status.title, titlePaint, textWidth, TextUtils.TruncateAt.END).toString(),
             textX,
@@ -323,7 +323,7 @@ class PartnerWidgetManager @Inject constructor(
         canvas.drawText(
             TextUtils.ellipsize(status.artist, artistPaint, textWidth, TextUtils.TruncateAt.END).toString(),
             textX,
-            titleY + height * 0.17f,
+            titleY + height * 0.16f,
             artistPaint,
         )
 
