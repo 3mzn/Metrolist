@@ -21,7 +21,7 @@ import com.metrolist.music.ui.component.ChipsRow
 import com.metrolist.music.utils.rememberEnumPreference
 
 @Composable
-fun LibraryScreen() {
+fun LibraryScreen(waitingSongCount: Int = 0) {
     val navController = LocalNavController.current
     var filterType by rememberEnumPreference(ChipSortTypeKey, LibraryFilter.LIBRARY)
 
@@ -47,7 +47,11 @@ fun LibraryScreen() {
     Box(modifier = Modifier.fillMaxSize()) {
         when (filterType) {
             LibraryFilter.LIBRARY -> LibraryMixScreen(navController, filterContent)
-            LibraryFilter.PLAYLISTS -> LibraryPlaylistsScreen(navController, filterContent)
+            LibraryFilter.PLAYLISTS -> LibraryPlaylistsScreen(
+                navController,
+                filterContent,
+                waitingSongCount = waitingSongCount,
+            )
             LibraryFilter.SONGS -> LibrarySongsScreen(
                 navController,
                 { filterType = LibraryFilter.LIBRARY },

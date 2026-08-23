@@ -73,6 +73,7 @@ fun NavGraphBuilder.navigationBuilder(
     latestVersionName: String,
     activity: Activity,
     snackbarHostState: SnackbarHostState,
+    waitingSongCount: Int = 0,
 ) {
     composable(Screens.Home.route) {
         HomeScreen(snackbarHostState = snackbarHostState)
@@ -97,7 +98,7 @@ fun NavGraphBuilder.navigationBuilder(
     }
 
     composable(Screens.Library.route) {
-        LibraryScreen()
+        LibraryScreen(waitingSongCount = waitingSongCount)
     }
 
     composable(Screens.ListenTogether.route) {

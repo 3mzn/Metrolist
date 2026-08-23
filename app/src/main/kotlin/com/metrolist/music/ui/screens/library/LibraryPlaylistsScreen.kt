@@ -29,6 +29,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material3.Badge
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
@@ -109,6 +110,7 @@ private data class VisiblePlaylistItem(
 fun LibraryPlaylistsScreen(
     navController: NavController,
     filterContent: @Composable () -> Unit,
+    waitingSongCount: Int = 0,
     viewModel: LibraryPlaylistsViewModel = hiltViewModel(),
     initialTextFieldValue: String? = null,
     allowSyncing: Boolean = true,
@@ -461,12 +463,25 @@ fun LibraryPlaylistsScreen(
                                         .animateItem(),
                             )
                         } else {
-                            LibraryPlaylistListItem(
-                                menuState = menuState,
-                                coroutineScope = coroutineScope,
-                                playlist = item.playlist,
-                                modifier = Modifier.animateItem(),
-                            )
+                            Box(modifier = Modifier.animateItem()) {
+                                LibraryPlaylistListItem(
+                                    menuState = menuState,
+                                    coroutineScope = coroutineScope,
+                                    playlist = item.playlist,
+                                )
+                                if (item.playlist.id == PlaylistEntity.TO_LISTEN_PLAYLIST_ID &&
+                                    waitingSongCount > 0
+                                ) {
+                                    Badge(
+                                        modifier =
+                                            Modifier
+                                                .align(Alignment.TopStart)
+                                                .padding(start = 44.dp, top = 4.dp),
+                                    ) {
+                                        Text(waitingSongCount.toString())
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -532,12 +547,25 @@ fun LibraryPlaylistsScreen(
                                         .animateItem(),
                             )
                         } else {
-                            LibraryPlaylistGridItem(
-                                menuState = menuState,
-                                coroutineScope = coroutineScope,
-                                playlist = item.playlist,
-                                modifier = Modifier.animateItem(),
-                            )
+                            Box(modifier = Modifier.animateItem()) {
+                                LibraryPlaylistGridItem(
+                                    menuState = menuState,
+                                    coroutineScope = coroutineScope,
+                                    playlist = item.playlist,
+                                )
+                                if (item.playlist.id == PlaylistEntity.TO_LISTEN_PLAYLIST_ID &&
+                                    waitingSongCount > 0
+                                ) {
+                                    Badge(
+                                        modifier =
+                                            Modifier
+                                                .align(Alignment.TopEnd)
+                                                .padding(8.dp),
+                                    ) {
+                                        Text(waitingSongCount.toString())
+                                    }
+                                }
+                            }
                         }
                     }
                 }

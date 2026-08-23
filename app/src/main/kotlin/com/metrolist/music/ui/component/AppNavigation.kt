@@ -8,6 +8,8 @@ package com.metrolist.music.ui.component
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -61,7 +63,8 @@ fun AppNavigationRail(
     onItemClick: (Screens, Boolean) -> Unit,
     modifier: Modifier = Modifier,
     pureBlack: Boolean = false,
-    onSearchLongClick: (() -> Unit)? = null
+    onSearchLongClick: (() -> Unit)? = null,
+    badgeCounts: Map<Screens, Int> = emptyMap()
 ) {
     val containerColor = if (pureBlack) Color.Black else MaterialTheme.colorScheme.surfaceContainer
     val haptics = LocalHapticFeedback.current
@@ -121,10 +124,19 @@ fun AppNavigationRail(
                 },
                 interactionSource = interactionSource,
                 icon = {
-                    Icon(
-                        painter = painterResource(id = iconRes),
-                        contentDescription = stringResource(screen.titleId)
-                    )
+                    val badgeCount = badgeCounts[screen] ?: 0
+                    BadgedBox(
+                        badge = {
+                            if (badgeCount > 0) {
+                                Badge { Text(badgeCount.toString()) }
+                            }
+                        }
+                    ) {
+                        Icon(
+                            painter = painterResource(id = iconRes),
+                            contentDescription = stringResource(screen.titleId)
+                        )
+                    }
                 }
             )
         }
@@ -141,7 +153,8 @@ fun AppNavigationBar(
     modifier: Modifier = Modifier,
     pureBlack: Boolean = false,
     slimNav: Boolean = false,
-    onSearchLongClick: (() -> Unit)? = null
+    onSearchLongClick: (() -> Unit)? = null,
+    badgeCounts: Map<Screens, Int> = emptyMap()
 ) {
     val containerColor = if (pureBlack) Color.Black else MaterialTheme.colorScheme.surfaceContainer
     val contentColor = if (pureBlack) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
@@ -201,10 +214,19 @@ fun AppNavigationBar(
                 },
                 interactionSource = interactionSource,
                 icon = {
-                    Icon(
-                        painter = painterResource(id = iconRes),
-                        contentDescription = stringResource(screen.titleId)
-                    )
+                    val badgeCount = badgeCounts[screen] ?: 0
+                    BadgedBox(
+                        badge = {
+                            if (badgeCount > 0) {
+                                Badge { Text(badgeCount.toString()) }
+                            }
+                        }
+                    ) {
+                        Icon(
+                            painter = painterResource(id = iconRes),
+                            contentDescription = stringResource(screen.titleId)
+                        )
+                    }
                 },
                 label = if (!slimNav) {
                     {

@@ -699,6 +699,9 @@ class MainActivity : ComponentActivity() {
 
                 val homeViewModel: HomeViewModel = hiltViewModel()
                 val songSharingViewModel: com.metrolist.music.viewmodels.SongSharingViewModel = hiltViewModel()
+                // Songs received from the partner that are still unfinished — drives the
+                // waiting-for-you badges on the Library tab and the shared playlist card.
+                val incomingSharedSongs by songSharingViewModel.incomingSongs.collectAsStateWithLifecycle()
                 val accountImageUrl by homeViewModel.accountImageUrl.collectAsStateWithLifecycle()
                 val navBackStackEntry by navController.currentBackStackEntryAsState()
                 val (previousTab, setPreviousTab) = rememberSaveable { mutableStateOf("home") }
@@ -1186,6 +1189,10 @@ class MainActivity : ComponentActivity() {
                                         pureBlack = pureBlack,
                                         slimNav = slimNav,
                                         onSearchLongClick = onSearchLongClick,
+                                        badgeCounts =
+                                            mapOf(
+                                                Screens.Library to incomingSharedSongs.size,
+                                            ),
                                         modifier =
                                             Modifier
                                                 .align(Alignment.BottomCenter)
@@ -1302,6 +1309,10 @@ class MainActivity : ComponentActivity() {
                                     onItemClick = onRailItemClick,
                                     pureBlack = pureBlack,
                                     onSearchLongClick = onRailSearchLongClick,
+                                    badgeCounts =
+                                        mapOf(
+                                            Screens.Library to incomingSharedSongs.size,
+                                        ),
                                 )
                             }
                             Box(Modifier.weight(1f)) {
@@ -1362,6 +1373,7 @@ class MainActivity : ComponentActivity() {
                                         latestVersionName = latestVersionName,
                                         activity = this@MainActivity,
                                         snackbarHostState = snackbarHostState,
+                                        waitingSongCount = incomingSharedSongs.size,
                                     )
                                 }
                             }
