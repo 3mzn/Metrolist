@@ -19,6 +19,8 @@ import android.graphics.RectF
 import android.graphics.Shader
 import android.net.Uri
 import android.os.Bundle
+import android.text.TextPaint
+import android.text.TextUtils
 import android.widget.RemoteViews
 import androidx.palette.graphics.Palette
 import coil3.ImageLoader
@@ -64,7 +66,7 @@ data class PartnerTrackStatus(
  * Renders and refreshes the Partner home-screen widget.
  *
  * Layout mirrors a chat-bubble style card: the partner's cover art on the left, and on the right
- * a panel whose background color is extracted from that same artwork via androidx Palette — the
+ * a panel whose background color is extracted from that same artwork via androidx Palette â€” the
  * same extraction family Metrolist uses for its dynamic player theme. Title and artist lines
  * marquee-scroll when long; tapping the widget plays the partner's current song.
  */
@@ -119,11 +121,16 @@ class PartnerWidgetManager @Inject constructor(
         }
     }
 
-    /** Below ~2 cells wide there is no room for text — fall back to cover-only rendering. */
+    /** Below ~2 cells wide there is no room for text â€” fall back to cover-only rendering. */
     private fun isCompact(options: Bundle): Boolean =
         options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH) in 1..179
 
-    private suspend fun buildFullViews(
+    /**
+     * Full layout: left = cover art, right = an info panel composed as a bitmap of the SAME
+     * dimensions as the art. Both render through fitCenter in equal-weight cells, so their
+     * rendered sizes can never diverge, regardless of launcher cell geometry.
+     */
+    private fun buildFullViews(
         art: Bitmap?,
         status: PartnerTrackStatus?,
         partnerName: String?,
@@ -131,40 +138,116 @@ class PartnerWidgetManager @Inject constructor(
         val views = RemoteViews(context.packageName, R.layout.widget_partner)
         views.setImageViewBitmap(R.id.widget_partner_art, art)
 
-        // Panel palette extracted from the very artwork on display — same family as the
-        // dynamic player theme's PlayerColorExtractor.
-        val swatch = art?.let { extractSwatch(it) }
-        val panelColor = swatch?.rgb ?: Color.argb(230, 32, 32, 36)
-        val titleColor = swatch?.titleTextColor ?: Color.WHITE
-        val bodyColor = swatch?.bodyTextColor ?: Color.WHITE
-
+        val panelSize = art?.width ?: 300
         views.setImageViewBitmap(
-            R.id.widget_partner_text_bg,
-            roundedRectBitmap(panelColor, cornerRadius = 28f, alpha = 235),
+            R.id.widget_partner_panel,
+            buildPanelBitmap(panelSize, status, partnerName, art),
         )
-
-        val headerText =
-            if (status == null || !status.isLive()) {
-                context.getString(R.string.partner_widget_idle_message, partnerName ?: "partner")
-            } else {
-                context.getString(R.string.partner_widget_listening_label) + " " + (partnerName ?: "")
-            }
-        views.setTextViewText(R.id.widget_partner_header, headerText)
-        views.setTextColor(R.id.widget_partner_header, bodyColor)
-
-        val titleText = status?.title.orEmpty().ifBlank { " " }
-        val artistText = status?.artist.orEmpty().ifBlank { " " }
-        views.setTextViewText(R.id.widget_partner_title, titleText)
-        views.setTextViewText(R.id.widget_partner_artist, artistText)
-        views.setTextColor(R.id.widget_partner_title, titleColor)
-        views.setTextColor(R.id.widget_partner_artist, bodyColor)
-
-        // NOTE: marquee-forcing via setBoolean("setSelected") intentionally omitted — MIUI's
-        // host throws during apply on reflection actions, leaving a permanent "can't load
-        // widget" placeholder. Long titles truncate with ellipsis instead.
 
         views.setOnClickPendingIntent(R.id.widget_partner_root, tapIntentFor(status))
         return views
+    }
+
+    /**
+     * Draws the info panel: album-colored rounded background (Palette extraction, same family as
+     * the dynamic player theme) with the header, song title and artist rendered directly into the
+     * bitmap. Long text is ellipsized â€” MIUI hosts reject reflection-based marquee forcing.
+     */
+    private fun buildPanelBitmap(
+        size: Int,
+        status: PartnerTrackStatus?,
+        partnerName: String?,
+        art: Bitmap?,
+    ): Bitmap {
+        val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+
+        val live = status != null && status.isLive()
+        val swatch = art?.let { extractSwatch(it) }
+
+        val bgColor =
+            if (status == null || !live) Color.argb(210, 28, 28, 32)
+            else swatch?.rgb ?: Color.argb(235, 32, 32, 36)
+        val titleColor = swatch?.titleTextColor ?: Color.WHITE
+        val bodyColor = swatch?.bodyTextColor ?: Color.WHITE
+
+        val bgPaint = Paint().apply {
+            isAntiAlias = true
+            color = bgColor
+        }
+        val radius = size * 0.14f
+        canvas.drawRoundRect(
+            RectF(0f, 0f, size.toFloat(), size.toFloat()),
+            radius,
+            radius,
+            bgPaint,
+        )
+
+        val pad = size * 0.09f
+        val textWidth = size - pad * 2
+
+        val headerPaint = TextPaint().apply {
+            isAntiAlias = true
+            color = bodyColor
+            textSize = size * 0.085f
+        }
+        val titlePaint = TextPaint().apply {
+            isAntiAlias = true
+            color = titleColor
+            textSize = size * 0.145f
+            isFakeBoldText = true
+        }
+        val artistPaint = TextPaint().apply {
+            isAntiAlias = true
+            color = bodyColor
+            textSize = size * 0.095f
+        }
+
+        if (status == null || !status.isLive()) {
+            // Idle: partner name prominent, soft message underneath.
+            val name = partnerName ?: context.getString(R.string.song_listened_fallback_friend)
+            val nameY = size * 0.42f
+            canvas.drawText(name, pad, nameY, headerPaint.apply { textSize = size * 0.12f })
+            val msgPaint = TextPaint(headerPaint).apply { textSize = size * 0.095f }
+            canvas.drawText(
+                TextUtils.ellipsize(
+                    context.getString(R.string.partner_widget_idle_message),
+                    msgPaint,
+                    textWidth,
+                    TextUtils.TruncateAt.END,
+                ).toString(),
+                pad,
+                nameY + size * 0.12f,
+                msgPaint,
+            )
+            return bitmap
+        }
+
+        // Live: header, title, artist â€” top-aligned stack.
+        val headerText =
+            context.getString(R.string.partner_widget_listening_label) + " " + (partnerName ?: "")
+        canvas.drawText(
+            TextUtils.ellipsize(headerText, headerPaint, textWidth, TextUtils.TruncateAt.END).toString(),
+            pad,
+            pad + headerPaint.textSize,
+            headerPaint,
+        )
+
+        val titleY = size * 0.52f
+        canvas.drawText(
+            TextUtils.ellipsize(status.title.ifBlank { " " }, titlePaint, textWidth, TextUtils.TruncateAt.END).toString(),
+            pad,
+            titleY,
+            titlePaint,
+        )
+
+        canvas.drawText(
+            TextUtils.ellipsize(status.artist.ifBlank { " " }, artistPaint, textWidth, TextUtils.TruncateAt.END).toString(),
+            pad,
+            titleY + size * 0.13f,
+            artistPaint,
+        )
+        return bitmap
     }
 
     private fun buildCompactViews(
@@ -285,24 +368,6 @@ class PartnerWidgetManager @Inject constructor(
             paint,
         )
         return output
-    }
-
-    private fun roundedRectBitmap(color: Int, cornerRadius: Float, alpha: Int): Bitmap {
-        val size = 120
-        val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(bitmap)
-        val paint = Paint().apply {
-            isAntiAlias = true
-            this.color = color
-            this.alpha = alpha
-        }
-        canvas.drawRoundRect(
-            RectF(0f, 0f, size.toFloat(), size.toFloat()),
-            cornerRadius,
-            cornerRadius,
-            paint,
-        )
-        return bitmap
     }
 
     private fun defaultCircularIcon(): Bitmap {
