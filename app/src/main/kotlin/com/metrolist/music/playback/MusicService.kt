@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Metrolist Project (C) 2026
  * Licensed under GPL-3.0 | See git history for contributors
  */
@@ -243,6 +243,7 @@ import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.distinctUntilChangedBy
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -329,6 +330,9 @@ class MusicService :
         }
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+
+    /** Dedicated scope for heartbeat broadcasts â€” network awaits here must never block widget updates. */
+    private val heartbeatScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     private val binder = MusicBinder()
 
@@ -491,8 +495,8 @@ class MusicService :
     private var initialBufferRecoveryJob: Job? = null
     private var initialBufferRecoveryAttemptedMediaId: String? = null
     // True only when stopOnError() paused playback purely because of a network outage
-    // (waitOnNetworkError exhausting its attempts). Lets triggerRetry() know it's safe —
-    // and necessary — to explicitly resume playback once connectivity returns, rather than
+    // (waitOnNetworkError exhausting its attempts). Lets triggerRetry() know it's safe â€”
+    // and necessary â€” to explicitly resume playback once connectivity returns, rather than
     // leaving the player "prepared but paused" forever.
     private var pausedDueToNetworkError = false
     private var silenceSkipJob: Job? = null
@@ -525,7 +529,7 @@ class MusicService :
     // spans), so a single playback can re-resolve dozens or hundreds of times in a
     // very short window. Without this guard, every single resolve would launch its
     // own coroutine doing a Room read + a hop to Dispatchers.Main + a Room
-    // transaction — all redundant, since they all converge on the same mediaId and
+    // transaction â€” all redundant, since they all converge on the same mediaId and
     // mostly no-op. If those launches outpace how fast they can drain (e.g. the
     // Main thread is busy with playback/UI work), dozens of them pile up in memory
     // at once, which is enough to blow past this app's heap limit on low-RAM
@@ -1188,7 +1192,7 @@ class MusicService :
         scope.launch {
             dataStore.data.map { it[AutoLoadMoreKey] ?: true }.distinctUntilChanged().collect { cachedAutoLoadMore = it }
         }
-        // Keep YTPlayerUtils in sync with the stream source toggles (Settings → Stream sources).
+        // Keep YTPlayerUtils in sync with the stream source toggles (Settings â†’ Stream sources).
         // Map to the derived set + distinctUntilChanged so an unrelated preference write doesn't
         // rebuild the set and rewrite the @Volatile field on every DataStore emission.
         scope.launch {
@@ -1331,7 +1335,7 @@ class MusicService :
 
         val silenceProcessor = SilenceDetectorAudioProcessor { handleLongSilenceDetected() }
 
-        // Set initial state — use pre-read prefs when available, otherwise fall back to DataStore
+        // Set initial state â€” use pre-read prefs when available, otherwise fall back to DataStore
         val useAudioTrackPlaybackParams = if (prefs != null) {
             val skipSilence = prefs[SkipSilenceKey] ?: false
             val instantSkip = prefs[SkipSilenceInstantKey] ?: false
@@ -1518,7 +1522,7 @@ class MusicService :
         // before anything else can return early. Previously, hitting MAX_RETRY_COUNT while
         // still offline called stopOnError() and returned WITHOUT setting
         // waitingForNetworkConnection = true. That meant the "isConnected && waitingFor...
-        // -> triggerRetry()" listener never fired once the network actually came back —
+        // -> triggerRetry()" listener never fired once the network actually came back â€”
         // the player was left paused in a post-error state, and since ExoPlayer requires an
         // explicit prepare() after a fatal error before play() does anything, no song would
         // play again until the app was killed and relaunched (which recreates the player).
@@ -1530,7 +1534,7 @@ class MusicService :
             pausedDueToNetworkError = true
             stopOnError()
             retryCount = 0
-            // Don't schedule another backoff job — we're out of attempts for now — but stay
+            // Don't schedule another backoff job â€” we're out of attempts for now â€” but stay
             // "waiting" so the connectivity listener can still auto-resume on reconnect.
             retryJob?.cancel()
             return
@@ -1548,7 +1552,7 @@ class MusicService :
                     retryCount++
                     triggerRetry()
                 }
-                // If still offline when the timer fires, just let the job end — we stay
+                // If still offline when the timer fires, just let the job end â€” we stay
                 // "waiting" and the connectivityObserver listener (not this job) is what
                 // will catch the eventual reconnection and call triggerRetry().
             }
@@ -1571,13 +1575,13 @@ class MusicService :
             player.prepare()
             if (shouldResumePlayback) {
                 // We explicitly paused this ourselves (stopOnError) purely because of the
-                // network outage — playWhenReady is now false, so prepare() alone would just
+                // network outage â€” playWhenReady is now false, so prepare() alone would just
                 // sit there "ready but paused" until the user manually pressed play again on
                 // this exact item. Resume explicitly so reconnecting actually resumes audio.
                 player.playWhenReady = true
             }
             // Otherwise (we never force-paused), leave playWhenReady as-is and let the
-            // player auto-resume on its own — this avoids stealing audio focus on ordinary
+            // player auto-resume on its own â€” this avoids stealing audio focus on ordinary
             // mid-stream retries where the user never lost the "should be playing" intent.
         }
     }
@@ -1672,7 +1676,7 @@ class MusicService :
 
     /**
      * Registers / refreshes song metadata (title, duration, isVideo, related songs)
-     * for [mediaId]. Pure metadata bookkeeping only — does NOT touch [dateDownload].
+     * for [mediaId]. Pure metadata bookkeeping only â€” does NOT touch [dateDownload].
      *
      * Looks across player, secondaryPlayer and fadingPlayer so metadata is still
      * found correctly while a crossfade swap is in progress.
@@ -1749,8 +1753,8 @@ class MusicService :
      * recoverSong() is called from resolveDataSpec() on every dataSpec/chunk
      * resolution rather than once per song, so without this guard a heavily
      * fragmented (e.g. long-cached) file can fan out dozens of redundant,
-     * concurrent recoverSong() coroutines — each doing a Room read, a hop to
-     * Dispatchers.Main, and a Room transaction — for work that's already done
+     * concurrent recoverSong() coroutines â€” each doing a Room read, a hop to
+     * Dispatchers.Main, and a Room transaction â€” for work that's already done
      * after the first one completes. Always call this instead of launching
      * recoverSong() directly.
      */
@@ -1772,7 +1776,7 @@ class MusicService :
      * Marks [mediaId] as belonging to the Cache Playlist by setting [dateDownload],
      * but ONLY if the full file (byte 0 through contentLength) is actually present
      * in playerCache. This must only be called from a genuine "track finished
-     * naturally" signal (see onMediaItemTransition's AUTO-reason handling) —
+     * naturally" signal (see onMediaItemTransition's AUTO-reason handling) â€”
      * never from raw dataSpec/chunk resolution, since the player's background
      * prefetch can finish downloading a short file in seconds, long before the
      * user has actually listened to it (or even if they skipped away early).
@@ -3338,7 +3342,7 @@ class MusicService :
             // rate-limited refresh corrects the table, allow WEB_REMIX again on the next resolution.
             scope.launch {
                 if (CipherDeobfuscator.onStreamRejected()) {
-                    Timber.tag(TAG).d("Player config changed after stream rejection — restoring WEB_REMIX")
+                    Timber.tag(TAG).d("Player config changed after stream rejection â€” restoring WEB_REMIX")
                     YTPlayerUtils.clearWebRemixFailures()
                 }
             }
@@ -3593,11 +3597,11 @@ class MusicService :
 
     private suspend fun updateDiscordRPC(song: Song, isPlaying: Boolean) {
         if (!DiscordRpcManager.isReady()) {
-            Timber.tag("DiscordSvc").w("updateDiscordRPC: skipping — not ready")
+            Timber.tag("DiscordSvc").w("updateDiscordRPC: skipping â€” not ready")
             return
         }
         if (!discordRpcEnabled) {
-            Timber.tag("DiscordSvc").w("updateDiscordRPC: skipping — RPC disabled")
+            Timber.tag("DiscordSvc").w("updateDiscordRPC: skipping â€” RPC disabled")
             return
         }
 
@@ -3637,7 +3641,7 @@ class MusicService :
         val btn2Url = dataStore.get(DiscordButton2UrlKey, DiscordDefaults.BUTTON2_URL)
 
         Timber.tag("DiscordSvc").d(
-            "updateDiscordRPC: prefs — advancedMode=%s, activityType=%d, activityName=%s, stateTemplate=%s, detailsTemplate=%s",
+            "updateDiscordRPC: prefs â€” advancedMode=%s, activityType=%d, activityName=%s, stateTemplate=%s, detailsTemplate=%s",
             advancedMode, activityType, activityName, stateTemplate, detailsTemplate,
         )
 
@@ -3795,7 +3799,7 @@ class MusicService :
                     when {
                         dataSpec.length >= 0 -> dataSpec.length
                         contentLength != null -> (contentLength - dataSpec.position).coerceAtLeast(1)
-                        else -> CHUNK_LENGTH // contentLength unknown yet — fall back to old probe size
+                        else -> CHUNK_LENGTH // contentLength unknown yet â€” fall back to old probe size
                     }
 
                 if (downloadCache.isCached(mediaId, dataSpec.position, requiredLength)) {
@@ -4652,37 +4656,49 @@ class MusicService :
                     android.util.Log.i("HEARTBEAT", "updateWidgetUI fired playing=$playing song=${song?.title} local=${song?.isLocal}")
 
                     try {
-                        widgetManager.updateWidgets(
-                            title = songTitle,
-                            artist = artistName,
-                            artworkUri = song?.thumbnailUrl,
-                            isPlaying = playing,
-                            isLiked = resolvedIsLiked,
-                            duration = if (player.duration != C.TIME_UNSET) player.duration else 0,
-                            currentPosition = player.currentPosition,
-                        )
+                        // Hard timeout: a hung artwork load or RemoteViews build must never hold
+                        // widgetUpdateInFlight forever, or every later update is silently dropped.
+                        withTimeoutOrNull(20_000) {
+                            widgetManager.updateWidgets(
+                                title = songTitle,
+                                artist = artistName,
+                                artworkUri = song?.thumbnailUrl,
+                                isPlaying = playing,
+                                isLiked = resolvedIsLiked,
+                                duration = if (player.duration != C.TIME_UNSET) player.duration else 0,
+                                currentPosition = player.currentPosition,
+                            )
+                        } ?: android.util.Log.e("HEARTBEAT", "updateWidgets timed out")
                     } catch (e: Exception) {
                         android.util.Log.e("HEARTBEAT", "updateWidgets threw", e)
                     }
 
-                    // Partner heartbeat: broadcast this song to `status/{uid}` so the partner's
-                    // widget mirrors it. One write per song change; skipped entirely when the
-                    // user turned sharing off.
-                    val heartbeatEnabled = runBlocking(Dispatchers.IO) {
-                        dataStore.data.first()[PartnerWidgetManager.HEARTBEAT_ENABLED_KEY] ?: true
-                    }
-                    android.util.Log.i("HEARTBEAT", "enabled=$heartbeatEnabled")
-                    if (playing && heartbeatEnabled && song != null && !song.isLocal) {
-                        android.util.Log.i("HEARTBEAT", "broadcasting ${song.id}")
-                        songSharingRepository.updateMyStatus(
-                            songId = song.id,
-                            title = song.title,
-                            artist = artistName,
-                            coverUrl = song.thumbnailUrl,
-                        )
-                        android.util.Log.i("HEARTBEAT", "broadcast done")
-                    } else if (!playing || song == null) {
-                        songSharingRepository.clearMyStatus()
+                    // Partner heartbeat: broadcast OUTSIDE the widget-update lock â€” a slow or
+                    // hung Firestore await here used to freeze all future widget updates.
+                    val songForHeartbeat = song
+                    if (songForHeartbeat != null && !songForHeartbeat.isLocal) {
+                        heartbeatScope.launch {
+                            val enabled = runCatching {
+                                runBlocking(Dispatchers.IO) {
+                                    dataStore.data.first()[PartnerWidgetManager.HEARTBEAT_ENABLED_KEY] ?: true
+                                }
+                            }.getOrDefault(true)
+                            android.util.Log.i("HEARTBEAT", "broadcast enabled=$enabled song=${songForHeartbeat.id}")
+                            if (!enabled) return@launch
+                            if (!playing) {
+                                songSharingRepository.clearMyStatus()
+                            } else {
+                                songSharingRepository.updateMyStatus(
+                                    songId = songForHeartbeat.id,
+                                    title = songForHeartbeat.title,
+                                    artist = artistName,
+                                    coverUrl = songForHeartbeat.thumbnailUrl,
+                                )
+                            }
+                            android.util.Log.i("HEARTBEAT", "broadcast done")
+                        }
+                    } else if (songForHeartbeat == null || songForHeartbeat.isLocal) {
+                        heartbeatScope.launch { songSharingRepository.clearMyStatus() }
                     }
                 }
             } catch (e: Exception) {
