@@ -80,10 +80,14 @@ class SongListenedRealTimeNotifier @Inject constructor(
                     ).collect { songs ->
                         // Only notify for songs listened to in the last 24 hours
                         val oneDayAgo = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(1)
+
+                        // One notification per SONG, not per document: a song sent more than once
+                        // lives in several sentSongs documents, and reaching 50% marks every one
+                        // of them, which would otherwise stack identical notifications.
                         val recentSongs =
                             songs.filter { song ->
                                 song.listenedAt != null && song.listenedAt > oneDayAgo
-                            }
+                            }.distinctBy { it.songId }
 
                         // Show notification for each recent song. The partner name doubles as a
                         // personalized fallback when the sender's username field is empty.
@@ -93,8 +97,11 @@ class SongListenedRealTimeNotifier @Inject constructor(
                                 sentSong,
                                 partnerFallback = partnerResolver.identity.value.partnerName,
                             )
-                            // Mark as notified
-                            songSharingRepository.markNotificationSent(sentSong.id)
+                            // Mark EVERY document for this song as notified — an unmarked twin
+                            // would re-notify on the very next snapshot.
+                            songs.filter { it.songId == sentSong.songId }.forEach { twin ->
+                                songSharingRepository.markNotificationSent(twin.id)
+                            }
                         }
                     }
                 } catch (e: CancellationException) {

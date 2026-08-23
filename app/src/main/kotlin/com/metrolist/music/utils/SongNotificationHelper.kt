@@ -39,7 +39,9 @@ object SongNotificationHelper {
         context: Context,
         friendName: String,
         songTitle: String,
-        uniqueId: Int = System.currentTimeMillis().toInt(),
+        // Deterministic per (friend, song): a duplicate delivery for the same song replaces the
+        // existing notification instead of stacking a second identical one.
+        uniqueId: Int = "$friendName|$songTitle".hashCode(),
     ) {
         createNotificationChannel(context)
 

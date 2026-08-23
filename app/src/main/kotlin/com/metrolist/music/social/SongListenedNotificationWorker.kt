@@ -61,11 +61,14 @@ class SongListenedNotificationWorker @AssistedInject constructor(
 
             Timber.d("SongListenedWorker", "Showing ${recentSongs.size} recent songs (last 24h)")
 
-            // Show notification for each recent song
-            recentSongs.forEach { sentSong ->
+            // One notification per SONG: repeated sends create multiple sentSongs documents for
+            // the same track, and 50%-listened marks them all.
+            recentSongs.distinctBy { it.songId }.forEach { sentSong ->
                 SongNotificationHelper.showNotification(context, sentSong)
-                // Mark as notified
-                songSharingRepository.markNotificationSent(sentSong.id)
+                // Mark every document for this song so unmarked twins don't re-notify later.
+                listenedSongs.filter { it.songId == sentSong.songId }.forEach { twin ->
+                    songSharingRepository.markNotificationSent(twin.id)
+                }
             }
 
             Result.success()
