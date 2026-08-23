@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Metrolist Project (C) 2026
  * Licensed under GPL-3.0 | See git history for contributors
  */
@@ -19,6 +19,7 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.time.LocalDateTime
@@ -38,12 +39,12 @@ class SongSharingRepository @Inject constructor(
 
     /**
      * Create the shared-songs playlist if it doesn't exist, and keep its label directional:
-     * "From aswini" on eman's device, "From eman" on aswini's. Idempotent — runs at every app
+     * "From aswini" on eman's device, "From eman" on aswini's. Idempotent â€” runs at every app
      * start, so both fresh installs and pre-existing "To Listen" rows converge.
      */
     suspend fun initializeToListenPlaylist() = withContext(Dispatchers.IO) {
         // playlistBlocking and database.query both hit Room synchronously, and the callers are
-        // viewModelScope coroutines on the main dispatcher — this must stay confined to IO or
+        // viewModelScope coroutines on the main dispatcher â€” this must stay confined to IO or
         // Room throws IllegalStateException and the playlist silently never appears.
         Timber.tag("PLAYLIST_INIT").w(
             "PLAYLIST_INIT_V3 thread=%s partnerName=%s",
@@ -386,7 +387,7 @@ class SongSharingRepository @Inject constructor(
 
     /**
      * Broadcast what this device is currently playing, for the partner's widget.
-     * One document per user at `status/{uid}` — written once per song change, never per second.
+     * One document per user at `status/{uid}` â€” written once per song change, never per second.
      */
     suspend fun updateMyStatus(
         songId: String,
@@ -394,18 +395,34 @@ class SongSharingRepository @Inject constructor(
         artist: String,
         coverUrl: String?,
     ) {
-        val currentUid = auth.currentUser?.uid ?: return
+        val currentUid = auth.currentUser?.uid
+        if (currentUid == null) {
+            android.util.Log.e("HEARTBEAT", "updateMyStatus skipped: not signed in")
+            return
+        }
+        android.util.Log.i("HEARTBEAT", "updateMyStatus begin uid=$currentUid songId=$songId")
         try {
-            firestore.collection("status").document(currentUid).set(
-                mapOf(
-                    "songId" to songId,
-                    "title" to title,
-                    "artist" to artist,
-                    "coverUrl" to coverUrl,
-                    "updatedAt" to System.currentTimeMillis(),
-                ),
-            ).await()
+            // Bounded: some devices/emulators (broken GMS stacks) leave Firestore tasks pending
+            // forever. Without this timeout every broadcast would stack a hung coroutine.
+            val committed = withTimeoutOrNull(10_000) {
+                firestore.collection("status").document(currentUid).set(
+                    mapOf(
+                        "songId" to songId,
+                        "title" to title,
+                        "artist" to artist,
+                        "coverUrl" to coverUrl,
+                        "updatedAt" to System.currentTimeMillis(),
+                    ),
+                ).await()
+                true
+            }
+            if (committed == true) {
+                android.util.Log.i("HEARTBEAT", "updateMyStatus committed")
+            } else {
+                android.util.Log.e("HEARTBEAT", "updateMyStatus TIMED OUT")
+            }
         } catch (e: Exception) {
+            android.util.Log.e("HEARTBEAT", "updateMyStatus failed", e)
             Timber.tag(TAG).e(e, "Failed to update my playback status")
         }
     }

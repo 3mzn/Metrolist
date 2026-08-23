@@ -332,6 +332,10 @@ class MusicService :
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
     /** Dedicated scope for heartbeat broadcasts â€” network awaits here must never block widget updates. */
+    /** Dedupe: updateWidgetUI can fire many times per second; broadcast each song only once. */
+    @Volatile
+    private var lastBroadcastSongId: String? = null
+
     private val heartbeatScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     private val binder = MusicBinder()
@@ -4673,31 +4677,37 @@ class MusicService :
                         android.util.Log.e("HEARTBEAT", "updateWidgets threw", e)
                     }
 
-                    // Partner heartbeat: broadcast OUTSIDE the widget-update lock â€” a slow or
-                    // hung Firestore await here used to freeze all future widget updates.
+                    // Partner heartbeat: broadcast OUTSIDE the widget-update lock. Deduped per
+                    // song so rapid-fire updateWidgetUI calls don't hammer Firestore.
                     val songForHeartbeat = song
                     if (songForHeartbeat != null && !songForHeartbeat.isLocal) {
-                        heartbeatScope.launch {
-                            val enabled = runCatching {
-                                runBlocking(Dispatchers.IO) {
-                                    dataStore.data.first()[PartnerWidgetManager.HEARTBEAT_ENABLED_KEY] ?: true
+                        if (songForHeartbeat.id == lastBroadcastSongId) {
+                            android.util.Log.i("HEARTBEAT", "skip duplicate broadcast ${songForHeartbeat.id}")
+                        } else {
+                            lastBroadcastSongId = songForHeartbeat.id
+                            heartbeatScope.launch {
+                                val enabled = runCatching {
+                                    runBlocking(Dispatchers.IO) {
+                                        dataStore.data.first()[PartnerWidgetManager.HEARTBEAT_ENABLED_KEY] ?: true
+                                    }
+                                }.getOrDefault(true)
+                                android.util.Log.i("HEARTBEAT", "broadcast enabled=$enabled song=${songForHeartbeat.id}")
+                                if (!enabled) return@launch
+                                if (!playing) {
+                                    songSharingRepository.clearMyStatus()
+                                } else {
+                                    songSharingRepository.updateMyStatus(
+                                        songId = songForHeartbeat.id,
+                                        title = songForHeartbeat.title,
+                                        artist = artistName,
+                                        coverUrl = songForHeartbeat.thumbnailUrl,
+                                    )
                                 }
-                            }.getOrDefault(true)
-                            android.util.Log.i("HEARTBEAT", "broadcast enabled=$enabled song=${songForHeartbeat.id}")
-                            if (!enabled) return@launch
-                            if (!playing) {
-                                songSharingRepository.clearMyStatus()
-                            } else {
-                                songSharingRepository.updateMyStatus(
-                                    songId = songForHeartbeat.id,
-                                    title = songForHeartbeat.title,
-                                    artist = artistName,
-                                    coverUrl = songForHeartbeat.thumbnailUrl,
-                                )
+                                android.util.Log.i("HEARTBEAT", "broadcast done")
                             }
-                            android.util.Log.i("HEARTBEAT", "broadcast done")
                         }
                     } else if (songForHeartbeat == null || songForHeartbeat.isLocal) {
+                        lastBroadcastSongId = null
                         heartbeatScope.launch { songSharingRepository.clearMyStatus() }
                     }
                 }
