@@ -402,10 +402,10 @@ class SongSharingRepository @Inject constructor(
         }
         android.util.Log.i("HEARTBEAT", "updateMyStatus begin uid=$currentUid songId=$songId")
         try {
-            // Bounded: some devices/emulators (broken GMS stacks) leave Firestore tasks pending
-            // forever. Without this timeout every broadcast would stack a hung coroutine.
+            // Bounded: some devices/emulators leave Firestore tasks pending forever.
+            // Listeners stay attached so a LATE completion still reveals the true cause.
             val committed = withTimeoutOrNull(10_000) {
-                firestore.collection("status").document(currentUid).set(
+                val task = firestore.collection("status").document(currentUid).set(
                     mapOf(
                         "songId" to songId,
                         "title" to title,
@@ -413,7 +413,14 @@ class SongSharingRepository @Inject constructor(
                         "coverUrl" to coverUrl,
                         "updatedAt" to System.currentTimeMillis(),
                     ),
-                ).await()
+                )
+                task.addOnFailureListener { late ->
+                    android.util.Log.e("HEARTBEAT", "updateMyStatus task FAILED: ${late.message}", late)
+                }
+                task.addOnSuccessListener {
+                    android.util.Log.i("HEARTBEAT", "updateMyStatus task committed")
+                }
+                task.await()
                 true
             }
             if (committed == true) {
@@ -429,10 +436,23 @@ class SongSharingRepository @Inject constructor(
 
     /** Stop broadcasting (playback stopped or service shutting down). */
     suspend fun clearMyStatus() {
-        val currentUid = auth.currentUser?.uid ?: return
+        val currentUid = auth.currentUser?.uid
+        if (currentUid == null) {
+            android.util.Log.i("HEARTBEAT", "clearMyStatus skipped: not signed in")
+            return
+        }
         try {
-            firestore.collection("status").document(currentUid).delete().await()
+            val committed = withTimeoutOrNull(10_000) {
+                firestore.collection("status").document(currentUid).delete().await()
+                true
+            }
+            if (committed == true) {
+                android.util.Log.i("HEARTBEAT", "clearMyStatus committed")
+            } else {
+                android.util.Log.e("HEARTBEAT", "clearMyStatus TIMED OUT")
+            }
         } catch (e: Exception) {
+            android.util.Log.e("HEARTBEAT", "clearMyStatus failed", e)
             Timber.tag(TAG).e(e, "Failed to clear my playback status")
         }
     }

@@ -159,9 +159,9 @@ class PartnerWidgetManager @Inject constructor(
         views.setTextColor(R.id.widget_partner_title, titleColor)
         views.setTextColor(R.id.widget_partner_artist, bodyColor)
 
-        // Force the marquees to run: nothing in a widget host selects TextViews for us.
-        views.setBoolean(R.id.widget_partner_title, "setSelected", true)
-        views.setBoolean(R.id.widget_partner_artist, "setSelected", true)
+        // NOTE: marquee-forcing via setBoolean("setSelected") intentionally omitted — MIUI's
+        // host throws during apply on reflection actions, leaving a permanent "can't load
+        // widget" placeholder. Long titles truncate with ellipsis instead.
 
         views.setOnClickPendingIntent(R.id.widget_partner_root, tapIntentFor(status))
         return views

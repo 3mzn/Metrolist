@@ -332,9 +332,10 @@ class MusicService :
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
     /** Dedicated scope for heartbeat broadcasts â€” network awaits here must never block widget updates. */
-    /** Dedupe: updateWidgetUI can fire many times per second; broadcast each song only once. */
+    /** Dedupe: updateWidgetUI can fire many times per second; broadcast each state change once.
+     * Key includes playing-state: resuming the SAME song after launch must still broadcast. */
     @Volatile
-    private var lastBroadcastSongId: String? = null
+    private var lastBroadcastKey: String? = null
 
     private val heartbeatScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
@@ -4678,20 +4679,21 @@ class MusicService :
                     }
 
                     // Partner heartbeat: broadcast OUTSIDE the widget-update lock. Deduped per
-                    // song so rapid-fire updateWidgetUI calls don't hammer Firestore.
+                    // song+state so rapid-fire updateWidgetUI calls don't hammer Firestore.
                     val songForHeartbeat = song
                     if (songForHeartbeat != null && !songForHeartbeat.isLocal) {
-                        if (songForHeartbeat.id == lastBroadcastSongId) {
-                            android.util.Log.i("HEARTBEAT", "skip duplicate broadcast ${songForHeartbeat.id}")
+                        val broadcastKey = "${playing}|${songForHeartbeat.id}"
+                        if (broadcastKey == lastBroadcastKey) {
+                            android.util.Log.i("HEARTBEAT", "skip duplicate broadcast $broadcastKey")
                         } else {
-                            lastBroadcastSongId = songForHeartbeat.id
+                            lastBroadcastKey = broadcastKey
                             heartbeatScope.launch {
                                 val enabled = runCatching {
                                     runBlocking(Dispatchers.IO) {
                                         dataStore.data.first()[PartnerWidgetManager.HEARTBEAT_ENABLED_KEY] ?: true
                                     }
                                 }.getOrDefault(true)
-                                android.util.Log.i("HEARTBEAT", "broadcast enabled=$enabled song=${songForHeartbeat.id}")
+                                android.util.Log.i("HEARTBEAT", "broadcast enabled=$enabled key=$broadcastKey")
                                 if (!enabled) return@launch
                                 if (!playing) {
                                     songSharingRepository.clearMyStatus()
@@ -4707,8 +4709,11 @@ class MusicService :
                             }
                         }
                     } else if (songForHeartbeat == null || songForHeartbeat.isLocal) {
-                        lastBroadcastSongId = null
-                        heartbeatScope.launch { songSharingRepository.clearMyStatus() }
+                        // Clear once on entering the idle/local state — not on every 200ms tick.
+                        if (lastBroadcastKey != null) {
+                            lastBroadcastKey = null
+                            heartbeatScope.launch { songSharingRepository.clearMyStatus() }
+                        }
                     }
                 }
             } catch (e: Exception) {
