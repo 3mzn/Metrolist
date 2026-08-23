@@ -75,10 +75,13 @@ class PartnerHeartbeatMonitor @Inject constructor(
                             return@addSnapshotListener
                         }
                         val doc = snapshot ?: return@addSnapshotListener
+                        val partnerName = partnerResolver.identity.value.partnerName
                         if (!doc.exists()) {
                             // Partner stopped broadcasting — drop to the idle placeholder.
-                            scope.launch { partnerWidgetManager.writeCachedStatus(null) }
-                            partnerWidgetManager.updateFromStatus(null)
+                            scope.launch {
+                                partnerWidgetManager.writeCachedStatus(null, partnerName)
+                            }
+                            partnerWidgetManager.updateFromStatus(null, partnerName)
                             return@addSnapshotListener
                         }
 
@@ -91,8 +94,8 @@ class PartnerHeartbeatMonitor @Inject constructor(
                         )
                         // Snapshot callbacks run off-coroutine; suspend calls go through scope.
                         scope.launch {
-                            partnerWidgetManager.writeCachedStatus(status)
-                            partnerWidgetManager.updateFromStatus(status)
+                            partnerWidgetManager.writeCachedStatus(status, partnerName)
+                            partnerWidgetManager.updateFromStatus(status, partnerName)
                         }
                     }
         }
@@ -102,8 +105,8 @@ class PartnerHeartbeatMonitor @Inject constructor(
         statusRegistration?.remove()
         statusRegistration = null
         _attachedTo = null
-        scope.launch { partnerWidgetManager.writeCachedStatus(null) }
-        partnerWidgetManager.updateFromStatus(null)
+        scope.launch { partnerWidgetManager.writeCachedStatus(null, null) }
+        partnerWidgetManager.updateFromStatus(null, null)
     }
 
     private var _attachedTo: String? = null

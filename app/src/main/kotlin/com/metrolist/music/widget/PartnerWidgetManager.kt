@@ -13,12 +13,14 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapShader
 import android.graphics.Canvas
+import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Shader
 import android.net.Uri
 import android.os.Bundle
 import android.widget.RemoteViews
+import androidx.palette.graphics.Palette
 import coil3.ImageLoader
 import coil3.request.ImageRequest
 import coil3.request.allowHardware
@@ -27,7 +29,9 @@ import coil3.toBitmap
 import com.metrolist.music.MainActivity
 import com.metrolist.music.R
 import dagger.hilt.android.qualifiers.ApplicationContext
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.metrolist.music.utils.dataStore
 import kotlinx.coroutines.CoroutineScope
@@ -57,11 +61,12 @@ data class PartnerTrackStatus(
 }
 
 /**
- * Renders and refreshes the Partner home-screen widget: a circle (by default) filled with the
- * cover art of whatever the partner is listening to right now. Tapping it plays that song.
+ * Renders and refreshes the Partner home-screen widget.
  *
- * All shape/size/broadcast preferences are owned here so the feature stays one self-contained
- * vertical slice.
+ * Layout mirrors a chat-bubble style card: the partner's cover art on the left, and on the right
+ * a panel whose background color is extracted from that same artwork via androidx Palette — the
+ * same extraction family Metrolist uses for its dynamic player theme. Title and artist lines
+ * marquee-scroll when long; tapping the widget plays the partner's current song.
  */
 @Singleton
 class PartnerWidgetManager @Inject constructor(
@@ -75,24 +80,24 @@ class PartnerWidgetManager @Inject constructor(
 
     // Art cache keyed by cover URL, mirroring MetrolistWidgetManager's approach.
     private var cachedCoverUrl: String? = null
-    private var cachedShapedArt: Bitmap? = null
+    private var cachedSquareArt: Bitmap? = null
 
     suspend fun renderFromCache() {
         val status = readCachedStatus()
         updateFromStatus(status)
     }
 
-    fun updateFromStatus(status: PartnerTrackStatus?) {
+    fun updateFromStatus(status: PartnerTrackStatus?, partnerName: String? = null) {
         scope.launch {
             try {
-                push(status)
+                push(status, partnerName ?: readCachedPartnerName())
             } catch (e: Exception) {
                 android.util.Log.e("PartnerWidget", "update failed", e)
             }
         }
     }
 
-    private suspend fun push(status: PartnerTrackStatus?) {
+    private suspend fun push(status: PartnerTrackStatus?, partnerName: String?) {
         val appWidgetManager = AppWidgetManager.getInstance(context)
         val ids = appWidgetManager.getAppWidgetIds(
             ComponentName(context, PartnerWidgetReceiver::class.java),
@@ -100,41 +105,112 @@ class PartnerWidgetManager @Inject constructor(
         if (ids.isEmpty()) return
 
         val live = status != null && status.isLive()
-        val shaped = loadShapedCover(status?.coverUrl, stale = status != null && !live)
+        val art = loadShapedCover(status?.coverUrl, stale = status != null && !live)
 
         ids.forEach { widgetId ->
-            appWidgetManager.updateAppWidget(widgetId, buildRemoteViews(shaped, status))
+            val options = appWidgetManager.getAppWidgetOptions(widgetId)
+            val views =
+                if (isCompact(options)) {
+                    buildCompactViews(art, status)
+                } else {
+                    buildFullViews(art, status, partnerName)
+                }
+            appWidgetManager.updateAppWidget(widgetId, views)
         }
     }
 
-    private suspend fun buildRemoteViews(
+    /** Below ~2 cells wide there is no room for text — fall back to cover-only rendering. */
+    private fun isCompact(options: Bundle): Boolean =
+        options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH) in 1..179
+
+    private suspend fun buildFullViews(
         art: Bitmap?,
         status: PartnerTrackStatus?,
+        partnerName: String?,
     ): RemoteViews {
         val views = RemoteViews(context.packageName, R.layout.widget_partner)
         views.setImageViewBitmap(R.id.widget_partner_art, art)
 
-        val tapTarget: PendingIntent =
-            if (status != null && status.songId.isNotBlank()) {
-                PendingIntent.getActivity(
-                    context,
-                    REQUEST_CODE_PLAY,
-                    playSongIntent(status.songId),
-                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-                )
+        // Panel palette extracted from the very artwork on display — same family as the
+        // dynamic player theme's PlayerColorExtractor.
+        val swatch = art?.let { extractSwatch(it) }
+        val panelColor = swatch?.rgb ?: Color.argb(230, 32, 32, 36)
+        val titleColor = swatch?.titleTextColor ?: Color.WHITE
+        val bodyColor = swatch?.bodyTextColor ?: Color.WHITE
+
+        views.setImageViewBitmap(
+            R.id.widget_partner_text_bg,
+            roundedRectBitmap(panelColor, cornerRadius = 28f, alpha = 235),
+        )
+
+        val headerText =
+            if (status == null || !status.isLive()) {
+                context.getString(R.string.partner_widget_idle_message, partnerName ?: "partner")
             } else {
-                openAppPendingIntent()
+                context.getString(R.string.partner_widget_listening_label) + " " + (partnerName ?: "")
             }
-        views.setOnClickPendingIntent(R.id.widget_partner_root, tapTarget)
+        views.setTextViewText(R.id.widget_partner_header, headerText)
+        views.setTextColor(R.id.widget_partner_header, bodyColor)
+
+        val titleText = status?.title.orEmpty().ifBlank { " " }
+        val artistText = status?.artist.orEmpty().ifBlank { " " }
+        views.setTextViewText(R.id.widget_partner_title, titleText)
+        views.setTextViewText(R.id.widget_partner_artist, artistText)
+        views.setTextColor(R.id.widget_partner_title, titleColor)
+        views.setTextColor(R.id.widget_partner_artist, bodyColor)
+
+        // Force the marquees to run: nothing in a widget host selects TextViews for us.
+        views.setBoolean(R.id.widget_partner_title, "setSelected", true)
+        views.setBoolean(R.id.widget_partner_artist, "setSelected", true)
+
+        views.setOnClickPendingIntent(R.id.widget_partner_root, tapIntentFor(status))
         return views
     }
+
+    private fun buildCompactViews(
+        art: Bitmap?,
+        status: PartnerTrackStatus?,
+    ): RemoteViews {
+        // Compact fallback reuses the single-pane layout with just the shaped cover.
+        val views = RemoteViews(context.packageName, R.layout.widget_partner_compact)
+        views.setImageViewBitmap(R.id.widget_partner_art, art)
+        views.setOnClickPendingIntent(R.id.widget_partner_root, tapIntentFor(status))
+        return views
+    }
+
+    private fun tapIntentFor(status: PartnerTrackStatus?): PendingIntent =
+        if (status != null && status.songId.isNotBlank()) {
+            PendingIntent.getActivity(
+                context,
+                REQUEST_CODE_PLAY,
+                playSongIntent(status.songId),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+        } else {
+            openAppPendingIntent()
+        }
+
+    /**
+     * Reuses MainActivity's YouTube deep-link handling, which already knows how to take a watch
+     * URL and queue exactly that video.
+     */
+    private fun playSongIntent(songId: String): Intent =
+        Intent(
+            Intent.ACTION_VIEW,
+            Uri.parse("https://music.youtube.com/watch?v=$songId"),
+        ).apply {
+            setPackage(context.packageName)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+
+    // ---------------------------------------------------------------- artwork & palette
 
     private suspend fun loadShapedCover(coverUrl: String?, stale: Boolean): Bitmap? =
         withContext(Dispatchers.IO) {
             if (coverUrl.isNullOrBlank()) return@withContext dimIfStale(defaultCircularIcon(), stale)
 
-            if (coverUrl == cachedCoverUrl && cachedShapedArt != null) {
-                return@withContext cachedShapedArt
+            if (coverUrl == cachedCoverUrl && cachedSquareArt != null) {
+                return@withContext applyShape(cachedSquareArt!!, stale)
             }
 
             val square = try {
@@ -148,35 +224,37 @@ class PartnerWidgetManager @Inject constructor(
                 null
             } ?: return@withContext dimIfStale(defaultCircularIcon(), stale)
 
-            val shaped = applyShape(square, stale)
             cachedCoverUrl = coverUrl
-            cachedShapedArt = shaped
-            shaped
+            cachedSquareArt = square
+            applyShape(square, stale)
         }
+
+    /**
+     * Dominant-or-vibrant swatch selection, simplified from PlayerColorExtractor: population
+     * decides ties, and the swatch's own text colors guarantee readable panel text.
+     */
+    private fun extractSwatch(art: Bitmap): Palette.Swatch? {
+        val palette = Palette.from(art).maximumColorCount(24).generate()
+        return palette.dominantSwatch
+            ?: palette.vibrantSwatch
+            ?: palette.mutedSwatch
+    }
 
     private fun dimIfStale(bitmap: Bitmap, stale: Boolean): Bitmap {
         if (!stale) return bitmap
         val output = bitmap.copy(Bitmap.Config.ARGB_8888, true)
-        val canvas = Canvas(output)
-        canvas.drawColor(android.graphics.Color.argb(115, 0, 0, 0))
+        Canvas(output).drawColor(Color.argb(115, 0, 0, 0))
         return output
     }
 
     private fun applyShape(square: Bitmap, stale: Boolean): Bitmap {
         val base =
             when (readShape()) {
-                SHAPE_SQUARE -> cropToSquare(square)
-                SHAPE_ROUNDED -> roundCorners(cropToSquare(square), 48f)
-                else -> circle(cropToSquare(square))
+                SHAPE_SQUARE -> square
+                SHAPE_ROUNDED -> roundCorners(square, 48f)
+                else -> circle(square)
             }
         return dimIfStale(base, stale)
-    }
-
-    private fun cropToSquare(bitmap: Bitmap): Bitmap {
-        val size = minOf(bitmap.width, bitmap.height)
-        val xOffset = (bitmap.width - size) / 2
-        val yOffset = (bitmap.height - size) / 2
-        return Bitmap.createBitmap(bitmap, xOffset, yOffset, size, size)
     }
 
     private fun circle(source: Bitmap): Bitmap {
@@ -209,6 +287,24 @@ class PartnerWidgetManager @Inject constructor(
         return output
     }
 
+    private fun roundedRectBitmap(color: Int, cornerRadius: Float, alpha: Int): Bitmap {
+        val size = 120
+        val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        val paint = Paint().apply {
+            isAntiAlias = true
+            this.color = color
+            this.alpha = alpha
+        }
+        canvas.drawRoundRect(
+            RectF(0f, 0f, size.toFloat(), size.toFloat()),
+            cornerRadius,
+            cornerRadius,
+            paint,
+        )
+        return bitmap
+    }
+
     private fun defaultCircularIcon(): Bitmap {
         val drawable = context.packageManager.getApplicationIcon(context.packageName)
         val size = 300
@@ -216,7 +312,15 @@ class PartnerWidgetManager @Inject constructor(
         val canvas = Canvas(bitmap)
         drawable.setBounds(0, 0, size, size)
         drawable.draw(canvas)
-        return circle(cropToSquare(bitmap))
+        val square = cropToSquare(bitmap)
+        return circle(square)
+    }
+
+    private fun cropToSquare(bitmap: Bitmap): Bitmap {
+        val size = minOf(bitmap.width, bitmap.height)
+        val xOffset = (bitmap.width - size) / 2
+        val yOffset = (bitmap.height - size) / 2
+        return Bitmap.createBitmap(bitmap, xOffset, yOffset, size, size)
     }
 
     private fun openAppPendingIntent(): PendingIntent =
@@ -226,19 +330,6 @@ class PartnerWidgetManager @Inject constructor(
             Intent(context, MainActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-
-    /**
-     * Reuses MainActivity's YouTube deep-link handling, which already knows how to take a watch
-     * URL and queue exactly that video.
-     */
-    private fun playSongIntent(songId: String): Intent =
-        Intent(
-            Intent.ACTION_VIEW,
-            Uri.parse("https://music.youtube.com/watch?v=$songId"),
-        ).apply {
-            setPackage(context.packageName)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
 
     // ---------------------------------------------------------------- preferences & cache
 
@@ -259,7 +350,7 @@ class PartnerWidgetManager @Inject constructor(
         }
     }
 
-    suspend fun writeCachedStatus(status: PartnerTrackStatus?) {
+    suspend fun writeCachedStatus(status: PartnerTrackStatus?, partnerName: String?) {
         runCatching {
             context.dataStore.edit { prefs ->
                 prefs[PREF_SONG_ID] = status?.songId ?: ""
@@ -267,6 +358,7 @@ class PartnerWidgetManager @Inject constructor(
                 prefs[PREF_ARTIST] = status?.artist ?: ""
                 prefs[PREF_COVER] = status?.coverUrl ?: ""
                 prefs[PREF_UPDATED_AT] = status?.updatedAt ?: 0L
+                prefs[PREF_PARTNER_NAME] = partnerName ?: ""
             }
         }
     }
@@ -284,20 +376,25 @@ class PartnerWidgetManager @Inject constructor(
         )
     }
 
+    private suspend fun readCachedPartnerName(): String? =
+        runCatching { context.dataStore.data.first()[PREF_PARTNER_NAME] }
+            .getOrNull()?.takeIf { it.isNotBlank() }
+
     companion object {
         const val SHAPE_CIRCLE = "circle"
         const val SHAPE_ROUNDED = "rounded"
         const val SHAPE_SQUARE = "square"
 
         /** Whether this device broadcasts its own playback to the partner. Default on. */
-        val HEARTBEAT_ENABLED_KEY = androidx.datastore.preferences.core.booleanPreferencesKey("partner_heartbeat_enabled")
+        val HEARTBEAT_ENABLED_KEY = booleanPreferencesKey("partner_heartbeat_enabled")
         val PARTNER_WIDGET_SHAPE_KEY = stringPreferencesKey("partner_widget_shape")
 
         private val PREF_SONG_ID = stringPreferencesKey("partner_status_song_id")
         private val PREF_TITLE = stringPreferencesKey("partner_status_title")
         private val PREF_ARTIST = stringPreferencesKey("partner_status_artist")
         private val PREF_COVER = stringPreferencesKey("partner_status_cover")
-        private val PREF_UPDATED_AT = androidx.datastore.preferences.core.longPreferencesKey("partner_status_updated_at")
+        private val PREF_UPDATED_AT = longPreferencesKey("partner_status_updated_at")
+        private val PREF_PARTNER_NAME = stringPreferencesKey("partner_status_partner_name")
 
         private const val REQUEST_CODE_OPEN = 6201
         private const val REQUEST_CODE_PLAY = 6202
