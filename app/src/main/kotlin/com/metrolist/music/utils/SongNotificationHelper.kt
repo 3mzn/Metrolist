@@ -23,10 +23,12 @@ object SongNotificationHelper {
     const val NUDGE_CHANNEL_ID = "gentle_nudge_notifications"
 
     /**
-     * Fixed id: at most one nudge pair per day by design, so a second nudge replaces the
-     * first instead of stacking.
+     * Fixed ids: at most one nudge per direction per day by design, so repeats replace instead
+     * of stacking. Sender and receiver nudges get distinct ids so a device with stale songs in
+     * BOTH directions shows both notifications.
      */
-    private const val NUDGE_NOTIFICATION_ID = 2900
+    private const val NUDGE_SENDER_NOTIFICATION_ID = 2900
+    private const val NUDGE_RECEIVER_NOTIFICATION_ID = 2901
 
     fun showNotification(
         context: Context,
@@ -103,6 +105,7 @@ object SongNotificationHelper {
         context: Context,
         title: String,
         message: String,
+        isSenderNudge: Boolean,
     ) {
         createNudgeChannel(context)
 
@@ -133,7 +136,10 @@ object SongNotificationHelper {
                 .setContentIntent(pendingIntent)
                 .build()
 
-        notificationManager.notify(NUDGE_NOTIFICATION_ID, notification)
+        notificationManager.notify(
+            if (isSenderNudge) NUDGE_SENDER_NOTIFICATION_ID else NUDGE_RECEIVER_NOTIFICATION_ID,
+            notification,
+        )
     }
 
     private fun createNudgeChannel(context: Context) {

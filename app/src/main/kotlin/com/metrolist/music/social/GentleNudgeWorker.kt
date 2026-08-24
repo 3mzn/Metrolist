@@ -113,6 +113,7 @@ class GentleNudgeWorker @AssistedInject constructor(
                     context,
                     context.getString(R.string.nudge_sender_title, partnerName),
                     message,
+                    isSenderNudge = true,
                 )
                 nudged = true
             }
@@ -128,6 +129,7 @@ class GentleNudgeWorker @AssistedInject constructor(
                     context,
                     context.getString(R.string.nudge_receiver_title),
                     message,
+                    isSenderNudge = false,
                 )
                 nudged = true
             }
@@ -154,6 +156,12 @@ class GentleNudgeWorker @AssistedInject constructor(
         } catch (e: Exception) {
             Timber.tag(TAG).e(e, "Gentle nudge check failed")
             Result.retry()
+        } catch (e: Throwable) {
+            // Throwable, not just Exception: a missing Firestore dependency surfaces as
+            // NoClassDefFoundError (e.g. in the :crash process), which an Exception guard lets
+            // through to crash the process on every scheduled run. Fail permanently instead.
+            Timber.tag(TAG).e(e, "Gentle nudge worker disabled after an unrecoverable failure")
+            Result.failure()
         }
     }
 
