@@ -199,7 +199,20 @@ invite.
 
 ---
 
-## 4. Phase 3 — UI + flow wiring (commit ③ `feat(lt-invite): single-button invite UI replacing the join flow`)
+## 4. Phase 3 — UI + flow wiring (commit ③ `feat(lt-invite): single-button invite UI replacing the join flow`) — ✅ COMPLETE
+
+Shipped as `9682f5bfd`. Implementation notes beyond the spec text:
+- The join-via-invite flow lives in `InviteNotifier.joinFromInvite()` (NOT the LT screen)
+  because the Join tap can come from the app-wide banner on ANY tab, where no LT screen is
+  composed to observe the socket events. Accept-stamping happens only after the server's
+  `JoinApproved` (D11 retry); 20s timeout leaves the invite alive.
+- `InviteNotifier.outgoingInvite` deliberately does NOT filter by status — the
+  accepted/declined flips are the host-side signal (MainActivity LaunchedEffect: toast +
+  D12 banner clear + navigate to the LT screen).
+- The old manual join survives as `AdvancedJoinSection` (collapsed; auto-expands while a
+  manual join is in progress so its progress/error surfaces stay visible).
+- D5 note: mid-session the invite section simply isn't rendered — the room UI (with its
+  leave button) replaces it, which satisfies "cannot invite mid-session".
 
 **Files:**
 - `ui/screens/settings/integrations/ListenTogetherSettings.kt` (the LT tab screen) —
