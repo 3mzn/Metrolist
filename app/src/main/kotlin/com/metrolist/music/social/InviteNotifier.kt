@@ -6,6 +6,8 @@
 package com.metrolist.music.social
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import androidx.datastore.preferences.core.edit
 import com.metrolist.music.constants.ListenTogetherAutoApproveSuggestionsKey
 import com.metrolist.music.listentogether.ListenTogetherEvent
@@ -68,6 +70,13 @@ class InviteNotifier @Inject constructor(
 
     private var lastNotifiedCreatedAt: Long? = null
     private var expiryJob: Job? = null
+
+    // Guards against double-taps racing two joinFromInvite flows (both would wait on the
+    // same socket events; the loser would time out with a spurious failure toast).
+    private val joinInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    // Callbacks run on the main thread: callers touch Compose state, navigate, and toast.
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     fun start() {
         scope.launch {
@@ -186,31 +195,37 @@ class InviteNotifier @Inject constructor(
         onJoined: () -> Unit,
         onFailed: (rejected: Boolean) -> Unit,
     ) {
+        if (!joinInFlight.compareAndSet(false, true)) return
         scope.launch {
-            val myName = partnerResolver.identity.value.myName ?: "guest"
-            if (listenTogetherManager.isInRoom) {
-                listenTogetherManager.leaveRoom()
-            }
-            listenTogetherManager.connect()
-            listenTogetherManager.joinRoom(invite.roomCode, myName)
-
-            val outcome = withTimeoutOrNull(20_000) {
-                listenTogetherManager.events.first {
-                    it is ListenTogetherEvent.JoinApproved || it is ListenTogetherEvent.JoinRejected
+            try {
+                val myName = partnerResolver.identity.value.myName ?: "guest"
+                if (listenTogetherManager.isInRoom) {
+                    listenTogetherManager.leaveRoom()
                 }
-            }
+                listenTogetherManager.connect()
+                listenTogetherManager.joinRoom(invite.roomCode, myName)
 
-            when (outcome) {
-                is ListenTogetherEvent.JoinApproved -> {
-                    inviteRepository.acceptInvite(invite)
-                    inviteRepository.cancelInvite()
-                    forceAutoApproveOn()
-                    onJoined()
+                val outcome = withTimeoutOrNull(20_000) {
+                    listenTogetherManager.events.first {
+                        it is ListenTogetherEvent.JoinApproved || it is ListenTogetherEvent.JoinRejected
+                    }
                 }
 
-                is ListenTogetherEvent.JoinRejected -> onFailed(true)
+                when (outcome) {
+                    is ListenTogetherEvent.JoinApproved -> {
+                        inviteRepository.acceptInvite(invite)
+                        inviteRepository.cancelInvite()
+                        forceAutoApproveOn()
+                        mainHandler.post { onJoined() }
+                    }
 
-                else -> onFailed(false) // timeout — server unreachable; invite survives
+                    is ListenTogetherEvent.JoinRejected ->
+                        mainHandler.post { onFailed(true) }
+
+                    else -> mainHandler.post { onFailed(false) } // timeout; invite survives
+                }
+            } finally {
+                joinInFlight.set(false)
             }
         }
     }
