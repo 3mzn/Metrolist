@@ -140,7 +140,12 @@ Shipped as `fa109d87c`. Model + repository + rules block implemented as specifie
 
 ---
 
-## 3. Phase 2 — Delivery infrastructure (commit ② `feat(lt-invite): banner, notification and background poll delivery`)
+## 3. Phase 2 — Delivery infrastructure (commit ② `feat(lt-invite): banner, notification and background poll delivery`) — ✅ COMPLETE
+
+Shipped as `057518b54`. Channel/helper, InvitePollWorker, InviteNotifier (with the
+foreground→background transition re-notification), lifecycle wiring, and MainActivity
+invite-tap routing implemented as specified below. `AppForegroundTracker` gained an
+observable `isForegroundFlow` to support the transition detection.
 
 **Files:**
 - `utils/SongNotificationHelper.kt` (or NEW `social/InviteNotificationHelper.kt` —
