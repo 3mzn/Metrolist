@@ -50,11 +50,13 @@ class AuthViewModel @Inject constructor(
                 ensureUserProfileExists(currentUser)
                 songListenedNotificationManager.startWorker()
                 songListenedNotificationManager.startNudgeWorker()
+                songListenedNotificationManager.startInvitePollWorker()
             }
         } else {
             _profile.value = null
             songListenedNotificationManager.stopWorker()
             songListenedNotificationManager.stopNudgeWorker()
+            songListenedNotificationManager.stopInvitePollWorker()
         }
     }
 

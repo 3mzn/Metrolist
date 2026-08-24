@@ -97,6 +97,9 @@ class App :
     @Inject
     lateinit var partnerHeartbeatMonitor: Provider<com.metrolist.music.social.PartnerHeartbeatMonitor>
 
+    @Inject
+    lateinit var inviteNotifier: Provider<com.metrolist.music.social.InviteNotifier>
+
     /**
      * False in the ":crash" process that hosts [com.metrolist.music.ui.screens.CrashActivity].
      *
@@ -143,8 +146,15 @@ class App :
         // the Partner widget on every change.
         partnerHeartbeatMonitor.get()
 
+        // Registers its own auth listener: watches the partner's status document and repaints
+        // the Partner widget on every change.
+        partnerHeartbeatMonitor.get()
+
         // Lets background surfaces (gentle nudge) know when the app is visible on screen.
         AppForegroundTracker.register(this)
+
+        // Live LT-invite delivery: banner in the foreground, notification when backgrounded.
+        inviteNotifier.get()
     }
 
     override fun onCreate() {

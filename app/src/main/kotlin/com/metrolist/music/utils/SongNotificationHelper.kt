@@ -30,6 +30,75 @@ object SongNotificationHelper {
     private const val NUDGE_SENDER_NOTIFICATION_ID = 2900
     private const val NUDGE_RECEIVER_NOTIFICATION_ID = 2901
 
+    const val LT_INVITE_CHANNEL_ID = "lt_invites"
+
+    /**
+     * Fixed id: only one LT invite can be pending at a time, so repeats replace instead of
+     * stacking.
+     */
+    private const val LT_INVITE_NOTIFICATION_ID = 2800
+
+    /**
+     * Heads-up channel for LT invites arriving while the app is not in the foreground.
+     * Tapping routes straight into the join UI (no in-app banner) — see SPEC_7 D13.
+     */
+    fun showInviteNotification(
+        context: Context,
+        fromName: String,
+    ) {
+        createInviteChannel(context)
+
+        val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+        val intent =
+            Intent(context, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                putExtra(MainActivity.EXTRA_LT_INVITE_TAP, true)
+            }
+
+        val pendingIntent =
+            PendingIntent.getActivity(
+                context,
+                2,
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+
+        val title = context.getString(R.string.lt_invite_notification_title, fromName)
+        val message = context.getString(R.string.lt_invite_notification_body, fromName)
+
+        val notification =
+            NotificationCompat.Builder(context, LT_INVITE_CHANNEL_ID)
+                .setSmallIcon(R.drawable.music_note)
+                .setContentTitle(title)
+                .setContentText(message)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(message))
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+                .setAutoCancel(true)
+                .setContentIntent(pendingIntent)
+                .build()
+
+        notificationManager.notify(LT_INVITE_NOTIFICATION_ID, notification)
+    }
+
+    private fun createInviteChannel(context: Context) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val name = context.getString(R.string.lt_invites_channel_name)
+            val descriptionText = context.getString(R.string.lt_invites_channel_description)
+            val channel = NotificationChannel(
+                LT_INVITE_CHANNEL_ID,
+                name,
+                NotificationManager.IMPORTANCE_HIGH,
+            ).apply {
+                description = descriptionText
+            }
+
+            val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            notificationManager.createNotificationChannel(channel)
+        }
+    }
+
     fun showNotification(
         context: Context,
         sentSong: SentSong,

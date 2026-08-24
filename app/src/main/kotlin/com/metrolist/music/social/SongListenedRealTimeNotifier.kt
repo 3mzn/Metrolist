@@ -51,11 +51,13 @@ class SongListenedRealTimeNotifier @Inject constructor(
                         startListening()
                         notificationManager.startWorker()
                         notificationManager.startNudgeWorker()
+                        notificationManager.startInvitePollWorker()
                     } else {
                         Timber.d("SongListenedRealTime", "User logged out - stopping notification listener")
                         stopListening()
                         notificationManager.stopWorker()
                         notificationManager.stopNudgeWorker()
+                        notificationManager.stopInvitePollWorker()
                     }
                 }
             }.also {

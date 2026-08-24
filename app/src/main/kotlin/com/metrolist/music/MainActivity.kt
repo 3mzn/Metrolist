@@ -234,6 +234,9 @@ class MainActivity : ComponentActivity() {
         const val EXTRA_AUTO_START_RECOGNITION = "auto_start_recognition"
         const val EXTRA_WIDGET_TARGET_TYPE = "widget_target_type"
         const val EXTRA_WIDGET_TARGET_ID = "widget_target_id"
+
+        /** Set by the LT-invite notification: tap routes into the join UI (SPEC_7 D13). */
+        const val EXTRA_LT_INVITE_TAP = "lt_invite_tap"
     }
 
     @Inject
@@ -374,6 +377,8 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         if (::navController.isInitialized) {
             handleWidgetTargetIntent(intent, navController)
+            handleRecognitionIntent(intent, navController)
+            handleInviteTapIntent(intent, navController)
             handleDeepLinkIntent(intent, navController)
         } else {
             pendingIntent = intent
@@ -958,11 +963,13 @@ class MainActivity : ComponentActivity() {
                     if (pendingIntent != null) {
                         handleWidgetTargetIntent(pendingIntent!!, navController)
                         handleRecognitionIntent(pendingIntent!!, navController)
+                        handleInviteTapIntent(pendingIntent!!, navController)
                         handleDeepLinkIntent(pendingIntent!!, navController)
                         pendingIntent = null
                     } else {
                         handleWidgetTargetIntent(intent, navController)
                         handleRecognitionIntent(intent, navController)
+                        handleInviteTapIntent(intent, navController)
                         handleDeepLinkIntent(intent, navController)
                     }
                 }
@@ -972,6 +979,7 @@ class MainActivity : ComponentActivity() {
                         Consumer<Intent> { intent ->
                             handleWidgetTargetIntent(intent, navController)
                             handleRecognitionIntent(intent, navController)
+                            handleInviteTapIntent(intent, navController)
                             handleDeepLinkIntent(intent, navController)
                         }
 
@@ -1539,6 +1547,19 @@ class MainActivity : ComponentActivity() {
         } ?: return
 
         navController.navigate(targetRoute.route)
+    }
+
+    /**
+     * LT-invite notification tap (SPEC_7 D13): open the app directly on the Listen Together
+     * tab where the join UI lives. Deliberately NO in-app banner for this entry path.
+     */
+    private fun handleInviteTapIntent(
+        intent: Intent,
+        navController: NavHostController,
+    ) {
+        if (!intent.getBooleanExtra(EXTRA_LT_INVITE_TAP, false)) return
+        intent.removeExtra(EXTRA_LT_INVITE_TAP)
+        navController.navigate(Screens.ListenTogether.route)
     }
 
     private fun handleDeepLinkIntent(

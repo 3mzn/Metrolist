@@ -1071,4 +1071,10 @@
     <string name="nudge_receiver_multi">You haven\'t listened to %1$d songs sent by %2$s</string>
     <string name="gentle_nudge_channel_name">Gentle reminders</string>
     <string name="gentle_nudge_channel_description">Soft daily reminders about shared songs waiting to be listened to</string>
+
+    <!-- Listen Together invites -->
+    <string name="lt_invite_notification_title">%1$s wants to listen together</string>
+    <string name="lt_invite_notification_body">Tap to join %1$s\'s listening session</string>
+    <string name="lt_invites_channel_name">Listen together invites</string>
+    <string name="lt_invites_channel_description">Invitations to join a live listening session</string>
 </resources>

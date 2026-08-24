@@ -114,6 +114,45 @@ class SongListenedNotificationManager @Inject constructor(
     }
 
     /**
+     * Start the 15-min LT-invite poll (dead-process safety net; live delivery is the
+     * Firestore listener in InviteNotifier). Same lifecycle: started on login, stopped on
+     * logout.
+     */
+    fun startInvitePollWorker() {
+        val currentUser = auth.currentUser
+        if (currentUser == null) {
+            Timber.d("SongListenedNotifMgr", "User not logged in, not starting invite poll worker")
+            return
+        }
+
+        Timber.d("SongListenedNotifMgr", "Starting LT invite poll worker")
+
+        val constraints =
+            Constraints.Builder()
+                .setRequiredNetworkType(NetworkType.CONNECTED)
+                .build()
+
+        val workRequest =
+            PeriodicWorkRequestBuilder<InvitePollWorker>(15, TimeUnit.MINUTES)
+                .setConstraints(constraints)
+                .build()
+
+        workManager.enqueueUniquePeriodicWork(
+            InvitePollWorker.WORK_NAME,
+            ExistingPeriodicWorkPolicy.KEEP,
+            workRequest,
+        )
+    }
+
+    /**
+     * Stop the LT-invite poll. Called when the user logs out.
+     */
+    fun stopInvitePollWorker() {
+        Timber.d("SongListenedNotifMgr", "Stopping LT invite poll worker")
+        workManager.cancelUniqueWork(InvitePollWorker.WORK_NAME)
+    }
+
+    /**
      * Check if the worker is running.
      */
     fun isWorkerRunning(): Boolean {
