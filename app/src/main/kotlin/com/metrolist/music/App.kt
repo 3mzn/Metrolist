@@ -65,6 +65,7 @@ import java.net.Proxy
 import java.util.Locale
 import javax.inject.Inject
 import javax.inject.Provider
+import com.metrolist.music.social.AppForegroundTracker
 
 @HiltAndroidApp
 class App :
@@ -141,6 +142,9 @@ class App :
         // Registers its own auth listener: watches the partner's status document and repaints
         // the Partner widget on every change.
         partnerHeartbeatMonitor.get()
+
+        // Lets background surfaces (gentle nudge) know when the app is visible on screen.
+        AppForegroundTracker.register(this)
     }
 
     override fun onCreate() {

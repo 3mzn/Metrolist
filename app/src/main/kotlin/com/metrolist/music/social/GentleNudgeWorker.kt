@@ -29,6 +29,18 @@ import java.util.concurrent.TimeUnit
  * The gentle nudge: once a day, softly remind BOTH sides about shared songs that have been
  * sitting unstarted for [STALE_AFTER_DAYS] days.
  *
+ * App-state behavior:
+ *  - App closed (swiped away or process dead): runs normally — WorkManager wakes the process.
+ *    This is the feature's primary scenario.
+ *  - App open in the foreground: the RECEIVER nudge is skipped (without consuming the daily
+ *    gate or nudge budget) — unlistened incoming songs are already visible in the
+ *    "From <partner>" playlist. The SENDER nudge still fires: nothing in the UI shows
+ *    whether the partner has listened to the songs I sent, so the notification is the only
+ *    source of that information and must not be suppressed.
+ *  - Force closed (Settings > Force stop): Android cancels ALL WorkManager work and blocks
+ *    FCM until the user manually opens the app again. Nothing code-side can change this; on
+ *    the next manual open the login path re-enqueues the worker and it runs within minutes.
+ *
  * Anti-nag rules (MAYBE_LATER #4), all enforced here:
  *  - at most ONE notification pair per day (DataStore epoch-day gate)
  *  - at most [SongSharingRepository.MAX_NUDGE_ROUNDS] rounds per song, ever (nudgeCount on the doc)
@@ -77,6 +89,16 @@ class GentleNudgeWorker @AssistedInject constructor(
                 return Result.success()
             }
 
+            // Foreground asymmetry: the receiver nudge describes the user's OWN pending queue,
+            // which the "From <partner>" playlist already shows — noise while the app is open.
+            // The sender nudge describes the PARTNER's behavior, which no screen shows, so it
+            // fires even in the foreground. Skipped receiver nudges keep their budget and the
+            // daily gate stays unset for them.
+            val appForeground = AppForegroundTracker.isForeground
+            if (appForeground) {
+                Timber.tag(TAG).d("App is in the foreground; receiver nudge will be suppressed")
+            }
+
             if (isPartnerListeningNow()) {
                 Timber.tag(TAG).d("Partner is actively listening, skipping nudge today")
                 return Result.success()
@@ -118,7 +140,7 @@ class GentleNudgeWorker @AssistedInject constructor(
                 nudged = true
             }
 
-            if (incoming.isNotEmpty()) {
+            if (incoming.isNotEmpty() && !appForeground) {
                 val message =
                     if (incoming.size == 1) {
                         context.getString(R.string.nudge_receiver_single, incoming[0].songTitle, partnerName)
@@ -135,17 +157,20 @@ class GentleNudgeWorker @AssistedInject constructor(
             }
 
             if (nudged) {
-                // Mark every document of every nudged song (twins included) so the per-song cap
-                // is authoritative on the docs, not on this device. Songs excluded by the
-                // playing check keep their budget untouched.
-                val nudgedSongIds = (outgoing + incoming).map { it.songId }.toSet()
+                // Mark every document of every song actually shown (twins included) so the
+                // per-song cap is authoritative on the docs, not on this device. Songs excluded
+                // by the playing check or the foreground suppression keep their budget.
+                val shownSongIds =
+                    (outgoing + if (appForeground) emptyList() else incoming)
+                        .map { it.songId }
+                        .toSet()
                 songSharingRepository.markSongsNudged(
-                    (outgoingAll + incomingAll).filter { it.songId in nudgedSongIds },
+                    (outgoingAll + incomingAll).filter { it.songId in shownSongIds },
                 )
                 runCatching {
                     context.dataStore.edit { it[LAST_NUDGE_EPOCH_DAY] = today }
                 }
-                Timber.tag(TAG).d("Nudged: %d outgoing, %d incoming", outgoing.size, incoming.size)
+                Timber.tag(TAG).d("Nudged: %d outgoing, %d incoming", outgoing.size, if (appForeground) 0 else incoming.size)
             } else {
                 Timber.tag(TAG).d("Nothing stale to nudge about")
             }
