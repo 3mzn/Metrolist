@@ -1559,7 +1559,10 @@ class MainActivity : ComponentActivity() {
     ) {
         if (!intent.getBooleanExtra(EXTRA_LT_INVITE_TAP, false)) return
         intent.removeExtra(EXTRA_LT_INVITE_TAP)
-        navController.navigate(Screens.ListenTogether.route)
+        navController.navigate(Screens.ListenTogether.route) {
+            // Repeated notification taps must not stack LT destinations.
+            launchSingleTop = true
+        }
     }
 
     private fun handleDeepLinkIntent(

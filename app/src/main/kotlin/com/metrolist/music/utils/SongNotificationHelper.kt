@@ -81,6 +81,15 @@ object SongNotificationHelper {
 
         notificationManager.notify(LT_INVITE_NOTIFICATION_ID, notification)
     }
+    /**
+     * Removes the LT-invite notification from the shade — called when the in-app banner
+     * takes over delivery (app foregrounded) or the invite is consumed, so the two
+     * channels never double-deliver the same invite.
+     */
+    fun cancelInviteNotification(context: Context) {
+        val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        notificationManager.cancel(LT_INVITE_NOTIFICATION_ID)
+    }
 
     private fun createInviteChannel(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
