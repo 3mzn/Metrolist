@@ -30,6 +30,8 @@ data class SentSong(
     val listenedAt: Long? = null, // Timestamp when 50% milestone reached
     val completedAt: Long? = null, // Timestamp when song finished playing
     val notificationSent: Boolean = false, // Whether sender was notified of 50% milestone
+    val nudgeCount: Long = 0, // Gentle-nudge rounds completed; capped, then the song is never nudged again
+    val lastNudgedAt: Long? = null, // Timestamp of the most recent gentle nudge
 ) : Serializable {
     /**
      * Convert to map for Firebase.
@@ -50,6 +52,8 @@ data class SentSong(
             "listenedAt" to listenedAt,
             "completedAt" to completedAt,
             "notificationSent" to notificationSent,
+            "nudgeCount" to nudgeCount,
+            "lastNudgedAt" to lastNudgedAt,
         )
 
     companion object {
@@ -73,6 +77,10 @@ data class SentSong(
                 listenedAt = map["listenedAt"] as? Long,
                 completedAt = map["completedAt"] as? Long,
                 notificationSent = map["notificationSent"] as? Boolean ?: false,
+                // Number, not Long: nudgeCount is written via FieldValue.increment, and documents
+                // touched from the Firebase console may carry it as a double.
+                nudgeCount = (map["nudgeCount"] as? Number)?.toLong() ?: 0L,
+                lastNudgedAt = map["lastNudgedAt"] as? Long,
             )
     }
 }

@@ -12,6 +12,7 @@ import com.metrolist.music.db.entities.PlaylistEntity
 import com.metrolist.music.db.entities.PlaylistSongMap
 import com.metrolist.music.models.MediaMetadata
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -37,6 +38,11 @@ class SongSharingRepository @Inject constructor(
 ) {
     private val sentSongsCollection get() = firestore.collection("sentSongs")
     private val TAG = "SongSharingRepository"
+
+    companion object {
+        /** Gentle-nudge rounds per song before it is left alone forever. */
+        const val MAX_NUDGE_ROUNDS = 2L
+    }
 
     /**
      * Create the shared-songs playlist if it doesn't exist, and keep its label directional:
@@ -268,6 +274,76 @@ class SongSharingRepository @Inject constructor(
         } catch (e: Exception) {
             Timber.tag(TAG).e(e, "Could not list pending documents for song $songId")
             emptyList()
+        }
+    }
+
+    /**
+     * Songs that have been sitting unstarted past [staleCutoff] and still have gentle-nudge
+     * budget left.
+     *
+     * [fromMe] selects the direction: true = songs I sent that the partner hasn't started,
+     * false = songs sent to me that I haven't started. Equality-only queries (no composite
+     * index needed); staleness and the nudge cap are filtered client-side. Every document is
+     * returned, including twins of the same songId, so the caller can mark the whole group.
+     */
+    suspend fun getStaleSongs(fromMe: Boolean, staleCutoff: Long): List<SentSong> {
+        val currentUid = auth.currentUser?.uid ?: return emptyList()
+
+        return try {
+            val snapshot = sentSongsCollection
+                .whereEqualTo(if (fromMe) "fromUid" else "toUid", currentUid)
+                .get()
+                .await()
+
+            snapshot.documents.mapNotNull { doc ->
+                try {
+                    val song = SentSong.fromMap(doc.id, doc.data ?: emptyMap())
+                    if (song.completedAt == null &&
+                        song.listenedAt == null &&
+                        song.sentAt < staleCutoff &&
+                        song.nudgeCount < MAX_NUDGE_ROUNDS
+                    ) {
+                        song
+                    } else {
+                        null
+                    }
+                } catch (e: Exception) {
+                    Timber.tag(TAG).e(e, "Error parsing sent song in stale query ${doc.id}")
+                    null
+                }
+            }
+        } catch (e: Exception) {
+            Timber.tag(TAG).e(e, "Error getting stale songs (fromMe=%b)", fromMe)
+            emptyList()
+        }
+    }
+
+    /**
+     * Record one completed gentle-nudge round for every document given: increments nudgeCount
+     * and stamps lastNudgedAt in a single batched write, so all twins of a song stay in
+     * lockstep and the per-song cap lives on the documents themselves.
+     */
+    suspend fun markSongsNudged(songs: List<SentSong>) {
+        if (songs.isEmpty()) return
+
+        try {
+            val batch = firestore.batch()
+            val now = System.currentTimeMillis()
+            songs.forEach { song ->
+                batch.update(
+                    sentSongsCollection.document(song.id),
+                    mapOf(
+                        "nudgeCount" to FieldValue.increment(1),
+                        "lastNudgedAt" to now,
+                    ),
+                )
+            }
+            batch.commit().await()
+            Timber.tag(TAG).d("Recorded nudge round for %d document(s)", songs.size)
+        } catch (e: Exception) {
+            // Non-fatal: worst case the same songs are nudged again tomorrow and the cap
+            // simply lands one round later.
+            Timber.tag(TAG).e(e, "Error recording nudge round")
         }
     }
 
