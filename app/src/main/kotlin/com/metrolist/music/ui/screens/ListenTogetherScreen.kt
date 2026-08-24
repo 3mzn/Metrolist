@@ -10,6 +10,7 @@ import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -74,6 +75,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -85,12 +87,15 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
 import androidx.navigation.compose.currentBackStackEntryAsState
+import com.metrolist.music.LocalInviteNotifier
 import com.metrolist.music.LocalListenTogetherManager
 import com.metrolist.music.LocalPlayerAwareWindowInsets
 import com.metrolist.music.R
 import com.metrolist.music.constants.AppBarHeight
+import com.metrolist.music.constants.ListenTogetherAutoApproveSuggestionsKey
 import com.metrolist.music.constants.ListenTogetherInTopBarKey
 import com.metrolist.music.constants.ListenTogetherUsernameKey
+import com.metrolist.music.social.ListenTogetherInvite
 import com.metrolist.music.listentogether.ConnectionState
 import com.metrolist.music.listentogether.JoinRequestPayload
 import com.metrolist.music.listentogether.ListenTogetherEvent
@@ -101,6 +106,7 @@ import com.metrolist.music.ui.component.DefaultDialog
 import com.metrolist.music.ui.component.IconButton
 import com.metrolist.music.ui.utils.backToMain
 import com.metrolist.music.utils.rememberPreference
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import androidx.compose.material3.IconButton as MaterialIconButton
 
@@ -137,6 +143,30 @@ fun ListenTogetherScreen(
     var isJoiningRoom by rememberSaveable { mutableStateOf(false) }
     var joinErrorMessage by rememberSaveable { mutableStateOf<String?>(null) }
 
+    // --- Partner invite (SPEC_7) ---
+    val inviteController = LocalInviteNotifier.current
+    val bannerInvite =
+        if (inviteController != null) {
+            inviteController.bannerInvite.collectAsStateWithLifecycle().value
+        } else {
+            null
+        }
+    val outgoingInvite =
+        if (inviteController != null) {
+            inviteController.outgoingInvite.collectAsStateWithLifecycle().value
+        } else {
+            null
+        }
+    val partnerIdentity =
+        if (inviteController != null) {
+            inviteController.partnerIdentity.collectAsStateWithLifecycle().value
+        } else {
+            null
+        }
+    var isCreatingInvite by rememberSaveable { mutableStateOf(false) }
+    // D8: suggestion auto-approve is forced ON for invite sessions (host-side setting).
+    var autoApproveSuggestions by rememberPreference(ListenTogetherAutoApproveSuggestionsKey, false)
+
     var selectedUserForMenu by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedUsername by rememberSaveable { mutableStateOf<String?>(null) }
 
@@ -172,12 +202,34 @@ fun ListenTogetherScreen(
 
                 is ListenTogetherEvent.RoomCreated -> {
                     isCreatingRoom = false
-                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                    val clip = android.content.ClipData.newPlainText("ListenTogetherRoom", event.roomCode)
-                    clipboard.setPrimaryClip(clip)
+                    if (isCreatingInvite && inviteController != null) {
+                        // Invite flow: the room exists only to carry the invite — send it.
+                        // The manual flow's clipboard copy would be noise here.
+                        isCreatingInvite = false
+                        autoApproveSuggestions = true // D8
+                        val result = inviteController.sendInvite(event.roomCode)
+                        if (result.isFailure) {
+                            Toast.makeText(context, R.string.lt_invite_create_failed_toast, Toast.LENGTH_SHORT).show()
+                        }
+                    } else {
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                        val clip = android.content.ClipData.newPlainText("ListenTogetherRoom", event.roomCode)
+                        clipboard.setPrimaryClip(clip)
+                    }
                 }
 
                 else -> {}
+            }
+        }
+    }
+
+    // Invite-send watchdog: if RoomCreated never arrives (server down), give up after 15s.
+    LaunchedEffect(isCreatingInvite) {
+        if (isCreatingInvite) {
+            delay(15_000)
+            if (isCreatingInvite) {
+                isCreatingInvite = false
+                Toast.makeText(context, R.string.lt_invite_create_failed_toast, Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -352,59 +404,110 @@ fun ListenTogetherScreen(
                 }
             }
         } else {
-            // Join/Create room section
+            // Partner invite (SPEC_7) — the primary way in.
             item {
-                JoinCreateRoomSection(
-                    usernameInput = usernameInput,
-                    onUsernameChange = { usernameInput = it },
-                    roomCodeInput = roomCodeInput,
-                    onRoomCodeChange = { roomCodeInput = it },
-                    savedUsername = savedUsername,
+                InviteSection(
+                    bannerInvite = bannerInvite,
+                    outgoingInvite = outgoingInvite,
+                    partnerName = partnerIdentity?.partnerName,
+                    partnerResolved = partnerIdentity?.partnerUid != null,
+                    isCreatingInvite = isCreatingInvite,
                     isJoiningRoom = isJoiningRoom,
-                    joinErrorMessage = joinErrorMessage,
-                    waitingForApprovalText = waitingForApprovalText,
-                    bringIntoViewRequester = bringIntoViewRequester,
-                    onCreateRoom = {
-                        val username = usernameInput.takeIf { it.isNotBlank() } ?: savedUsername
-                        val finalUsername = username.trim()
-                        if (finalUsername.isNotBlank()) {
-                            savedUsername = finalUsername
-                            Toast.makeText(context, R.string.creating_room, Toast.LENGTH_SHORT).show()
-                            isCreatingRoom = true
-                            isJoiningRoom = false
-                            joinErrorMessage = null
+                    onInvite = {
+                        if (inviteController != null) {
+                            val myName = partnerIdentity?.myName
+                                ?: savedUsername.trim().ifBlank { "guest" }
+                            isCreatingInvite = true
+                            // The client queues create until connected, so no need to await.
                             listenTogetherManager.connect()
-                            listenTogetherManager.createRoom(finalUsername)
-                        } else {
-                            Toast.makeText(context, R.string.error_username_empty, Toast.LENGTH_SHORT).show()
+                            listenTogetherManager.createRoom(myName)
                         }
                     },
-                    onJoinRoom = {
-                        val username = usernameInput.takeIf { it.isNotBlank() } ?: savedUsername
-                        val finalUsername = username.trim()
-                        if (finalUsername.isNotBlank()) {
-                            savedUsername = finalUsername
-                            Toast
-                                .makeText(
-                                    context,
-                                    String.format(joiningRoomTemplate, roomCodeInput),
-                                    Toast.LENGTH_SHORT,
-                                ).show()
+                    onCancelInvite = { inviteController?.cancelInvite() },
+                    onJoinInvite = { invite ->
+                        if (inviteController != null) {
                             isJoiningRoom = true
                             isCreatingRoom = false
                             joinErrorMessage = null
-                            listenTogetherManager.connect()
-                            listenTogetherManager.joinRoom(roomCodeInput, finalUsername)
-                        } else {
-                            Toast.makeText(context, R.string.error_username_empty, Toast.LENGTH_SHORT).show()
+                            inviteController.joinFromInvite(
+                                invite,
+                                onJoined = { /* already on the LT screen */ },
+                                onFailed = { rejected ->
+                                    isJoiningRoom = false
+                                    // Rejected = the room is gone; timeout = server
+                                    // unreachable. Either way the invite survives (D11).
+                                    Toast.makeText(
+                                        context,
+                                        if (rejected) {
+                                            R.string.lt_invite_room_gone_toast
+                                        } else {
+                                            R.string.lt_invite_join_failed_toast
+                                        },
+                                        Toast.LENGTH_SHORT,
+                                    ).show()
+                                },
+                            )
                         }
                     },
-                    onFieldFocused = {
-                        coroutineScope.launch {
-                            bringIntoViewRequester.bringIntoView()
-                        }
-                    },
+                    onDeclineInvite = { invite -> inviteController?.declineInvite(invite) },
                 )
+            }
+
+            // Manual room-code join survives as a collapsed advanced section (D4).
+            item {
+                AdvancedJoinSection(isJoiningRoom = isJoiningRoom) {
+                    JoinCreateRoomSection(
+                        usernameInput = usernameInput,
+                        onUsernameChange = { usernameInput = it },
+                        roomCodeInput = roomCodeInput,
+                        onRoomCodeChange = { roomCodeInput = it },
+                        savedUsername = savedUsername,
+                        isJoiningRoom = isJoiningRoom,
+                        joinErrorMessage = joinErrorMessage,
+                        waitingForApprovalText = waitingForApprovalText,
+                        bringIntoViewRequester = bringIntoViewRequester,
+                        onCreateRoom = {
+                            val username = usernameInput.takeIf { it.isNotBlank() } ?: savedUsername
+                            val finalUsername = username.trim()
+                            if (finalUsername.isNotBlank()) {
+                                savedUsername = finalUsername
+                                Toast.makeText(context, R.string.creating_room, Toast.LENGTH_SHORT).show()
+                                isCreatingRoom = true
+                                isJoiningRoom = false
+                                joinErrorMessage = null
+                                listenTogetherManager.connect()
+                                listenTogetherManager.createRoom(finalUsername)
+                            } else {
+                                Toast.makeText(context, R.string.error_username_empty, Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        onJoinRoom = {
+                            val username = usernameInput.takeIf { it.isNotBlank() } ?: savedUsername
+                            val finalUsername = username.trim()
+                            if (finalUsername.isNotBlank()) {
+                                savedUsername = finalUsername
+                                Toast
+                                    .makeText(
+                                        context,
+                                        String.format(joiningRoomTemplate, roomCodeInput),
+                                        Toast.LENGTH_SHORT,
+                                    ).show()
+                                isJoiningRoom = true
+                                isCreatingRoom = false
+                                joinErrorMessage = null
+                                listenTogetherManager.connect()
+                                listenTogetherManager.joinRoom(roomCodeInput, finalUsername)
+                            } else {
+                                Toast.makeText(context, R.string.error_username_empty, Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        onFieldFocused = {
+                            coroutineScope.launch {
+                                bringIntoViewRequester.bringIntoView()
+                            }
+                        },
+                    )
+                }
             }
         }
 
@@ -1271,6 +1374,184 @@ private fun JoinCreateRoomSection(
                     Text(stringResource(R.string.join_room), fontWeight = FontWeight.SemiBold)
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun InviteSection(
+    bannerInvite: ListenTogetherInvite?,
+    outgoingInvite: ListenTogetherInvite?,
+    partnerName: String?,
+    partnerResolved: Boolean,
+    isCreatingInvite: Boolean,
+    isJoiningRoom: Boolean,
+    onInvite: () -> Unit,
+    onCancelInvite: () -> Unit,
+    onJoinInvite: (ListenTogetherInvite) -> Unit,
+    onDeclineInvite: (ListenTogetherInvite) -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp),
+        colors =
+            CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+            ),
+    ) {
+        Column(
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            val incoming = bannerInvite
+            when {
+                // Incoming invite wins over everything else.
+                incoming != null -> {
+                    Text(
+                        text =
+                            stringResource(
+                                R.string.lt_invite_incoming_title,
+                                partnerName ?: incoming.fromName,
+                            ),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center,
+                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Button(
+                            onClick = { onJoinInvite(incoming) },
+                            modifier = Modifier.weight(1f),
+                            enabled = !isJoiningRoom,
+                            shape = RoundedCornerShape(16.dp),
+                        ) {
+                            Text(stringResource(R.string.join_room), fontWeight = FontWeight.SemiBold)
+                        }
+                        OutlinedButton(
+                            onClick = { onDeclineInvite(incoming) },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(16.dp),
+                        ) {
+                            Text(
+                                stringResource(R.string.reject),
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                    }
+                }
+
+                outgoingInvite != null -> {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(22.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    Text(
+                        text = stringResource(R.string.lt_invite_waiting, partnerName ?: ""),
+                        style = MaterialTheme.typography.bodyMedium,
+                        textAlign = TextAlign.Center,
+                    )
+                    OutlinedButton(
+                        onClick = onCancelInvite,
+                        shape = RoundedCornerShape(16.dp),
+                    ) {
+                        Text(stringResource(R.string.lt_invite_cancel))
+                    }
+                }
+
+                else -> {
+                    if (isCreatingInvite) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(22.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    } else {
+                        Button(
+                            onClick = onInvite,
+                            enabled = partnerResolved,
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(16.dp),
+                            colors =
+                                ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.primary,
+                                ),
+                        ) {
+                            Icon(
+                                painter = painterResource(R.drawable.group_outlined),
+                                contentDescription = null,
+                                modifier = Modifier.size(20.dp),
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text =
+                                    if (partnerResolved) {
+                                        stringResource(R.string.lt_invite_button, partnerName ?: "")
+                                    } else {
+                                        stringResource(R.string.lt_invite_partner_missing)
+                                    },
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * The old username/room-code join, collapsed behind an advanced toggle (SPEC_7 D4). Stays
+ * visible on its own while a manual join is in progress so its progress/error surfaces
+ * don't vanish mid-flow.
+ */
+@Composable
+private fun AdvancedJoinSection(
+    isJoiningRoom: Boolean,
+    content: @Composable () -> Unit,
+) {
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    val chevronRotation by animateFloatAsState(
+        targetValue = if (expanded) 180f else 0f,
+        label = "advancedChevron",
+    )
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable { expanded = !expanded }
+                    .padding(vertical = 8.dp, horizontal = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center,
+        ) {
+            Text(
+                text = stringResource(R.string.lt_invite_advanced),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.width(4.dp))
+            Icon(
+                painter = painterResource(R.drawable.arrow_forward),
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier =
+                    Modifier
+                        .size(16.dp)
+                        .rotate(chevronRotation),
+            )
+        }
+
+        AnimatedVisibility(visible = expanded || isJoiningRoom) {
+            content()
         }
     }
 }

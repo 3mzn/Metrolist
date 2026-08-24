@@ -177,6 +177,8 @@ import com.metrolist.music.playback.queues.YouTubeQueue
 import com.metrolist.music.ui.component.AccountSettingsDialog
 import com.metrolist.music.ui.component.AppNavigationBar
 import com.metrolist.music.ui.component.AppNavigationRail
+import com.metrolist.music.ui.component.InviteBanner
+import com.metrolist.music.social.ListenTogetherInvite
 import com.metrolist.music.ui.component.BottomSheetMenu
 import com.metrolist.music.ui.component.BottomSheetPage
 import com.metrolist.music.ui.component.LocalBottomSheetPageState
@@ -250,6 +252,9 @@ class MainActivity : ComponentActivity() {
 
     @Inject
     lateinit var listenTogetherManager: com.metrolist.music.listentogether.ListenTogetherManager
+
+    @Inject
+    lateinit var inviteNotifier: com.metrolist.music.social.InviteNotifier
 
     private lateinit var navController: NavHostController
     private var pendingIntent: Intent? = null
@@ -707,11 +712,19 @@ class MainActivity : ComponentActivity() {
                 // Songs received from the partner that are still unfinished — drives the
                 // waiting-for-you badges on the Library tab and the shared playlist card.
                 val incomingSharedSongs by songSharingViewModel.incomingSongs.collectAsStateWithLifecycle()
+                // LT-invite state: drives the app-wide banner, tab badge and host-side
+                // reaction when the partner accepts/declines (SPEC_7).
+                val ltBannerInvite by inviteNotifier.bannerInvite.collectAsStateWithLifecycle()
+                val ltOutgoingInvite by inviteNotifier.outgoingInvite.collectAsStateWithLifecycle()
                 val accountImageUrl by homeViewModel.accountImageUrl.collectAsStateWithLifecycle()
                 val navBackStackEntry by navController.currentBackStackEntryAsState()
                 val (previousTab, setPreviousTab) = rememberSaveable { mutableStateOf("home") }
 
                 val (listenTogetherInTopBar) = rememberPreference(ListenTogetherInTopBarKey, defaultValue = true)
+                val ltInviteBadge =
+                    remember(ltBannerInvite) {
+                        if (ltBannerInvite != null) 1 else 0
+                    }
                 val navigationItems =
                     remember(listenTogetherInTopBar) {
                         if (listenTogetherInTopBar) {
@@ -1022,6 +1035,7 @@ class MainActivity : ComponentActivity() {
                     LocalShimmerTheme provides ShimmerTheme,
                     LocalSyncUtils provides syncUtils,
                     LocalListenTogetherManager provides listenTogetherManager,
+                    LocalInviteNotifier provides inviteNotifier,
                     LocalChangelogState provides showChangelog,
                     LocalArtistNameAliases provides artistNameAliases,
                 ) {
@@ -1061,11 +1075,17 @@ class MainActivity : ComponentActivity() {
                                                 )
                                             }
                                             if (listenTogetherInTopBar) {
-                                                IconButton(onClick = { navController.navigate("listen_together_from_topbar") }) {
-                                                    Icon(
-                                                        painter = painterResource(R.drawable.group_outlined),
-                                                        contentDescription = stringResource(R.string.together),
-                                                    )
+                                                BadgedBox(badge = {
+                                                    if (ltInviteBadge > 0) {
+                                                        Badge()
+                                                    }
+                                                }) {
+                                                    IconButton(onClick = { navController.navigate("listen_together_from_topbar") }) {
+                                                        Icon(
+                                                            painter = painterResource(R.drawable.group_outlined),
+                                                            contentDescription = stringResource(R.string.together),
+                                                        )
+                                                    }
                                                 }
                                             }
                                             IconButton(onClick = { showAccountDialog = true }) {
@@ -1200,6 +1220,7 @@ class MainActivity : ComponentActivity() {
                                         badgeCounts =
                                             mapOf(
                                                 Screens.Library to incomingSharedSongs.size,
+                                                Screens.ListenTogether to ltInviteBadge,
                                             ),
                                         modifier =
                                             Modifier
@@ -1320,6 +1341,7 @@ class MainActivity : ComponentActivity() {
                                     badgeCounts =
                                         mapOf(
                                             Screens.Library to incomingSharedSongs.size,
+                                            Screens.ListenTogether to ltInviteBadge,
                                         ),
                                 )
                             }
@@ -1383,6 +1405,76 @@ class MainActivity : ComponentActivity() {
                                         snackbarHostState = snackbarHostState,
                                         waitingSongCount = incomingSharedSongs.size,
                                     )
+                                }
+
+                                // App-wide LT-invite banner (SPEC_7 D13): visible on every
+                                // screen while the app is foregrounded. Padded below the
+                                // top bar/status bar so it never renders underneath them.
+                                InviteBanner(
+                                    invite = ltBannerInvite,
+                                    modifier =
+                                        Modifier
+                                            .align(Alignment.TopCenter)
+                                            .padding(
+                                                top =
+                                                    LocalPlayerAwareWindowInsets.current
+                                                        .asPaddingValues()
+                                                        .calculateTopPadding() + 8.dp,
+                                            ),
+                                    onJoin = {
+                                        ltBannerInvite?.let { invite ->
+                                            inviteNotifier.joinFromInvite(
+                                                invite,
+                                                onJoined = {
+                                                    navController.navigate(Screens.ListenTogether.route) {
+                                                        launchSingleTop = true
+                                                    }
+                                                },
+                                                onFailed = { rejected ->
+                                                    Toast.makeText(
+                                                        this@MainActivity,
+                                                        if (rejected) {
+                                                            R.string.lt_invite_room_gone_toast
+                                                        } else {
+                                                            R.string.lt_invite_join_failed_toast
+                                                        },
+                                                        Toast.LENGTH_SHORT,
+                                                    ).show()
+                                                },
+                                            )
+                                        }
+                                    },
+                                    onDecline = {
+                                        ltBannerInvite?.let { inviteNotifier.declineInvite(it) }
+                                    },
+                                )
+                            }
+
+                            // Host-side reaction to the partner's answer (SPEC_7 D3/D12):
+                            // toast + drop any incoming banner + land on the LT screen.
+                            LaunchedEffect(ltOutgoingInvite?.status) {
+                                when (ltOutgoingInvite?.status) {
+                                    ListenTogetherInvite.STATUS_ACCEPTED -> {
+                                        Toast.makeText(
+                                            this@MainActivity,
+                                            R.string.lt_invite_accepted_toast,
+                                            Toast.LENGTH_SHORT,
+                                        ).show()
+                                        inviteNotifier.onOutgoingAccepted()
+                                        navController.navigate(Screens.ListenTogether.route) {
+                                            launchSingleTop = true
+                                        }
+                                    }
+
+                                    ListenTogetherInvite.STATUS_DECLINED -> {
+                                        Toast.makeText(
+                                            this@MainActivity,
+                                            R.string.lt_invite_declined_toast,
+                                            Toast.LENGTH_SHORT,
+                                        ).show()
+                                    }
+
+                                    else -> {}
                                 }
                             }
                         }
@@ -1700,6 +1792,7 @@ val LocalPlayerAwareWindowInsets = compositionLocalOf<WindowInsets> { error("No 
 val LocalDownloadUtil = staticCompositionLocalOf<DownloadUtil> { error("No DownloadUtil provided") }
 val LocalSyncUtils = staticCompositionLocalOf<SyncUtils> { error("No SyncUtils provided") }
 val LocalListenTogetherManager = staticCompositionLocalOf<com.metrolist.music.listentogether.ListenTogetherManager?> { null }
+val LocalInviteNotifier = staticCompositionLocalOf<com.metrolist.music.social.InviteNotifier?> { null }
 val LocalChangelogState = staticCompositionLocalOf<MutableState<Boolean>> { error("No LocalChangelogState provided") }
 val LocalArtistNameAliases = staticCompositionLocalOf<Map<String, String>> { emptyMap() }
 val LocalIsPlayerExpanded = compositionLocalOf { false }

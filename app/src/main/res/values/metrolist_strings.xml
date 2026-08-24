@@ -1077,4 +1077,17 @@
     <string name="lt_invite_notification_body">Tap to join %1$s\'s listening session</string>
     <string name="lt_invites_channel_name">Listen together invites</string>
     <string name="lt_invites_channel_description">Invitations to join a live listening session</string>
+    <string name="lt_invite_banner_subtitle">Live listening session</string>
+    <string name="lt_invite_button">Invite %1$s to listen together</string>
+    <string name="lt_invite_waiting">Invite sent · waiting for %1$s…</string>
+    <string name="lt_invite_cancel">Cancel invite</string>
+    <string name="lt_invite_incoming_title">%1$s wants to listen together</string>
+    <string name="lt_invite_partner_missing">Your partner isn\'t set up yet</string>
+    <string name="lt_invite_advanced">Manual join options</string>
+    <string name="lt_invite_accepted_toast">%1$s joined your session</string>
+    <string name="lt_invite_declined_toast">%1$s declined your invite</string>
+    <string name="lt_invite_expired_toast">Invite expired</string>
+    <string name="lt_invite_room_gone_toast">The session has ended</string>
+    <string name="lt_invite_create_failed_toast">Couldn\'t create the session. Try again.</string>
+    <string name="lt_invite_join_failed_toast">Couldn\'t join — the invite is still valid, try again</string>
 </resources>
