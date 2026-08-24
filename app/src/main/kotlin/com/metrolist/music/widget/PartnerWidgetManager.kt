@@ -576,7 +576,7 @@ class PartnerWidgetManager @Inject constructor(
         const val SHAPE_SQUARE = "square"
 
         /** Floor for W-SCALE live-text downscaling; below this the ellipsis takes over. */
-        private const val TEXT_MIN_SCALE = 0.5f
+        private const val TEXT_MIN_SCALE = 0.65f
 
         /** Whether this device broadcasts its own playback to the partner. Default on. */
         val HEARTBEAT_ENABLED_KEY = booleanPreferencesKey("partner_heartbeat_enabled")
