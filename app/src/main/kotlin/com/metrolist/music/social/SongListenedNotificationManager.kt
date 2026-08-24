@@ -74,6 +74,46 @@ class SongListenedNotificationManager @Inject constructor(
     }
 
     /**
+     * Start the daily gentle-nudge worker. Same lifecycle as the listened worker: started on
+     * login / app open, stopped on logout.
+     */
+    fun startNudgeWorker() {
+        val currentUser = auth.currentUser
+        if (currentUser == null) {
+            Timber.d("SongListenedNotifMgr", "User not logged in, not starting nudge worker")
+            return
+        }
+
+        Timber.d("SongListenedNotifMgr", "Starting gentle nudge worker")
+
+        val constraints =
+            Constraints.Builder()
+                .setRequiredNetworkType(NetworkType.CONNECTED)
+                .build()
+
+        val workRequest =
+            PeriodicWorkRequestBuilder<GentleNudgeWorker>(24, TimeUnit.HOURS)
+                .setConstraints(constraints)
+                .build()
+
+        workManager.enqueueUniquePeriodicWork(
+            GentleNudgeWorker.WORK_NAME,
+            ExistingPeriodicWorkPolicy.KEEP,
+            workRequest,
+        )
+
+        Timber.d("SongListenedNotifMgr", "Gentle nudge worker scheduled")
+    }
+
+    /**
+     * Stop the daily gentle-nudge worker. Called when the user logs out.
+     */
+    fun stopNudgeWorker() {
+        Timber.d("SongListenedNotifMgr", "Stopping gentle nudge worker")
+        workManager.cancelUniqueWork(GentleNudgeWorker.WORK_NAME)
+    }
+
+    /**
      * Check if the worker is running.
      */
     fun isWorkerRunning(): Boolean {

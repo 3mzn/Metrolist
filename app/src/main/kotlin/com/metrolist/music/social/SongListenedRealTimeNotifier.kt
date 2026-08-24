@@ -50,10 +50,12 @@ class SongListenedRealTimeNotifier @Inject constructor(
                         Timber.d("SongListenedRealTime", "User logged in: $newUserId - starting notification listener")
                         startListening()
                         notificationManager.startWorker()
+                        notificationManager.startNudgeWorker()
                     } else {
                         Timber.d("SongListenedRealTime", "User logged out - stopping notification listener")
                         stopListening()
                         notificationManager.stopWorker()
+                        notificationManager.stopNudgeWorker()
                     }
                 }
             }.also {

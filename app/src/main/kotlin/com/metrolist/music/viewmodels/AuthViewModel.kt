@@ -49,10 +49,12 @@ class AuthViewModel @Inject constructor(
             viewModelScope.launch {
                 ensureUserProfileExists(currentUser)
                 songListenedNotificationManager.startWorker()
+                songListenedNotificationManager.startNudgeWorker()
             }
         } else {
             _profile.value = null
             songListenedNotificationManager.stopWorker()
+            songListenedNotificationManager.stopNudgeWorker()
         }
     }
 
