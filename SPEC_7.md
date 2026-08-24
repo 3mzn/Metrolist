@@ -14,7 +14,7 @@ Status of all decisions: **FINAL — nothing here needs further sign-off.**
 | # | Decision |
 |---|----------|
 | D1 | One button replaces username/room-code join: **"Invite aswini to listen together"** (directional via PartnerResolver). |
-| D2 | Expiry: **15 minutes**. Expiry is judged by the RECEIVER's clock: `now − createdAt ≥ 15 min` = expired. The sender's `expiresAt` is informational only (clock-skew proof). |
+| D2 | Expiry: **15 minutes**. Expiry is judged by the RECEIVER's clock: `now − createdAt ≥ 15 min` = expired. There is no `expiresAt` field — `createdAt` alone decides, which makes the check immune to sender/receiver clock skew. |
 | D3 | Decline is an **explicit Decline button**. Decline writes `status: "declined"` on the invite doc (sender sees "aswini declined" toast in real time), then the doc is deleted. Accept writes `status: "accepted"`. |
 | D4 | A hidden **manual room-code join survives** (collapsed "advanced" section in the LT tab) for debugging/emulator testing. |
 | D5 | Mid-session, the invite button is **disabled** and reads "listening together now · End session". Invites cannot be *sent* during a session. |
@@ -153,9 +153,12 @@ existing deployed rules do NOT cover this collection. No composite indexes neede
   - Periodic **15 minutes** (Android's hard floor — documented in the worker KDoc as the
     dead-process safety net; live delivery is the listener), `NetworkType.CONNECTED`.
   - `doWork()`: logged out → success. Read `invites/{myUid}`; missing/expired/`status !=
-    "pending"` → also run `cleanupExpiredInvites()` → success. Unexpired + pending → post
-    notification **only once per invite**: DataStore `LT_LAST_NOTIFIED_INVITE_CREATED_AT`;
-    skip if already notified for this `createdAt`. Run `cleanupExpiredInvites()`.
+    "pending"` → also run `cleanupExpiredInvites()` → success. Unexpired + pending → if
+    `AppForegroundTracker.isForeground`, skip posting (the banner is showing; the
+    foreground→background transition in InviteNotifier handles later notification) →
+    success. Otherwise post the notification **only once per invite**: DataStore
+    `LT_LAST_NOTIFIED_INVITE_CREATED_AT`; skip if already notified for this `createdAt`.
+    Run `cleanupExpiredInvites()`.
 - `social/SongListenedNotificationManager.kt`: add `startInvitePollWorker()` /
   `stopInvitePollWorker()` (24/7 KEEP-policy pattern, same as nudge). Wire start/stop into
   the SAME two lifecycle call sites as the nudge worker (`SongListenedRealTimeNotifier`
@@ -165,8 +168,13 @@ existing deployed rules do NOT cover this collection. No composite indexes neede
   - doc present + pending + unexpired:
     - `AppForegroundTracker.isForeground` → emit to the in-app banner StateFlow
       (`val bannerInvite: StateFlow<ListenTogetherInvite?>`) — UI (Phase 3) collects it.
-    - else → post the system notification (tap routes to join UI, D13). No banner.
-  - doc absent / expired / declined → clear banner StateFlow.
+    - else → post the system notification (tap routes to join UI, D13), setting
+      `LT_LAST_NOTIFIED_INVITE_CREATED_AT` (shared dedupe with the poll). No banner.
+  - doc absent / expired / status != pending → clear banner StateFlow.
+  - **Foreground→background transition**: also observe `AppForegroundTracker` — if the app
+    leaves the foreground while a live pending unexpired invite is still unanswered, post
+    the system notification immediately (same dedupe key), so the user is never more than
+    seconds away from a re-notification after backgrounding. No 15-min wait for the poll.
   - Started from `App.initializeSocialFeatures()` next to `PartnerHeartbeatMonitor`.
 - `MainActivity.kt`: handle `navigate_to == "listen_together_invite"` — navigate to the LT
   tab with the join UI surfaced (same mechanism as the existing `navigate_to` extras; the
@@ -183,8 +191,9 @@ invite.
 **Files:**
 - `ui/screens/settings/integrations/ListenTogetherSettings.kt` (the LT tab screen) —
   restructure the entry section:
-  - **Idle**: primary button "Invite aswini to listen together" (directional name;
-    disabled with "aswini isn't set up yet" if `partnerUid == null`).
+   - **Idle**: primary button "Invite aswini to listen together" (directional name;
+     disabled with "aswini isn't set up yet" (`lt_invite_partner_missing`) if
+     `partnerUid == null`).
   - **Waiting** (outgoing pending, unexpired): "Invite sent · waiting…" + Cancel text
     button → `cancelInvite()`.
   - **Incoming** (bannerInvite != null): inline card "eman wants to listen together —
@@ -203,9 +212,10 @@ invite.
   2. `viewModel.joinRoom(invite.roomCode, partnerIdentityName)` (D7).
   3. On join success/failure:
      - success → `acceptInvite()` (status + delete), auto-cancel own outgoing invite (D12),
-       navigate both paths to the LT screen (D10 — the local phone navigates; the host sees
-       the existing `UserJoined` event and his own navigation trigger), force suggestion
-       auto-approve ON for this session (D8).
+        navigate to the LT screen (D10 — the joiner navigates immediately; the HOST
+        navigates when either the outgoing-invite status flips to "accepted" or the
+        existing `UserJoined` socket event fires, whichever is first), force suggestion
+        auto-approve ON for this session (D8).
      - failure (server unreachable) → toast "couldn't join — try again", invite NOT
        deleted (D11 retry). "The session ended" toast when the room no longer exists (D11).
 - **Invite (send) flow**: on Invite tap —
@@ -222,12 +232,13 @@ invite.
   ON (restore prior value when session ends — optional; simplest is set-and-leave with a
   log). Locate the existing preference key in `ListenTogetherClient`/settings.
 - **Strings** (`metrolist_strings.xml`): `lt_invite_button`, `lt_invite_waiting`,
-  `lt_invite_cancel`, `lt_invite_incoming_title` ("Join %1$s?"), `lt_invite_accept`,
-  `lt_invite_decline`, `lt_invite_in_session`, `lt_invite_declined_toast`,
-  `lt_invite_accepted_toast`, `lt_invite_expired_toast`, `lt_invite_busy_toast`,
-  `lt_invite_room_gone_toast`, `lt_invite_create_failed_toast`, `lt_invite_join_failed_toast`,
-  `lt_invite_notification_title/_body`, `lt_invites_channel_name/_description`,
-  `lt_invite_advanced` — ALL with `%1$s` name placeholders where names appear (D15).
+   `lt_invite_cancel`, `lt_invite_incoming_title` ("Join %1$s?"), `lt_invite_accept`,
+   `lt_invite_decline`, `lt_invite_in_session`, `lt_invite_partner_missing`,
+   `lt_invite_declined_toast`,
+   `lt_invite_accepted_toast`, `lt_invite_expired_toast`, `lt_invite_busy_toast`,
+   `lt_invite_room_gone_toast`, `lt_invite_create_failed_toast`, `lt_invite_join_failed_toast`,
+   `lt_invite_notification_title/_body`, `lt_invites_channel_name/_description`,
+   `lt_invite_advanced` — ALL with `%1$s` name placeholders where names appear (D15).
 
 **Verification:** full `:app:assembleFossDebug`; two-device checklist in §7.
 
@@ -262,6 +273,9 @@ REQUIRED before any two-device testing of Phase 2/3 — the deployed ruleset has
 - [ ] eman taps Invite → room created, button flips to "Invite sent · waiting… [Cancel]"
 - [ ] aswini (app foreground) → banner on ANY screen + LT tab badge; Join/Decline both work
 - [ ] aswini (app backgrounded) → system notification; tap → lands in LT tab join UI, no banner
+- [ ] Banner ignored, app backgrounded with invite still pending → notification fires
+      immediately (not up to 15 min later)
+- [ ] Poll never posts a notification while the app is in the foreground (no double delivery)
 - [ ] aswini (app fully closed) → notification within ~15 min (poll); on next open within
       15 min → join UI waiting in LT tab
 - [ ] Join → both phones land on the LT screen, playback synced
