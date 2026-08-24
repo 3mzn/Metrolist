@@ -20,6 +20,14 @@ object SongNotificationHelper {
     const val CHANNEL_ID = "song_listened_notifications"
     const val NOTIFICATION_ID_BASE = 3000
 
+    const val NUDGE_CHANNEL_ID = "gentle_nudge_notifications"
+
+    /**
+     * Fixed id: at most one nudge pair per day by design, so a second nudge replaces the
+     * first instead of stacking.
+     */
+    private const val NUDGE_NOTIFICATION_ID = 2900
+
     fun showNotification(
         context: Context,
         sentSong: SentSong,
@@ -85,6 +93,64 @@ object SongNotificationHelper {
             NOTIFICATION_ID_BASE + uniqueId,
             notification,
         )
+    }
+
+    /**
+     * The gentle nudge is deliberately its own low-importance channel: it should feel soft and
+     * be independently mutable, never sharing urgency with "friend listened" events.
+     */
+    fun showNudgeNotification(
+        context: Context,
+        title: String,
+        message: String,
+    ) {
+        createNudgeChannel(context)
+
+        val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+        val intent =
+            Intent(context, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                putExtra("navigate_to", "social")
+            }
+
+        val pendingIntent =
+            PendingIntent.getActivity(
+                context,
+                1,
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+
+        val notification =
+            NotificationCompat.Builder(context, NUDGE_CHANNEL_ID)
+                .setSmallIcon(R.drawable.music_note)
+                .setContentTitle(title)
+                .setContentText(message)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(message))
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setAutoCancel(true)
+                .setContentIntent(pendingIntent)
+                .build()
+
+        notificationManager.notify(NUDGE_NOTIFICATION_ID, notification)
+    }
+
+    private fun createNudgeChannel(context: Context) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val name = context.getString(R.string.gentle_nudge_channel_name)
+            val descriptionText = context.getString(R.string.gentle_nudge_channel_description)
+            val channel = NotificationChannel(
+                NUDGE_CHANNEL_ID,
+                name,
+                NotificationManager.IMPORTANCE_LOW,
+            ).apply {
+                description = descriptionText
+            }
+
+            val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            notificationManager.createNotificationChannel(channel)
+        }
     }
 
     private fun createNotificationChannel(context: Context) {

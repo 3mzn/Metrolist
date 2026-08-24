@@ -1061,4 +1061,14 @@
     <string name="import_matched_n_of_m">Matched %1$d of %2$d tracks</string>
     <string name="import_view_failures">View %1$d that didn\'t match</string>
     <string name="import_in_progress">Importing…</string>
+
+    <!-- Gentle nudge (daily reminder about shared songs sitting unstarted) -->
+    <string name="nudge_sender_title">Songs waiting for %1$s</string>
+    <string name="nudge_sender_single">%1$s hasn\'t gotten to \'%2$s\' yet</string>
+    <string name="nudge_sender_multi">%1$s hasn\'t gotten to \'%2$s\' and %3$d more yet</string>
+    <string name="nudge_receiver_title">Songs waiting for you</string>
+    <string name="nudge_receiver_single">You haven\'t listened to \'%1$s\' (sent by %2$s)</string>
+    <string name="nudge_receiver_multi">You haven\'t listened to %1$d songs sent by %2$s</string>
+    <string name="gentle_nudge_channel_name">Gentle reminders</string>
+    <string name="gentle_nudge_channel_description">Soft daily reminders about shared songs waiting to be listened to</string>
 </resources>
