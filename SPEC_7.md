@@ -7,11 +7,9 @@ surrounding UI change.
 
 Status of all decisions: **FINAL — nothing here needs further sign-off.**
 
-> [!WARNING]
-> **PENDING DEPLOY:** the `invites` Firestore rules (§1/§6) are NOT yet deployed.
-> `firebase deploy --only firestore:rules` MUST be run before any two-device testing of
-> Phase 2/3 — every invite read/write fails permission-denied until then. Do not mark
-> this feature done without it.
+> [!NOTE]
+> **DEPLOYED:** the `invites` Firestore rules were released to cloud.firestore (project
+> `outertune-social`). Device testing can proceed.
 
 ---
 
@@ -283,14 +281,13 @@ install.
 
 ---
 
-## 6. Deployment step (user action) — ⏳ STILL PENDING (do before device testing)
+## 6. Deployment step — ✅ DONE (`firebase deploy --only firestore:rules` released successfully)
 
 ```bash
 firebase deploy --only firestore:rules
 ```
 
-REQUIRED before any two-device testing of Phase 2/3 — the deployed ruleset has no
-`invites` match yet, so every invite write/read fails permission-denied until deployed.
+Was required before any two-device testing of Phase 2/3 — now complete.
 
 ---
 
