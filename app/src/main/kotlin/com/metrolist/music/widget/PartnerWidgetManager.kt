@@ -290,16 +290,33 @@ class PartnerWidgetManager @Inject constructor(
             color = bodyColor
             textSize = height * 0.07f
         }
+        val titleDefaultSize = height * 0.13f
+        val artistDefaultSize = height * 0.085f
+
         val titlePaint = android.text.TextPaint().apply {
             isAntiAlias = true
             color = titleColor
-            textSize = height * 0.13f
+            textSize = titleDefaultSize
             isFakeBoldText = true
         }
         val artistPaint = android.text.TextPaint().apply {
             isAntiAlias = true
             color = bodyColor
-            textSize = height * 0.085f
+            textSize = artistDefaultSize
+        }
+
+        // W-SCALE: one shared multiplier shrinks BOTH lines together when either overflows,
+        // preserving the title:artist size ratio exactly; past the floor the ellipsize calls
+        // below take over.
+        var scale = 1f
+        val worstOverflow = maxOf(
+            titlePaint.measureText(status.title),
+            artistPaint.measureText(status.artist),
+        ) / textWidth
+        if (worstOverflow > 1f) {
+            scale = maxOf(1f / worstOverflow, TEXT_MIN_SCALE)
+            titlePaint.textSize = titleDefaultSize * scale
+            artistPaint.textSize = artistDefaultSize * scale
         }
 
         val headerText =
@@ -323,7 +340,7 @@ class PartnerWidgetManager @Inject constructor(
         canvas.drawText(
             TextUtils.ellipsize(status.artist, artistPaint, textWidth, TextUtils.TruncateAt.END).toString(),
             textX,
-            titleY + height * 0.16f,
+            titleY + height * 0.16f * scale,
             artistPaint,
         )
 
@@ -557,6 +574,9 @@ class PartnerWidgetManager @Inject constructor(
         const val SHAPE_CIRCLE = "circle"
         const val SHAPE_ROUNDED = "rounded"
         const val SHAPE_SQUARE = "square"
+
+        /** Floor for W-SCALE live-text downscaling; below this the ellipsis takes over. */
+        private const val TEXT_MIN_SCALE = 0.5f
 
         /** Whether this device broadcasts its own playback to the partner. Default on. */
         val HEARTBEAT_ENABLED_KEY = booleanPreferencesKey("partner_heartbeat_enabled")
