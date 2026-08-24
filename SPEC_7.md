@@ -86,7 +86,9 @@ existing deployed rules do NOT cover this collection. No composite indexes neede
 
 ---
 
-## 2. Phase 1 — Data layer (commit ① `feat(lt-invite): invite repository and firestore rules`)
+## 2. Phase 1 — Data layer (commit ① `feat(lt-invite): invite repository and firestore rules`) — ✅ COMPLETE
+
+Shipped as `fa109d87c`. Model + repository + rules block implemented as specified below.
 
 **Files:**
 - `firestore.rules` — add the `invites` match block (§1).
