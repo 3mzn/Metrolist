@@ -6,7 +6,7 @@ Two users only: **eman** (sender) & **aswini** (receiver). All personalization u
 Build order: 13 → 3 → 5 → 6 → 4 → 7 → 8
 (#6 hard-depends on #5; #4 soft-depends on #5 for presence-based skip conditions)
 
-Progress: 13 ✅ · 3 ✅ · 5+6 ✅ (shipped as one Partner widget feature) · W-SCALE ✅ (shipped at 65% floor) · next: **4** → 7 → 8 → **9 VIZ**
+Progress: 13 ✅ · 3 ✅ · 5+6 ✅ (shipped as one Partner widget feature) · W-SCALE ✅ (shipped at 65% floor) · 4 ✅ (gentle nudge shipped + tested) · next: **7** → 8 → **9 VIZ**
 
 ---
 
@@ -65,7 +65,16 @@ A small count bubble on the Library tab (and optionally on "From aswini") showin
 
 ---
 
-## 4. Gentle nudge (notifies BOTH people)
+## 4. Gentle nudge (notifies BOTH people) — ✅ SHIPPED
+
+Shipped as `37a425c84` → `5c792e400`. Daily `GentleNudgeWorker`: one batched notification
+pair per day for songs unstarted ≥3 days; per-song cap of 2 rounds (`nudgeCount`/`lastNudgedAt`
+on the sentSongs doc); skips while the partner is actively listening (status/{uid} freshness)
+or while the stale song plays locally; foreground suppression applies ONLY to the receiver
+nudge — the sender nudge is the only surface showing "partner hasn't listened", so it always
+fires. Tested on both phones (PENDING_TESTS.md). Original design below.
+
+### Original design
 
 If a sent song sits unstarted for N days (default 3), both sides get a soft daily notification — warm, never guilt-trippy.
 

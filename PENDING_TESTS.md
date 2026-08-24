@@ -6,7 +6,7 @@ phones have confirmed it works.
 
 ---
 
-## Gentle Nudge (feature #4) — ⏳ NOT TESTED
+## Gentle Nudge (feature #4) — ✅ TESTED
 
 ### What it does
 
@@ -63,11 +63,11 @@ Delete the fake stale song documents from Firebase, otherwise the reminders fire
 
 ### Status
 
-- [ ] Reminder fires on both phones
-- [ ] Daily rule works
-- [ ] 2-reminder cap works
-- [ ] Quiet while partner listens
-- [ ] Quiet about currently-playing song
-- [ ] Receiver reminder quiet while her app is open
-- [ ] Sender reminder fires even with app open
-- [ ] Multi-song message batches into one notification
+- [x] Reminder fires on both phones
+- [x] Daily rule works
+- [x] 2-reminder cap works
+- [x] Quiet while partner listens
+- [x] Quiet about currently-playing song
+- [x] Receiver reminder quiet while her app is open
+- [x] Sender reminder fires even with app open
+- [x] Multi-song message batches into one notification
