@@ -6,11 +6,17 @@ Two users only: **eman** (sender) & **aswini** (receiver). All personalization u
 Build order: 13 → 3 → 5 → 6 → 4 → 7 → 8
 (#6 hard-depends on #5; #4 soft-depends on #5 for presence-based skip conditions)
 
-Progress: 13 ✅ · 3 ✅ · 5+6 ✅ (shipped as one Partner widget feature) · next: **W-SCALE** → 4 → 7 → 8 → **9 VIZ**
+Progress: 13 ✅ · 3 ✅ · 5+6 ✅ (shipped as one Partner widget feature) · W-SCALE ✅ (shipped at 65% floor) · next: **4** → 7 → 8 → **9 VIZ**
 
 ---
 
-## W-SCALE. Widget text auto-scale — 🔝 NEXT (top priority)
+## W-SCALE. Widget text auto-scale — ✅ SHIPPED
+
+Shipped in `b9299de37` + `d71b86bc0`. One shared multiplier shrinks BOTH lines together,
+preserving the title:artist ratio exactly; floor set to **65%** (user-tuned, up from the
+planned 50%), past it the existing ellipsize takes over. Baseline gap scales with the text.
+Implemented in `PartnerWidgetManager.composeUnifiedWidget` (live-text block only;
+idle/compact untouched). Verified on-device.
 
 When the song title and/or artist are too long for the panel width, scale BOTH down
 proportionally instead of truncating with "…". Chosen over scrolling-marquee + edge-fade
