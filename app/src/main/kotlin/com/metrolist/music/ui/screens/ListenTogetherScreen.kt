@@ -344,6 +344,21 @@ fun ListenTogetherScreen(
                     )
                 }
 
+                // Invite waiting (SPEC_7): creating the room puts the host IN the room
+                // immediately, so the "waiting for the partner to accept" surface lives
+                // HERE — inside the session view — not in the join section.
+                if (isHost && outgoingInvite != null && room.users.count { it.isConnected } <= 1) {
+                    item {
+                        WaitingForPartnerCard(
+                            partnerName = partnerIdentity?.partnerName ?: outgoingInvite.fromName,
+                            onCancel = {
+                                inviteController?.cancelInvite()
+                                listenTogetherManager.leaveRoom()
+                            },
+                        )
+                    }
+                }
+
                 // Connected users
                 val connectedUsers = room.users.filter { it.isConnected }
                 val currentUserIdValue = userId ?: ""
@@ -1556,6 +1571,52 @@ private fun AdvancedJoinSection(
 
         AnimatedVisibility(visible = expanded || isJoiningRoom) {
             content()
+        }
+    }
+}
+
+/**
+ * Host-side waiting surface (SPEC_7): shown inside the live session while the invite is
+ * pending and the partner hasn't joined yet. Cancel withdraws the invite and closes the
+ * empty room.
+ */
+@Composable
+private fun WaitingForPartnerCard(
+    partnerName: String,
+    onCancel: () -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        colors =
+            CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+            ),
+    ) {
+        Column(
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(20.dp),
+                strokeWidth = 2.dp,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            Text(
+                text = stringResource(R.string.lt_invite_waiting, partnerName),
+                style = MaterialTheme.typography.bodyMedium,
+                textAlign = TextAlign.Center,
+            )
+            OutlinedButton(
+                onClick = onCancel,
+                shape = RoundedCornerShape(16.dp),
+            ) {
+                Text(stringResource(R.string.lt_invite_cancel))
+            }
         }
     }
 }
