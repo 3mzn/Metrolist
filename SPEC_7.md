@@ -295,7 +295,7 @@ Was required before any two-device testing of Phase 2/3 — now complete.
 
 - [ ] eman taps Invite → room created, button flips to "Invite sent · waiting… [Cancel]"
 - [ ] aswini (app foreground) → banner on ANY screen + LT tab badge; Join/Decline both work
-- [ ] aswini (app backgrounded) → system notification; tap → lands in LT tab join UI, no banner
+- [x] aswini (app backgrounded) → system notification; tap → lands in LT tab join UI, no banner
 - [ ] Banner ignored, app backgrounded with invite still pending → notification fires
       immediately (not up to 15 min later)
 - [ ] Poll never posts a notification while the app is in the foreground (no double delivery)
@@ -311,7 +311,7 @@ Was required before any two-device testing of Phase 2/3 — now complete.
 - [ ] Host leaves before guest joins → guest gets "the session ended" toast
 - [ ] Mid-session: invite button disabled ("listening together now · End session")
 - [ ] Stale-session Join: cleans up old state, joins cleanly (D6)
-- [ ] Hidden manual join still functional under Advanced
+- [x] Hidden manual join still functional under Advanced
 - [ ] Firebase console: invite doc created with correct fields; deleted after accept/decline/cancel
 - [ ] Free-tier sanity: no listener/worker storms in Firebase usage dashboard after a day
 

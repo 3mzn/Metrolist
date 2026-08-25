@@ -566,17 +566,17 @@ File: `MAYBE_LATER.md`. Progress line: `13 ✅ · 3 ✅ · 5+6 ✅ (shipped as o
 - W-SCALE ✅ (visual).
 
 ## 11.2 Crash found & fixed, needs re-test
-- **Mutual-invite accept-from-inside-a-room**: eman in room, aswini left + invited him, he accepted → CRASH `IllegalStateException: Player is accessed on the wrong thread. Current thread: 'DefaultDispatcher-worker-8' Expected: 'main'` at `ExoPlayerImpl.removeListener(1926)` ← `ListenTogetherManager.cleanup(702)` ← `leaveRoom(1786)` ← `InviteNotifier$joinFromInvite$1.invokeSuspend(InviteNotifier.kt:206)` (Dispatchers.IO). Fixed in `696cfe6b4` (withContext(Dispatchers.Main) around manager calls). Installed both devices. RE-TEST the exact scenario.
+- **Mutual-invite accept-from-inside-a-room**: eman in room, aswini left + invited him, he accepted → CRASH `IllegalStateException: Player is accessed on the wrong thread. Current thread: 'DefaultDispatcher-worker-8' Expected: 'main'` at `ExoPlayerImpl.removeListener(1926)` ← `ListenTogetherManager.cleanup(702)` ← `leaveRoom(1786)` ← `InviteNotifier$joinFromInvite$1.invokeSuspend(InviteNotifier.kt:206)` (Dispatchers.IO). Fixed in `696cfe6b4` (withContext(Dispatchers.Main) around manager calls). Installed both devices. ✅ RE-TEST PASSED (Aug 25, user-verified): accepting an invite from inside a session switches rooms without crashing.
 
-## 11.3 Untested SPEC_7 §7 items
-1. Backgrounded notification: emulator app alive+backgrounded → invite → heads-up notification → tap → join UI directly (no banner)
-2. Banner-ignored → backgrounded → notification fires immediately (not 15 min)
-3. Poll never double-notifies while foregrounded
-4. Fully-closed poll: force-stop emulator app → invite → ≤15 min notification; also: app closed, invite sent, reopen ≤15 min → join UI waiting in LT tab
-5. Failed-join retry: emulator airplane mode → Join → toast, invite survives → retry works
-6. Host vanishes before guest joins → "The session has ended" toast
-7. Hidden manual join (Advanced) still works
-8. Free-tier usage sanity (Firebase dashboard after a day)
+## 11.3 SPEC_7 §7 items
+1. ✅ DONE — Backgrounded notification: emulator app alive+backgrounded → invite → heads-up notification → tap → join UI directly (no banner)
+2. Untested — Banner-ignored → backgrounded → notification fires immediately (not 15 min)
+3. Untested — Poll never double-notifies while foregrounded
+4. Untested — Fully-closed poll: force-stop emulator app → invite → ≤15 min notification; also: app closed, invite sent, reopen ≤15 min → join UI waiting in LT tab
+5. Untested — Failed-join retry: emulator airplane mode → Join → toast, invite survives → retry works
+6. Untested — Host vanishes before guest joins → "The session has ended" toast
+7. ✅ DONE — Hidden manual join (Advanced) still works
+8. Pending — Free-tier usage sanity (Firebase dashboard after a day)
 
 ## 11.4 Debugging procedures that worked
 - Live logcat captures: `adb -s <dev> logcat -s LTInvite PartnerResolver ListenTogetherClient ListenTogetherManager` (background_process tool; captures die with agent session or device restart — restart them).
@@ -623,8 +623,8 @@ File: `MAYBE_LATER.md`. Progress line: `13 ✅ · 3 ✅ · 5+6 ✅ (shipped as o
 # 14. NEXT STEPS (in order)
 
 1. **Verify device/build state** — adb was just restarted; devices reconnected (`ylwwmn85w4ifb6z9` + `emulator-5556` confirmed). Installed build should be `696cfe6b4`'s APK (installed ~15:44 Aug 25; no code changed since). Verify via `adb -s <dev> shell dumpsys package com.metrolist.music.debug | Select-String lastUpdateTime` vs APK LastWriteTime (3:44:58 PM); reinstall if unsure.
-2. **Re-test mutual-invite scenario** (the crash fix): both in room → aswini leaves → aswini invites eman → eman accepts from inside his room → should switch rooms without crashing.
-3. **Run remaining SPEC_7 tests** (§11.3 items 1-7): backgrounded notification, banner-ignored→backgrounded re-notify, no-double-delivery, fully-closed poll (15-min wait), failed-join retry (airplane mode), host-vanished toast, manual-join Advanced.
+2. ~~Re-test mutual-invite scenario~~ — ✅ DONE (Aug 25): crash fix `696cfe6b4` verified; accepting an invite from inside a session switches rooms without crashing.
+3. **Run remaining SPEC_7 tests** (§11.3 items 2–6): banner-ignored→backgrounded re-notify, no-double-delivery, fully-closed poll (15-min wait), failed-join retry (airplane mode), host-vanished toast. Items 1 and 7 already done.
 4. **Update MAYBE_LATER.md progress line** (7 → ✅) and PENDING_TESTS.md as tests pass (user approves tracker edits).
 5. **Plan #8 "Us" playlists** — present Option A (Room `sharedWith` column; needs explicit schema-change sign-off) vs Option B (Firestore-only mirroring); user decides; then spec → phases → implement (follow the SPEC_7 pattern: spec file, phased commits, deep code study first).
 6. **#9 VIZ** after #8.
