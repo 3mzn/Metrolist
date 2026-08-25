@@ -70,11 +70,34 @@ class ListenTogetherInviteRepository @Inject constructor(
      */
     suspend fun sendInvite(roomCode: String): Result<Unit> {
         val myUid = auth.currentUser?.uid
-            ?: return Result.failure(IllegalStateException("Not signed in"))
-        val partnerUid = partnerResolver.awaitPartnerUid()
-            ?: return Result.failure(IllegalStateException("Partner not resolved"))
+        if (myUid == null) {
+            Timber.tag(TAG).w("sendInvite failed: not signed in")
+            return Result.failure(IllegalStateException("Not signed in"))
+        }
+
+        var partnerUid = partnerResolver.awaitPartnerUid()
+        if (partnerUid == null) {
+            // The resolver's users-scan runs once per process; if it failed (transient error
+            // at app start) or ran before the partner's profile doc existed, kick it and
+            // wait once more before giving up.
+            Timber.tag(TAG).w("sendInvite: partner unresolved, refreshing resolver and retrying")
+            partnerResolver.refresh()
+            partnerUid = partnerResolver.awaitPartnerUid(5_000)
+        }
+        if (partnerUid == null) {
+            Timber.tag(TAG).w("sendInvite failed: partner not resolved after refresh")
+            return Result.failure(IllegalStateException("Partner not resolved"))
+        }
+        if (partnerUid == myUid) {
+            Timber.tag(TAG).w("sendInvite failed: partner resolved to SELF (bad users data)")
+            return Result.failure(IllegalStateException("Partner resolved to self"))
+        }
+
         val myName = partnerResolver.identity.value.myName
-            ?: return Result.failure(IllegalStateException("Identity not resolved"))
+        if (myName == null) {
+            Timber.tag(TAG).w("sendInvite failed: identity unresolved")
+            return Result.failure(IllegalStateException("Identity not resolved"))
+        }
 
         return try {
             invitesCollection.document(partnerUid).set(
@@ -90,7 +113,7 @@ class ListenTogetherInviteRepository @Inject constructor(
             Timber.tag(TAG).d("Invite sent to partner (%s)", partnerUid)
             Result.success(Unit)
         } catch (e: Exception) {
-            Timber.tag(TAG).e(e, "Failed to send invite")
+            Timber.tag(TAG).e(e, "sendInvite failed: Firestore write error")
             Result.failure(e)
         }
     }

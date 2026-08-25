@@ -15,6 +15,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -100,26 +101,35 @@ class PartnerResolver @Inject constructor(
                 }
             }
 
-            try {
-                // Phase 2: find the account holding the partner seat. During testing the seat may
-                // be held by aswinitest instead of aswini, so eman accepts both handles.
-                val snapshot = firestore.collection("users").get().await()
-                val candidateUsernames = partnerCandidateHandles(mine)
-                val partnerDoc = snapshot.documents.firstOrNull { doc ->
-                    doc.id != user.uid &&
-                        (
-                            doc.getString("username") in candidateUsernames ||
-                                partnerEmailMatches(doc.getString("email"), mine)
-                            )
-                }
+            // The scan is the ONLY path to a fresh partner UID, and this coroutine is the
+            // only place it runs — a transient failure here used to leave partnerUid null
+            // for the whole process lifetime. Retry with backoff; also retry "no match"
+            // because the partner's profile doc can appear AFTER our scan (fresh signup).
+            val candidateUsernames = partnerCandidateHandles(mine)
+            for (attempt in 1..SCAN_ATTEMPTS) {
+                try {
+                    val snapshot = firestore.collection("users").get().await()
+                    val partnerDoc = snapshot.documents.firstOrNull { doc ->
+                        doc.id != user.uid &&
+                            (
+                                doc.getString("username") in candidateUsernames ||
+                                    partnerEmailMatches(doc.getString("email"), mine)
+                                )
+                    }
 
-                partnerDoc?.let { doc ->
-                    _identity.value = _identity.value.copy(partnerUid = doc.id)
-                    cachePartner(doc.id, partnerDisplayName(mine))
+                    if (partnerDoc != null) {
+                        _identity.value = _identity.value.copy(partnerUid = partnerDoc.id)
+                        cachePartner(partnerDoc.id, partnerDisplayName(mine))
+                        Timber.d("PartnerResolver: partner resolved to %s (attempt %d)", partnerDoc.id, attempt)
+                        return@launch
+                    }
+                    Timber.d("PartnerResolver: no matching partner doc (attempt %d/%d)", attempt, SCAN_ATTEMPTS)
+                } catch (e: Exception) {
+                    Timber.e(e, "PartnerResolver: Firestore lookup failed (attempt %d/%d)", attempt, SCAN_ATTEMPTS)
                 }
-            } catch (e: Exception) {
-                Timber.e(e, "PartnerResolver: Firestore lookup failed; keeping heuristic identity")
+                if (attempt < SCAN_ATTEMPTS) delay(SCAN_RETRY_DELAY_MS * attempt)
             }
+            Timber.w("PartnerResolver: giving up after %d attempts; cached UID (if any) remains", SCAN_ATTEMPTS)
         }
     }
 
@@ -204,6 +214,9 @@ class PartnerResolver @Inject constructor(
         /** Cached so background contexts (FCM service) can personalize without Firestore. */
         val PARTNER_UID_KEY = stringPreferencesKey("partner_uid_cached")
         val PARTNER_NAME_KEY = stringPreferencesKey("partner_name_cached")
+
+        private const val SCAN_ATTEMPTS = 3
+        private const val SCAN_RETRY_DELAY_MS = 2_000L
 
         /** Blocking read of the cached partner display name for non-suspend callers (e.g. FCM). */
         fun cachedPartnerNameBlocking(context: Context): String? =

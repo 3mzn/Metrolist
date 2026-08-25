@@ -107,6 +107,7 @@ import com.metrolist.music.ui.component.IconButton
 import com.metrolist.music.ui.utils.backToMain
 import com.metrolist.music.utils.rememberPreference
 import kotlinx.coroutines.delay
+import timber.log.Timber
 import kotlinx.coroutines.launch
 import androidx.compose.material3.IconButton as MaterialIconButton
 
@@ -207,8 +208,10 @@ fun ListenTogetherScreen(
                         // The manual flow's clipboard copy would be noise here.
                         isCreatingInvite = false
                         autoApproveSuggestions = true // D8
+                        Timber.tag("LTInvite").d("RoomCreated for invite, sending invite with code %s", event.roomCode)
                         val result = inviteController.sendInvite(event.roomCode)
                         if (result.isFailure) {
+                            Timber.tag("LTInvite").e(result.exceptionOrNull(), "sendInvite failed")
                             Toast.makeText(context, R.string.lt_invite_create_failed_toast, Toast.LENGTH_SHORT).show()
                         }
                     } else {
@@ -229,6 +232,7 @@ fun ListenTogetherScreen(
             delay(15_000)
             if (isCreatingInvite) {
                 isCreatingInvite = false
+                Timber.tag("LTInvite").e("Invite watchdog fired: RoomCreated never arrived within 15s")
                 Toast.makeText(context, R.string.lt_invite_create_failed_toast, Toast.LENGTH_SHORT).show()
             }
         }
