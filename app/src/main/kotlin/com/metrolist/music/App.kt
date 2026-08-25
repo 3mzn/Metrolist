@@ -154,7 +154,8 @@ class App :
         AppForegroundTracker.register(this)
 
         // Live LT-invite delivery: banner in the foreground, notification when backgrounded.
-        inviteNotifier.get()
+        // start() attaches the Firestore listeners — get() alone does nothing.
+        inviteNotifier.get().start()
     }
 
     override fun onCreate() {

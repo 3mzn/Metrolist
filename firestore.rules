@@ -102,10 +102,20 @@ service cloud.firestore {
         && request.resource.data.createdAt is number
         && request.resource.data.status == "pending";
 
-      // Recipient flips status (accepted/declined); sender and room binding are immutable.
-      allow update: if isInviteParty()
-        && request.resource.data.fromUid == resource.data.fromUid
-        && request.resource.data.roomCode == resource.data.roomCode;
+      // Recipient flips status (sender/room binding immutable for them); sender may
+      // overwrite their own pending invite wholesale (re-invite with a new room code).
+      allow update: if request.auth != null && (
+        (
+          request.auth.uid == recipientUid
+          && request.resource.data.fromUid == resource.data.fromUid
+          && request.resource.data.roomCode == resource.data.roomCode
+        )
+        || (
+          request.auth.uid == resource.data.fromUid
+          && request.resource.data.fromUid == resource.data.fromUid
+          && request.resource.data.status == "pending"
+        )
+      );
 
       // Recipient cleanup after accept/decline; sender cancel.
       allow delete: if isInviteParty();

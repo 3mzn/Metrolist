@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import timber.log.Timber
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -79,8 +80,10 @@ class InviteNotifier @Inject constructor(
     private val mainHandler = Handler(Looper.getMainLooper())
 
     fun start() {
+        Timber.tag("LTInvite").d("InviteNotifier started — attaching invite listeners")
         scope.launch {
             inviteRepository.observeIncomingInvite().collect { invite ->
+                Timber.tag("LTInvite").d("Incoming emission: %s", invite?.roomCode ?: "null")
                 currentInvite.value = invite?.takeIf { it.isPending() && !it.isExpired() }
             }
         }
