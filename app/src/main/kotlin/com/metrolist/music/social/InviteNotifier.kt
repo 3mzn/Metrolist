@@ -25,6 +25,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import timber.log.Timber
 import javax.inject.Inject
@@ -202,15 +203,21 @@ class InviteNotifier @Inject constructor(
         scope.launch {
             try {
                 val myName = partnerResolver.identity.value.myName ?: "guest"
-                if (listenTogetherManager.isInRoom) {
-                    listenTogetherManager.leaveRoom()
-                }
-                listenTogetherManager.connect()
-                listenTogetherManager.joinRoom(invite.roomCode, myName)
 
-                val outcome = withTimeoutOrNull(20_000) {
-                    listenTogetherManager.events.first {
-                        it is ListenTogetherEvent.JoinApproved || it is ListenTogetherEvent.JoinRejected
+                // ExoPlayer is main-thread-only: the D6 stale-session cleanup (leaveRoom →
+                // cleanup → player.removeListener) crashed on a background thread when a
+                // guest accepted an invite while already inside another room. All manager
+                // interaction runs on Main; suspension keeps it non-blocking.
+                val outcome = withContext(Dispatchers.Main) {
+                    if (listenTogetherManager.isInRoom) {
+                        listenTogetherManager.leaveRoom()
+                    }
+                    listenTogetherManager.connect()
+                    listenTogetherManager.joinRoom(invite.roomCode, myName)
+                    withTimeoutOrNull(20_000) {
+                        listenTogetherManager.events.first {
+                            it is ListenTogetherEvent.JoinApproved || it is ListenTogetherEvent.JoinRejected
+                        }
                     }
                 }
 
