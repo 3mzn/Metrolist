@@ -147,8 +147,12 @@ class ListenTogetherInviteRepository @Inject constructor(
 
     /**
      * OUR invite sitting at the partner's doc (or null). Lets the sender see
-     * accepted/declined/deleted in real time. Client-side `fromUid` filter is defensive:
-     * with two users the doc is always either ours or absent.
+     * accepted/declined/deleted in real time.
+     *
+     * Implemented as a QUERY (not a doc listener) on purpose: the rules deny sender reads
+     * of a NONEXISTENT `invites/{partnerUid}` doc (resource.data errors), which is exactly
+     * the "no pending invite" state we must observe. A `whereEqualTo(fromUid)` query is a
+     * list operation — it only touches existing docs and is provably safe to the rules.
      */
     fun observeOutgoingInvite(): Flow<ListenTogetherInvite?> = callbackFlow {
         val myUid = auth.currentUser?.uid
@@ -157,28 +161,21 @@ class ListenTogetherInviteRepository @Inject constructor(
             awaitClose { }
             return@callbackFlow
         }
-        val job = launch {
-            val partnerUid = partnerResolver.awaitPartnerUid()
-            if (partnerUid == null) {
-                trySend(null)
-                return@launch
-            }
-            val registration = invitesCollection.document(partnerUid).addSnapshotListener { snapshot, error ->
+        val registration = invitesCollection
+            .whereEqualTo("fromUid", myUid)
+            .addSnapshotListener { snapshot, error ->
                 if (error != null) {
                     Timber.tag(TAG).e(error, "Outgoing invite listener error")
                     trySend(null)
                     return@addSnapshotListener
                 }
-                val invite = snapshot
-                    ?.takeIf { it.exists() }
+                val invite = snapshot?.documents
+                    ?.firstOrNull()
                     ?.data
                     ?.let { ListenTogetherInvite.fromMap(it) }
-                    ?.takeIf { it.fromUid == myUid }
                 trySend(invite)
             }
-            awaitClose { registration.remove() }
-        }
-        awaitClose { job.cancel() }
+        awaitClose { registration.remove() }
     }
 
     /**
@@ -225,14 +222,18 @@ class ListenTogetherInviteRepository @Inject constructor(
     /** Sender-side cancel: removes our pending invite from the partner's doc. */
     suspend fun cancelInvite() {
         val myUid = auth.currentUser?.uid ?: return
-        val partnerUid = partnerResolver.awaitPartnerUid()
         try {
-            if (partnerUid != null) {
-                val doc = invitesCollection.document(partnerUid).get().await()
-                if (doc.exists() && doc.getString("fromUid") == myUid) {
-                    doc.reference.delete().await()
-                    Timber.tag(TAG).d("Outgoing invite cancelled")
-                }
+            // Query, not get(): a get() on a nonexistent partner doc is denied by the
+            // rules (resource.data errors), while the query only touches existing docs.
+            val snapshot = invitesCollection
+                .whereEqualTo("fromUid", myUid)
+                .get()
+                .await()
+            snapshot.documents.forEach { doc ->
+                doc.reference.delete().await()
+            }
+            if (!snapshot.isEmpty) {
+                Timber.tag(TAG).d("Outgoing invite cancelled (%d doc(s))", snapshot.size())
             }
         } catch (e: Exception) {
             Timber.tag(TAG).e(e, "Failed to cancel outgoing invite")
@@ -254,6 +255,7 @@ class ListenTogetherInviteRepository @Inject constructor(
     /**
      * Opportunistic housekeeping: delete my incoming invite if expired, and our outgoing
      * invite if expired. Called on app open and by the poll worker — no TTL server-side.
+     * Sender-side cleanup uses a query for the same rules reason as [cancelInvite].
      */
     suspend fun cleanupExpiredInvites() {
         val myUid = auth.currentUser?.uid ?: return
@@ -269,14 +271,18 @@ class ListenTogetherInviteRepository @Inject constructor(
             Timber.tag(TAG).w(e, "Incoming invite cleanup failed")
         }
 
-        val partnerUid = partnerResolver.awaitPartnerUid() ?: return
         try {
-            val doc = invitesCollection.document(partnerUid).get().await()
-            val invite = doc.takeIf { it.exists() }?.data?.let { ListenTogetherInvite.fromMap(it) }
-            if (invite != null && invite.fromUid == myUid && invite.isExpired()) {
-                doc.reference.delete().await()
-                context.dataStore.edit { it.remove(OUTGOING_SENT_AT) }
-                Timber.tag(TAG).d("Cleaned up expired outgoing invite")
+            val snapshot = invitesCollection
+                .whereEqualTo("fromUid", myUid)
+                .get()
+                .await()
+            snapshot.documents.forEach { doc ->
+                val invite = doc.data?.let { ListenTogetherInvite.fromMap(it) }
+                if (invite != null && invite.isExpired()) {
+                    doc.reference.delete().await()
+                    context.dataStore.edit { it.remove(OUTGOING_SENT_AT) }
+                    Timber.tag(TAG).d("Cleaned up expired outgoing invite")
+                }
             }
         } catch (e: Exception) {
             Timber.tag(TAG).w(e, "Outgoing invite cleanup failed")
@@ -293,12 +299,13 @@ class ListenTogetherInviteRepository @Inject constructor(
         val myUid = auth.currentUser?.uid ?: return
         if (!hasPendingOutgoingInvite()) return
 
-        val partnerUid = partnerResolver.awaitPartnerUid() ?: return
         try {
-            val doc = invitesCollection.document(partnerUid).get().await()
-            val invite = doc.takeIf { it.exists() }?.data?.let { ListenTogetherInvite.fromMap(it) }
-            val stillOursAndLive =
-                invite != null && invite.fromUid == myUid && !invite.isExpired() && invite.isPending()
+            val snapshot = invitesCollection
+                .whereEqualTo("fromUid", myUid)
+                .get()
+                .await()
+            val invite = snapshot.documents.firstOrNull()?.data?.let { ListenTogetherInvite.fromMap(it) }
+            val stillOursAndLive = invite != null && !invite.isExpired() && invite.isPending()
             if (!stillOursAndLive) {
                 context.dataStore.edit { it.remove(OUTGOING_SENT_AT) }
                 Timber.tag(TAG).d("Outgoing invite cache reconciled (doc gone or no longer live)")
