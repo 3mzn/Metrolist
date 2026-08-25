@@ -18,7 +18,10 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import timber.log.Timber
@@ -119,31 +122,46 @@ class ListenTogetherInviteRepository @Inject constructor(
     }
 
     /**
+     * The signed-in UID as a flow. Firestore snapshot listeners must be (re-)attached per
+     * uid: on a cold start Firebase Auth restores its session ASYNCHRONOUSLY, so
+     * `auth.currentUser` is often null when collectors start — a listener attached once at
+     * startup with a null uid would never attach at all (the "invite never arrives" bug).
+     */
+    private fun authUidFlow(): Flow<String?> = callbackFlow {
+        val listener = FirebaseAuth.AuthStateListener { auth -> trySend(auth.currentUser?.uid) }
+        auth.addAuthStateListener(listener)
+        trySend(auth.currentUser?.uid)
+        awaitClose { auth.removeAuthStateListener(listener) }
+    }
+
+    /**
      * The invite currently addressed TO this device, or null. Emits null for missing doc,
      * listener errors and signed-out state. Expiry is NOT filtered here — callers decide,
      * so "expired but present" states stay observable (the UI shows the expired toast).
      */
-    fun observeIncomingInvite(): Flow<ListenTogetherInvite?> = callbackFlow {
-        val myUid = auth.currentUser?.uid
-        if (myUid == null) {
-            trySend(null)
-            awaitClose { }
-            return@callbackFlow
-        }
-        val registration = invitesCollection.document(myUid).addSnapshotListener { snapshot, error ->
-            if (error != null) {
-                Timber.tag(TAG).e(error, "Incoming invite listener error")
-                trySend(null)
-                return@addSnapshotListener
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    fun observeIncomingInvite(): Flow<ListenTogetherInvite?> =
+        authUidFlow().flatMapLatest { myUid ->
+            if (myUid == null) {
+                flowOf<ListenTogetherInvite?>(null)
+            } else {
+                callbackFlow {
+                    val registration = invitesCollection.document(myUid).addSnapshotListener { snapshot, error ->
+                        if (error != null) {
+                            Timber.tag(TAG).e(error, "Incoming invite listener error")
+                            trySend(null)
+                            return@addSnapshotListener
+                        }
+                        val invite = snapshot
+                            ?.takeIf { it.exists() }
+                            ?.data
+                            ?.let { ListenTogetherInvite.fromMap(it) }
+                        trySend(invite)
+                    }
+                    awaitClose { registration.remove() }
+                }
             }
-            val invite = snapshot
-                ?.takeIf { it.exists() }
-                ?.data
-                ?.let { ListenTogetherInvite.fromMap(it) }
-            trySend(invite)
-        }
-        awaitClose { registration.remove() }
-    }
+        }.distinctUntilChanged()
 
     /**
      * OUR invite sitting at the partner's doc (or null). Lets the sender see
@@ -154,29 +172,31 @@ class ListenTogetherInviteRepository @Inject constructor(
      * the "no pending invite" state we must observe. A `whereEqualTo(fromUid)` query is a
      * list operation — it only touches existing docs and is provably safe to the rules.
      */
-    fun observeOutgoingInvite(): Flow<ListenTogetherInvite?> = callbackFlow {
-        val myUid = auth.currentUser?.uid
-        if (myUid == null) {
-            trySend(null)
-            awaitClose { }
-            return@callbackFlow
-        }
-        val registration = invitesCollection
-            .whereEqualTo("fromUid", myUid)
-            .addSnapshotListener { snapshot, error ->
-                if (error != null) {
-                    Timber.tag(TAG).e(error, "Outgoing invite listener error")
-                    trySend(null)
-                    return@addSnapshotListener
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    fun observeOutgoingInvite(): Flow<ListenTogetherInvite?> =
+        authUidFlow().flatMapLatest { myUid ->
+            if (myUid == null) {
+                flowOf<ListenTogetherInvite?>(null)
+            } else {
+                callbackFlow {
+                    val registration = invitesCollection
+                        .whereEqualTo("fromUid", myUid)
+                        .addSnapshotListener { snapshot, error ->
+                            if (error != null) {
+                                Timber.tag(TAG).e(error, "Outgoing invite listener error")
+                                trySend(null)
+                                return@addSnapshotListener
+                            }
+                            val invite = snapshot?.documents
+                                ?.firstOrNull()
+                                ?.data
+                                ?.let { ListenTogetherInvite.fromMap(it) }
+                            trySend(invite)
+                        }
+                    awaitClose { registration.remove() }
                 }
-                val invite = snapshot?.documents
-                    ?.firstOrNull()
-                    ?.data
-                    ?.let { ListenTogetherInvite.fromMap(it) }
-                trySend(invite)
             }
-        awaitClose { registration.remove() }
-    }
+        }.distinctUntilChanged()
 
     /**
      * Marks the incoming invite accepted (best-effort — the sender's toast reads this) and
