@@ -1090,4 +1090,14 @@
     <string name="lt_invite_room_gone_toast">The session has ended</string>
     <string name="lt_invite_create_failed_toast">Couldn\'t create the session. Try again.</string>
     <string name="lt_invite_join_failed_toast">Couldn\'t join — the invite is still valid, try again</string>
+
+    <!-- SPEC_8 "Us" shared playlists -->
+    <string name="share_with_partner_format">Share with %1$s</string>
+    <string name="partner">partner</string>
+    <string name="shared_playlist_delete_both_phones">Both phones will lose this playlist</string>
+    <string name="shared_playlist_new_songs_format">%1$d new</string>
+    <string name="shared_playlist_share_success">Shared with %1$s</string>
+    <string name="shared_playlist_share_failed">Couldn\'t share — is your partner signed in?</string>
+    <string name="shared_playlist_duplicate_blocked">Already in %1$s</string>
+    <string name="shared_playlist_edit_failed">Couldn\'t sync the shared playlist. Check your connection and try again.</string>
 </resources>

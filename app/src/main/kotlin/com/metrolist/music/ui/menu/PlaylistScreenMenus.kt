@@ -22,6 +22,7 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -31,8 +32,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.exoplayer.offline.Download
 import com.metrolist.music.LocalListenTogetherManager
+import com.metrolist.music.LocalSharedPlaylistRepository
 import com.metrolist.music.R
 import com.metrolist.music.db.entities.Playlist
 import com.metrolist.music.db.entities.PlaylistEntity
@@ -44,7 +47,9 @@ import com.metrolist.music.ui.component.Material3MenuItemData
 import com.metrolist.music.utils.PlaylistExporter
 import com.metrolist.music.utils.getExportFileUri
 import com.metrolist.music.utils.saveToPublicDocuments
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Menu for Local Playlist Screen
@@ -68,6 +73,12 @@ fun LocalPlaylistMenu(
     val localContext = LocalContext.current
 
     val (showExportDialog, setShowExportDialog) = remember { mutableStateOf(false) }
+
+    // SPEC_8 "Us" shared playlists.
+    val sharedPlaylistRepo = LocalSharedPlaylistRepository.current
+    val isShared: Boolean = playlist.playlist.isShared
+    val partnerIdentity by sharedPlaylistRepo.partnerIdentity.collectAsStateWithLifecycle()
+    val partnerName = partnerIdentity.partnerName
 
     val downloadMenuItem =
         when (downloadState) {
@@ -191,6 +202,63 @@ fun LocalPlaylistMenu(
 
             add(downloadMenuItem)
 
+            // SPEC_8 D1: share a local playlist with the partner (same affordance as library menu).
+            if (!isGuest && !isToListenPlaylist && !isShared) {
+                add(
+                    Material3MenuItemData(
+                        title = {
+                            Text(
+                                text = stringResource(
+                                    R.string.share_with_partner_format,
+                                    partnerName ?: stringResource(R.string.partner),
+                                ),
+                            )
+                        },
+                        icon = {
+                            Icon(
+                                painter = painterResource(R.drawable.share),
+                                contentDescription = null,
+                            )
+                        },
+                        onClick = {
+                            onDismiss()
+                            if (partnerIdentity.partnerUid == null) {
+                                Toast.makeText(
+                                    localContext,
+                                    R.string.lt_invite_partner_missing,
+                                    Toast.LENGTH_SHORT,
+                                ).show()
+                                return@Material3MenuItemData
+                            }
+                            coroutineScope.launch(Dispatchers.IO) {
+                                val result = sharedPlaylistRepo.share(playlist.id)
+                                withContext(Dispatchers.Main) {
+                                    result.fold(
+                                        onSuccess = {
+                                            Toast.makeText(
+                                                localContext,
+                                                localContext.getString(
+                                                    R.string.shared_playlist_share_success,
+                                                    partnerName ?: localContext.getString(R.string.partner),
+                                                ),
+                                                Toast.LENGTH_SHORT,
+                                            ).show()
+                                        },
+                                        onFailure = {
+                                            Toast.makeText(
+                                                localContext,
+                                                R.string.shared_playlist_share_failed,
+                                                Toast.LENGTH_SHORT,
+                                            ).show()
+                                        },
+                                    )
+                                }
+                            }
+                        },
+                    ),
+                )
+            }
+
             add(
                 Material3MenuItemData(
                     title = { Text(stringResource(R.string.share)) },
@@ -239,7 +307,17 @@ fun LocalPlaylistMenu(
                 add(
                     Material3MenuItemData(
                         title = { Text(stringResource(R.string.delete)) },
-                        description = { Text(stringResource(R.string.delete_playlist_desc)) },
+                        description = {
+                            Text(
+                                text = stringResource(
+                                    if (isShared) {
+                                        R.string.shared_playlist_delete_both_phones
+                                    } else {
+                                        R.string.delete_playlist_desc
+                                    },
+                                ),
+                            )
+                        },
                         icon = {
                             Icon(
                                 painter = painterResource(R.drawable.delete),

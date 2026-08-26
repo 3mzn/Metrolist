@@ -5,6 +5,7 @@
 
 package com.metrolist.music.ui.menu
 
+import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Row
@@ -25,6 +26,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
@@ -32,6 +34,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import com.metrolist.innertube.utils.parseCookieString
 import com.metrolist.music.LocalDatabase
+import com.metrolist.music.LocalSharedPlaylistRepository
 import com.metrolist.music.R
 import com.metrolist.music.constants.AddToPlaylistSortDescendingKey
 import com.metrolist.music.constants.AddToPlaylistSortTypeKey
@@ -87,6 +90,8 @@ fun AddToPlaylistDialog(
 ) {
     val database = LocalDatabase.current
     val syncUtils = LocalSyncUtils.current
+    val sharedPlaylistRepo = LocalSharedPlaylistRepository.current
+    val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val (sortType, onSortTypeChange) = rememberEnumPreference(
         AddToPlaylistSortTypeKey,
@@ -299,12 +304,52 @@ fun AddToPlaylistDialog(
                             } else {
                                 onGetSong(playlist)
                             }
-                            duplicates = database.playlistDuplicates(playlist.id, songIds!!)
-                            if (duplicates.isNotEmpty()) {
-                                showDuplicateDialog = true
-                            } else {
+                            val ids = songIds!!
+                            if (playlist.playlist.isShared) {
+                                // SPEC_8: shared playlist — route through the repository so the add
+                                // syncs to the partner via Firestore. Block local-only songs (D9)
+                                // and duplicates; surface the reason with a Toast.
+                                val localBlocked = ids.filter {
+                                    database.getSongByIdBlocking(it)?.song?.isLocal == true
+                                }
+                                val dupBlocked = database.playlistDuplicates(playlist.id, ids)
+                                val toAdd = ids.filter { it !in dupBlocked && it !in localBlocked }
                                 onDismiss()
-                                addSongsAndSync(playlist, songIds!!)
+                                val failures = toAdd.mapNotNull { id ->
+                                    sharedPlaylistRepo.addSong(playlist.id, id).exceptionOrNull()
+                                }
+                                withContext(Dispatchers.Main) {
+                                    if (localBlocked.isNotEmpty()) {
+                                        Toast.makeText(
+                                            context,
+                                            R.string.local_songs_cannot_be_sent,
+                                            Toast.LENGTH_SHORT,
+                                        ).show()
+                                    } else if (dupBlocked.isNotEmpty()) {
+                                        Toast.makeText(
+                                            context,
+                                            context.getString(
+                                                R.string.shared_playlist_duplicate_blocked,
+                                                playlist.playlist.name,
+                                            ),
+                                            Toast.LENGTH_SHORT,
+                                        ).show()
+                                    } else if (failures.isNotEmpty()) {
+                                        Toast.makeText(
+                                            context,
+                                            R.string.shared_playlist_edit_failed,
+                                            Toast.LENGTH_SHORT,
+                                        ).show()
+                                    }
+                                }
+                            } else {
+                                duplicates = database.playlistDuplicates(playlist.id, ids)
+                                if (duplicates.isNotEmpty()) {
+                                    showDuplicateDialog = true
+                                } else {
+                                    onDismiss()
+                                    addSongsAndSync(playlist, ids)
+                                }
                             }
                         }
                     }

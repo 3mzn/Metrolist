@@ -267,9 +267,10 @@ constructor(
 class LibraryPlaylistsViewModel
 @Inject
 constructor(
-    @ApplicationContext context: Context,
+    @ApplicationContext private val context: Context,
     database: MusicDatabase,
     private val syncUtils: SyncUtils,
+    private val sharedPlaylistRepository: com.metrolist.music.social.SharedPlaylistRepository,
 ) : ViewModel() {
     private val _searchQuery = MutableStateFlow("")
     val searchQuery = _searchQuery.asStateFlow()
@@ -302,6 +303,15 @@ constructor(
         context.dataStore.data
             .map { it[TopSize] ?: "50" }
             .distinctUntilChanged()
+
+    // SPEC_8: "X new" badge for shared playlists. The sync listener records cloud additions
+    // before applying them to Room, which excludes songs added by this device.
+    val sinceLastOpened: StateFlow<Map<String, Int>> =
+        combine(allPlaylists, sharedPlaylistRepository.newSongCounts) { playlists, counts ->
+            playlists.filter { it.playlist.isShared }.associate { playlist ->
+                playlist.id to (counts[playlist.id] ?: 0)
+            }
+        }.stateIn(viewModelScope, SharingStarted.Lazily, emptyMap())
 }
 
 @HiltViewModel

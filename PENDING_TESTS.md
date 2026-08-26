@@ -8,6 +8,34 @@ yet.
 
 ---
 
+## "Us" playlists (feature #8 / SPEC_8) — first pass 2026-08-26
+
+Test devices: phone `ylwwmn85w4ifb6z9` as eman and MuMu emulator `127.0.0.1:7555` as aswini.
+Both ran the same `13.6.3` Foss debug APK.
+
+### Passed
+
+- Share created the partner copy; a 408-song playlist fully populated on aswini.
+- Receive, bidirectional rename, add-song, duplicate prevention, and local-song blocking.
+- Per-device drag order and independent playback.
+- Offline edit recovery after reconnect.
+- Symmetric whole-playlist deletion and no unshare option.
+- Account-delete survivor path counted as passed by user without destructively deleting an account.
+
+### Failed or partial
+
+- [ ] Bulk receive crashed once. Logcat proves a `playlist_song_map` foreign-key race in
+  `SharedPlaylistRepository.addSongLocally`; restart recovered and all 408 songs eventually arrived.
+- [ ] Remove-song did not persist to cloud/partner; the song returned locally after 1–2 minutes.
+- [ ] The `X new` badge was not observed.
+- [ ] Two-person glyph appeared, but the whole-card outline was not clearly visible and did not
+  visibly change with the current song palette.
+- [x] Cover sync is no longer a requirement. Covers are intentionally independent per device.
+
+Full evidence and the next fix list are in `SPEC_8.md:8`.
+
+---
+
 ## Listen Together invites (feature #7 / SPEC_7) — verif. 2026-08-25–26
 
 ### Delivery (checked on emulator-5556 + emulator-5554 + phone `ylwwmn85w4ifb6z9`)

@@ -31,6 +31,7 @@ data class RelationshipState(
 class SocialRepository @Inject constructor(
     private val firestore: FirebaseFirestore,
     private val auth: FirebaseAuth,
+    private val sharedPlaylistRepository: SharedPlaylistRepository,
 ) {
     private val usersCollection get() = firestore.collection("users")
     private val friendRequestsCollection get() = firestore.collection("friendRequests")
@@ -269,5 +270,9 @@ class SocialRepository @Inject constructor(
             .await()
             .documents
             .forEach { it.reference.delete().await() }
+
+        // SPEC_8 D8: wipe shared playlist cloud docs and leave a partners_deleted tombstone
+        // so the surviving phone promotes its local copies instead of deleting them.
+        sharedPlaylistRepository.clearAllCloudForUid(uid)
     }
 }

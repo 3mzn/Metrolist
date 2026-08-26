@@ -17,6 +17,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
@@ -922,6 +923,7 @@ fun PlaylistListItem(
     playlist: Playlist,
     modifier: Modifier = Modifier,
     autoPlaylist: Boolean = false,
+    sharedBorderColor: Color = Color.Transparent,
     badges: @Composable RowScope.() -> Unit = {
         val downloadUtil = LocalDownloadUtil.current
         val database = LocalDatabase.current
@@ -949,6 +951,15 @@ fun PlaylistListItem(
         }
 
         Icon.Download(downloadState)
+        // SPEC_8: shared-playlist glyph.
+        if (playlist.playlist.isShared) {
+            Icon(
+                painter = painterResource(R.drawable.group),
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(16.dp),
+            )
+        }
     },
     trailingContent: @Composable RowScope.() -> Unit = {}
 ) = ListItem(
@@ -972,27 +983,31 @@ fun PlaylistListItem(
     },
     badges = badges,
     thumbnailContent = {
-        PlaylistThumbnail(
-            thumbnails = playlist.thumbnails,
-            size = ListThumbnailSize,
-            placeHolder = {
-                val painter = when (playlist.playlist.name) {
-                    stringResource(R.string.liked) -> R.drawable.favorite_border
-                    stringResource(R.string.offline) -> R.drawable.offline
-                    stringResource(R.string.cached_playlist) -> R.drawable.cached
-                    // R.drawable.backup as placeholder
-                    stringResource(R.string.uploaded_playlist) -> R.drawable.backup
-                    else -> if (autoPlaylist) R.drawable.trending_up else R.drawable.queue_music
-                }
-                Icon(
-                    painter = painterResource(painter),
-                    contentDescription = null,
-                    tint = LocalContentColor.current.copy(alpha = 0.8f),
-                    modifier = Modifier.size(ListThumbnailSize / 2)
-                )
-            },
-            shape = RoundedCornerShape(ThumbnailCornerRadius)
-        )
+        Box(
+            modifier = Modifier
+        ) {
+            PlaylistThumbnail(
+                thumbnails = playlist.thumbnails,
+                size = ListThumbnailSize,
+                placeHolder = {
+                    val painter = when (playlist.playlist.name) {
+                        stringResource(R.string.liked) -> R.drawable.favorite_border
+                        stringResource(R.string.offline) -> R.drawable.offline
+                        stringResource(R.string.cached_playlist) -> R.drawable.cached
+                        // R.drawable.backup as placeholder
+                        stringResource(R.string.uploaded_playlist) -> R.drawable.backup
+                        else -> if (autoPlaylist) R.drawable.trending_up else R.drawable.queue_music
+                    }
+                    Icon(
+                        painter = painterResource(painter),
+                        contentDescription = null,
+                        tint = LocalContentColor.current.copy(alpha = 0.8f),
+                        modifier = Modifier.size(ListThumbnailSize / 2)
+                    )
+                },
+                shape = RoundedCornerShape(ThumbnailCornerRadius)
+            )
+        }
     },
     trailingContent = trailingContent,
     modifier = modifier
@@ -1003,6 +1018,7 @@ fun PlaylistGridItem(
     playlist: Playlist,
     modifier: Modifier = Modifier,
     autoPlaylist: Boolean = false,
+    sharedBorderColor: Color = Color.Transparent,
     badges: @Composable RowScope.() -> Unit = {
         val downloadUtil = LocalDownloadUtil.current
         val database = LocalDatabase.current
@@ -1030,6 +1046,15 @@ fun PlaylistGridItem(
         }
 
         Icon.Download(downloadState)
+        // SPEC_8: shared-playlist glyph.
+        if (playlist.playlist.isShared) {
+            Icon(
+                painter = painterResource(R.drawable.group),
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(16.dp),
+            )
+        }
     },
     fillMaxWidth: Boolean = false,
 ) = GridItem(
@@ -1072,32 +1097,36 @@ fun PlaylistGridItem(
     badges = badges,
     thumbnailContent = {
         val width = maxWidth
-        PlaylistThumbnail(
-            thumbnails = playlist.thumbnails,
-            size = width,
-            placeHolder = {
-                val painter = when (playlist.playlist.name) {
-                    stringResource(R.string.liked) -> R.drawable.favorite_border
-                    stringResource(R.string.offline) -> R.drawable.offline
-                    stringResource(R.string.cached_playlist) -> R.drawable.cached
-                    // R.drawable.backup as placeholder
-                    stringResource(R.string.uploaded_playlist) -> R.drawable.backup
-                    else -> if (autoPlaylist) R.drawable.trending_up else R.drawable.queue_music
-                }
-                Box(
-                    contentAlignment = Alignment.Center,
-                    modifier = Modifier.fillMaxSize()
-                ) {
-                    Icon(
-                        painter = painterResource(painter),
-                        contentDescription = null,
-                        tint = LocalContentColor.current.copy(alpha = 0.8f),
-                        modifier = Modifier.size(width / 2)
-                    )
-                }
-            },
-            shape = RoundedCornerShape(ThumbnailCornerRadius)
-        )
+        Box(
+            modifier = Modifier
+        ) {
+            PlaylistThumbnail(
+                thumbnails = playlist.thumbnails,
+                size = width,
+                placeHolder = {
+                    val painter = when (playlist.playlist.name) {
+                        stringResource(R.string.liked) -> R.drawable.favorite_border
+                        stringResource(R.string.offline) -> R.drawable.offline
+                        stringResource(R.string.cached_playlist) -> R.drawable.cached
+                        // R.drawable.backup as placeholder
+                        stringResource(R.string.uploaded_playlist) -> R.drawable.backup
+                        else -> if (autoPlaylist) R.drawable.trending_up else R.drawable.queue_music
+                    }
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        Icon(
+                            painter = painterResource(painter),
+                            contentDescription = null,
+                            tint = LocalContentColor.current.copy(alpha = 0.8f),
+                            modifier = Modifier.size(width / 2)
+                        )
+                    }
+                },
+                shape = RoundedCornerShape(ThumbnailCornerRadius)
+            )
+        }
     },
     fillMaxWidth = fillMaxWidth,
     modifier = modifier

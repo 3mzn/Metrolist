@@ -50,6 +50,7 @@ import com.metrolist.music.LocalDatabase
 import com.metrolist.music.LocalDownloadUtil
 import com.metrolist.music.LocalListenTogetherManager
 import com.metrolist.music.LocalPlayerConnection
+import com.metrolist.music.LocalSharedPlaylistRepository
 import com.metrolist.music.R
 import com.metrolist.music.db.entities.Playlist
 import com.metrolist.music.db.entities.PlaylistEntity
@@ -119,6 +120,12 @@ fun PlaylistMenu(
     // them and leave once listened, so it can't be renamed or deleted by hand.
     val isToListenPlaylist: Boolean = playlist.playlist.id == PlaylistEntity.TO_LISTEN_PLAYLIST_ID
 
+    // SPEC_8 "Us" shared playlists.
+    val sharedPlaylistRepo = LocalSharedPlaylistRepository.current
+    val isShared: Boolean = playlist.playlist.isShared
+    val partnerIdentity by sharedPlaylistRepo.partnerIdentity.collectAsStateWithLifecycle()
+    val partnerName = partnerIdentity.partnerName
+
     val isPinned by database.speedDialDao.isPinned(playlist.id).collectAsStateWithLifecycle(initialValue = false)
 
     var showExportDialog by remember { mutableStateOf(false) }
@@ -158,16 +165,23 @@ fun PlaylistMenu(
                 ),
             onDone = { name ->
                 onDismiss()
-                database.query {
-                    update(
-                        playlist.playlist.copy(
-                            name = name,
-                            lastUpdateTime = LocalDateTime.now(),
-                        ),
-                    )
-                }
-                coroutineScope.launch(Dispatchers.IO) {
-                    playlist.playlist.browseId?.let { YouTube.renamePlaylist(it, name) }
+                if (isShared) {
+                    // SPEC_8: rename propagates to the partner via Firestore.
+                    coroutineScope.launch(Dispatchers.IO) {
+                        sharedPlaylistRepo.rename(playlist.id, name)
+                    }
+                } else {
+                    database.query {
+                        update(
+                            playlist.playlist.copy(
+                                name = name,
+                                lastUpdateTime = LocalDateTime.now(),
+                            ),
+                        )
+                    }
+                    coroutineScope.launch(Dispatchers.IO) {
+                        playlist.playlist.browseId?.let { YouTube.renamePlaylist(it, name) }
+                    }
                 }
             },
         )
@@ -232,6 +246,15 @@ fun PlaylistMenu(
                     style = MaterialTheme.typography.bodyLarge,
                     modifier = Modifier.padding(horizontal = 18.dp),
                 )
+                if (isShared) {
+                    // SPEC_8 D28: deleting is symmetric — both phones lose the playlist.
+                    Text(
+                        text = stringResource(R.string.shared_playlist_delete_both_phones),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(horizontal = 18.dp, vertical = 6.dp),
+                    )
+                }
             },
             buttons = {
                 TextButton(
@@ -246,18 +269,26 @@ fun PlaylistMenu(
                     onClick = {
                         showDeletePlaylistDialog = false
                         onDismiss()
-                        database.transaction {
-                            // First toggle the like using the same logic as the like button
-                            if (playlist.playlist.bookmarkedAt != null) {
-                                // Using the same toggleLike() method that's used in the like button
-                                update(playlist.playlist.toggleLike())
+                        if (isShared) {
+                            // SPEC_8 D28: delete the cloud doc first; the local row is removed
+                            // by deleteRemote and the partner's copy is removed by their listener.
+                            coroutineScope.launch(Dispatchers.IO) {
+                                sharedPlaylistRepo.deleteRemote(playlist.id)
                             }
-                            // Then delete the playlist
-                            delete(playlist.playlist)
-                        }
+                        } else {
+                            database.transaction {
+                                // First toggle the like using the same logic as the like button
+                                if (playlist.playlist.bookmarkedAt != null) {
+                                    // Using the same toggleLike() method that's used in the like button
+                                    update(playlist.playlist.toggleLike())
+                                }
+                                // Then delete the playlist
+                                delete(playlist.playlist)
+                            }
 
-                        coroutineScope.launch(Dispatchers.IO) {
-                            playlist.playlist.browseId?.let { YouTube.deletePlaylist(it) }
+                            coroutineScope.launch(Dispatchers.IO) {
+                                playlist.playlist.browseId?.let { YouTube.deletePlaylist(it) }
+                            }
                         }
                     },
                 ) {
@@ -501,6 +532,63 @@ fun PlaylistMenu(
                                 ),
                             )
                         }
+                        // SPEC_8 D1: always expose the one-at-a-time share affordance for eligible
+                        // local playlists. If the partner UID has not resolved, explain that on tap.
+                        if (editable && autoPlaylist != true && !isGuest && !isToListenPlaylist && !isShared) {
+                            add(
+                                Material3MenuItemData(
+                                    title = {
+                                        Text(
+                                            text = stringResource(
+                                                R.string.share_with_partner_format,
+                                                partnerName ?: stringResource(R.string.partner),
+                                            ),
+                                        )
+                                    },
+                                    icon = {
+                                        Icon(
+                                            painter = painterResource(R.drawable.share),
+                                            contentDescription = null,
+                                        )
+                                    },
+                                    onClick = {
+                                        onDismiss()
+                                        if (partnerIdentity.partnerUid == null) {
+                                            Toast.makeText(
+                                                context,
+                                                R.string.lt_invite_partner_missing,
+                                                Toast.LENGTH_SHORT,
+                                            ).show()
+                                            return@Material3MenuItemData
+                                        }
+                                        coroutineScope.launch(Dispatchers.IO) {
+                                            val result = sharedPlaylistRepo.share(playlist.id)
+                                            withContext(Dispatchers.Main) {
+                                                result.fold(
+                                                    onSuccess = {
+                                                        Toast.makeText(
+                                                            context,
+                                                            context.getString(
+                                                                R.string.shared_playlist_share_success,
+                                                                partnerName ?: context.getString(R.string.partner),
+                                                            ),
+                                                            Toast.LENGTH_SHORT,
+                                                        ).show()
+                                                    },
+                                                    onFailure = {
+                                                        Toast.makeText(
+                                                            context,
+                                                            R.string.shared_playlist_share_failed,
+                                                            Toast.LENGTH_SHORT,
+                                                        ).show()
+                                                    },
+                                                )
+                                            }
+                                        }
+                                    },
+                                ),
+                            )
+                        }
                         add(
                             Material3MenuItemData(
                                 title = {
@@ -620,7 +708,17 @@ fun PlaylistMenu(
                             add(
                                 Material3MenuItemData(
                                     title = { Text(text = stringResource(R.string.delete)) },
-                                    description = { Text(text = stringResource(R.string.delete_desc)) },
+                                    description = {
+                                        Text(
+                                            text = stringResource(
+                                                if (isShared) {
+                                                    R.string.shared_playlist_delete_both_phones
+                                                } else {
+                                                    R.string.delete_desc
+                                                },
+                                            ),
+                                        )
+                                    },
                                     icon = {
                                         Icon(
                                             painter = painterResource(R.drawable.delete),

@@ -623,6 +623,33 @@ File: `MAYBE_LATER.md`. Progress line: `13 ✅ · 3 ✅ · 5+6 ✅ (shipped as o
 
 # 14. NEXT STEPS (in order)
 
+## 14.1 Aug 26 SPEC_8 checkpoint (newest state; supersedes the older list below)
+
+SPEC_8 "Us" playlists are implemented in the working tree and Firestore rules are deployed to
+`outertune-social`. `./gradlew :app:testFossDebugUnitTest :app:assembleFossDebug` passed and the APK
+was installed on phone `ylwwmn85w4ifb6z9` and MuMu emulator `127.0.0.1:7555`.
+
+First two-device results: receive of a 408-song playlist completed; receive, rename, add, duplicate
+guard, local-song guard, independent reorder, independent playback, offline recovery, symmetric
+delete, and no-unshare passed. User counts the destructive account-delete scenario as passed without
+deleting either real test account. Rules were deployed twice, with the final deployment compiling
+without warnings.
+
+Confirmed open defects:
+
+1. Emulator logcat captured repeated `SQLiteConstraintException: FOREIGN KEY constraint failed` at
+   `SharedPlaylistRepository.addSongLocally` during the 408-song import. `database.query` queues the
+   song insert asynchronously, so the playlist-map transaction can run first.
+2. Remove-song disappeared only locally, did not disappear on the partner, then reappeared after
+   cloud reconciliation 1–2 minutes later.
+3. The remote-additions `X new` badge was not observed.
+4. The shared two-person glyph appears, but the 2dp whole-card outline is difficult to see and did
+   not visibly react to the current song palette.
+5. User changed D19: playlist cover art is now device-local. Remove/avoid Firestore cover syncing.
+
+Next action after this checkpoint commit/push: fix those four functional/UI defects, remove cover
+sync, rerun unit/build checks, reinstall both devices, and retest only those focused cases.
+
 1. **Verify device/build state** — adb was just restarted; devices reconnected (`ylwwmn85w4ifb6z9` + `emulator-5556` confirmed). Installed build should be `696cfe6b4`'s APK (installed ~15:44 Aug 25; no code changed since). Verify via `adb -s <dev> shell dumpsys package com.metrolist.music.debug | Select-String lastUpdateTime` vs APK LastWriteTime (3:44:58 PM); reinstall if unsure.
 2. ~~Re-test mutual-invite scenario~~ — ✅ DONE (Aug 25): crash fix `696cfe6b4` verified; accepting an invite from inside a session switches rooms without crashing.
 3. **Run remaining SPEC_7 tests** (§11.3 items 5–6): failed-join retry (airplane mode), host-vanished toast. Items 1–4, 7 done; 30 min expiry now proven.

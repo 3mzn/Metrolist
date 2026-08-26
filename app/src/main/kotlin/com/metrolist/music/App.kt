@@ -100,6 +100,9 @@ class App :
     @Inject
     lateinit var inviteNotifier: Provider<com.metrolist.music.social.InviteNotifier>
 
+    @Inject
+    lateinit var sharedPlaylistSyncListener: Provider<com.metrolist.music.social.SharedPlaylistSyncListener>
+
     /**
      * False in the ":crash" process that hosts [com.metrolist.music.ui.screens.CrashActivity].
      *
@@ -146,16 +149,16 @@ class App :
         // the Partner widget on every change.
         partnerHeartbeatMonitor.get()
 
-        // Registers its own auth listener: watches the partner's status document and repaints
-        // the Partner widget on every change.
-        partnerHeartbeatMonitor.get()
-
         // Lets background surfaces (gentle nudge) know when the app is visible on screen.
         AppForegroundTracker.register(this)
 
         // Live LT-invite delivery: banner in the foreground, notification when backgrounded.
         // start() attaches the Firestore listeners — get() alone does nothing.
         inviteNotifier.get().start()
+
+        // SPEC_8: apply shared-playlist cloud diffs to local Room (and catch up after offline).
+        // start() begins collecting; get() alone does nothing.
+        sharedPlaylistSyncListener.get().start()
     }
 
     override fun onCreate() {

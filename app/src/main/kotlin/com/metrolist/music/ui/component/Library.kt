@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
 import com.metrolist.innertube.models.PlaylistItem
 import com.metrolist.music.LocalNavController
@@ -171,11 +172,13 @@ fun LibraryPlaylistListItem(
     menuState: MenuState,
     coroutineScope: CoroutineScope,
     playlist: Playlist,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    sharedBorderColor: Color = Color.Transparent,
 ) {
     val navController = LocalNavController.current
     PlaylistListItem(
     playlist = playlist,
+    sharedBorderColor = sharedBorderColor,
     trailingContent = {
         androidx.compose.material3.IconButton(
             onClick = {
@@ -240,12 +243,14 @@ fun LibraryPlaylistGridItem(
     menuState: MenuState,
     coroutineScope: CoroutineScope,
     playlist: Playlist,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    sharedBorderColor: Color = Color.Transparent,
 ) {
     val navController = LocalNavController.current
     PlaylistGridItem(
     playlist = playlist,
     fillMaxWidth = true,
+    sharedBorderColor = sharedBorderColor,
     modifier = modifier
         .fillMaxWidth()
         .combinedClickable(

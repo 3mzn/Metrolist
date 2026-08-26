@@ -111,6 +111,7 @@ import com.metrolist.music.LocalDownloadUtil
 import com.metrolist.music.LocalNavController
 import com.metrolist.music.LocalPlayerAwareWindowInsets
 import com.metrolist.music.LocalPlayerConnection
+import com.metrolist.music.LocalSharedPlaylistRepository
 import com.metrolist.music.LocalSyncUtils
 import com.metrolist.music.R
 import com.metrolist.music.constants.DarkModeKey
@@ -253,6 +254,19 @@ fun LocalPlaylistScreen(
 
     val editable: Boolean = playlist?.playlist?.isEditable == true
 
+    // SPEC_8: shared-playlist wiring.
+    val sharedPlaylistRepo = LocalSharedPlaylistRepository.current
+    val isShared: Boolean = playlist?.playlist?.isShared == true
+
+    // Clear the "X new" badge while a shared playlist is open. Re-runs as songs arrive so any
+    // track that lands while the user is looking is immediately marked seen.
+    LaunchedEffect(playlist?.id) {
+        val p = playlist ?: return@LaunchedEffect
+        if (p.playlist.isShared) {
+            sharedPlaylistRepo.markPlaylistOpened(p.id)
+        }
+    }
+
     LaunchedEffect(songs) {
         selection.fastForEachReversed { mapId ->
             if (songs.find { it.map.id == mapId } == null) {
@@ -309,16 +323,23 @@ fun LocalPlaylistScreen(
                         TextRange(playlistEntity.name.length),
                     ),
                 onDone = { name ->
-                    database.query {
-                        update(
-                            playlistEntity.copy(
-                                name = name,
-                                lastUpdateTime = LocalDateTime.now(),
-                            ),
-                        )
-                    }
-                    viewModel.viewModelScope.launch(Dispatchers.IO) {
-                        playlistEntity.browseId?.let { YouTube.renamePlaylist(it, name) }
+                    if (isShared) {
+                        // SPEC_8: rename propagates to the partner via Firestore.
+                        viewModel.viewModelScope.launch(Dispatchers.IO) {
+                            sharedPlaylistRepo.rename(playlistEntity.id, name)
+                        }
+                    } else {
+                        database.query {
+                            update(
+                                playlistEntity.copy(
+                                    name = name,
+                                    lastUpdateTime = LocalDateTime.now(),
+                                ),
+                            )
+                        }
+                        viewModel.viewModelScope.launch(Dispatchers.IO) {
+                            playlistEntity.browseId?.let { YouTube.renamePlaylist(it, name) }
+                        }
                     }
                 },
             )
@@ -390,6 +411,14 @@ fun LocalPlaylistScreen(
                     style = MaterialTheme.typography.bodyLarge,
                     modifier = Modifier.padding(horizontal = 18.dp),
                 )
+                if (isShared) {
+                    Text(
+                        text = stringResource(R.string.shared_playlist_delete_both_phones),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(horizontal = 18.dp, vertical = 6.dp),
+                    )
+                }
             },
             buttons = {
                 TextButton(
@@ -402,11 +431,19 @@ fun LocalPlaylistScreen(
                 TextButton(
                     onClick = {
                         showDeletePlaylistDialog = false
-                        database.query {
-                            playlist?.let { delete(it.playlist) }
-                        }
-                        viewModel.viewModelScope.launch(Dispatchers.IO) {
-                            playlist?.playlist?.browseId?.let { YouTube.deletePlaylist(it) }
+                        val playlistId = playlist?.id
+                        if (isShared && playlistId != null) {
+                            // SPEC_8 D28: cloud delete first; partner listener removes their copy.
+                            viewModel.viewModelScope.launch(Dispatchers.IO) {
+                                sharedPlaylistRepo.deleteRemote(playlistId)
+                            }
+                        } else {
+                            database.query {
+                                playlist?.let { delete(it.playlist) }
+                            }
+                            viewModel.viewModelScope.launch(Dispatchers.IO) {
+                                playlist?.playlist?.browseId?.let { YouTube.deletePlaylist(it) }
+                            }
                         }
                         navController.popBackStack()
                     },
@@ -567,6 +604,19 @@ fun LocalPlaylistScreen(
                         val setVideoId = currentItem.map.setVideoId
                         val songId = currentItem.map.songId
                         val playlistId = currentItem.map.playlistId
+
+                        if (isShared) {
+                            // SPEC_8: removal propagates to the partner via Firestore; the repo
+                            // also deletes the local playlist_song_map row.
+                            coroutineScope.launch(Dispatchers.IO) {
+                                sharedPlaylistRepo.removeSong(playlistId, songId).onFailure {
+                                    withContext(Dispatchers.Main) {
+                                        snackbarHostState.showSnackbar(context.getString(R.string.shared_playlist_edit_failed))
+                                    }
+                                }
+                            }
+                            return
+                        }
 
                         database.transaction {
                             move(playlistId, currentItem.map.position, Int.MAX_VALUE)
@@ -896,6 +946,8 @@ fun LocalPlaylistHeader(
 
     val liked = playlist.playlist.bookmarkedAt != null
     val editable: Boolean = playlist.playlist.isEditable
+    val isShared: Boolean = playlist.playlist.isShared
+    val sharedPlaylistRepo = LocalSharedPlaylistRepository.current
 
     val overrideThumbnail = remember { mutableStateOf<String?>(null) }
     var isCustomThumbnail: Boolean =
@@ -972,6 +1024,9 @@ fun LocalPlaylistHeader(
                     database.query {
                         update(playlist.playlist.copy(thumbnailUrl = uri.toString()))
                     }
+                    if (isShared) {
+                        sharedPlaylistRepo.setCover(playlist.id, uri.toString())
+                    }
                 }
 
                 else -> {
@@ -987,6 +1042,9 @@ fun LocalPlaylistHeader(
                             // Update the database with the new thumbnail URL
                             database.query {
                                 update(playlist.playlist.copy(thumbnailUrl = newThumbnailUrl))
+                            }
+                            if (isShared) {
+                                sharedPlaylistRepo.setCover(playlist.id, newThumbnailUrl)
                             }
                         }.onFailure {
                             if (it is ClientRequestException) {
@@ -1124,6 +1182,11 @@ fun LocalPlaylistHeader(
                                                             database.query {
                                                                 update(playlist.playlist.copy(thumbnailUrl = null))
                                                             }
+                                                            if (isShared) {
+                                                                scope.launch(Dispatchers.IO) {
+                                                                    sharedPlaylistRepo.setCover(playlist.id, null)
+                                                                }
+                                                            }
                                                         }
 
                                                         else -> {
@@ -1132,6 +1195,9 @@ fun LocalPlaylistHeader(
                                                                     overrideThumbnail.value = newThumbnailUrl
                                                                     database.query {
                                                                         update(playlist.playlist.copy(thumbnailUrl = newThumbnailUrl))
+                                                                    }
+                                                                    if (isShared) {
+                                                                        sharedPlaylistRepo.setCover(playlist.id, newThumbnailUrl)
                                                                     }
                                                                 }
                                                             }
@@ -1205,6 +1271,11 @@ fun LocalPlaylistHeader(
                                                             database.query {
                                                                 update(playlist.playlist.copy(thumbnailUrl = null))
                                                             }
+                                                            if (isShared) {
+                                                                scope.launch(Dispatchers.IO) {
+                                                                    sharedPlaylistRepo.setCover(playlist.id, null)
+                                                                }
+                                                            }
                                                         }
 
                                                         else -> {
@@ -1213,6 +1284,9 @@ fun LocalPlaylistHeader(
                                                                     overrideThumbnail.value = newThumbnailUrl
                                                                     database.query {
                                                                         update(playlist.playlist.copy(thumbnailUrl = newThumbnailUrl))
+                                                                    }
+                                                                    if (isShared) {
+                                                                        sharedPlaylistRepo.setCover(playlist.id, newThumbnailUrl)
                                                                     }
                                                                 }
                                                             }

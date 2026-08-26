@@ -6,7 +6,7 @@ Two users only: **eman** (sender) & **aswini** (receiver). All personalization u
 Build order: 13 → 3 → 5 → 6 → 4 → 7 → 8
 (#6 hard-depends on #5; #4 soft-depends on #5 for presence-based skip conditions)
 
-Progress: 13 ✅ · 3 ✅ · 5+6 ✅ (shipped as one Partner widget feature) · W-SCALE ✅ (shipped at 65% floor) · 4 ✅ (gentle nudge shipped + tested) · 7 ✅ (listen together invites — one-tap `invites/{recipientUid}`, 30 min expiry) · next: **8** → **9 VIZ**
+Progress: 13 ✅ · 3 ✅ · 5+6 ✅ (shipped as one Partner widget feature) · W-SCALE ✅ (shipped at 65% floor) · 4 ✅ (gentle nudge shipped + tested) · 7 ✅ (listen together invites — one-tap `invites/{recipientUid}`, 30 min expiry) · 8 🧪 (implemented; first two-device pass found 4 follow-ups) · next: finish **8** → **9 VIZ**
 
 ---
 
@@ -130,6 +130,15 @@ Shipped `fa109d87c` → `02bdbe873` (+30 min expiry fix `b60583334` era). Single
 ## 8. "Us" playlists
 
 Playlists both of us can edit, kept in sync through Firestore.
+
+Implementation exists in the current SPEC_8 checkpoint: Room v39 `sharedWith`, Firestore
+`sharedPlaylists`, app-lifetime reconciliation, share/add/rename/delete, Library glyph/border/badge,
+local-song and duplicate guards, independent reorder/playback, account-delete survivor path, and
+deployed rules. The first phone + emulator test passed receive (408 songs), rename, add, duplicate,
+local-song block, independent reorder/playback, offline recovery, symmetric delete, and no-unshare.
+Open defects are documented in `SPEC_8.md:8`: a bulk-receive foreign-key race, remove-song cloud
+reappearance, unseen badge not rendering, and weak/non-reactive card outline. Covers were deliberately
+changed to device-local after testing; cross-device cover sync is no longer required.
 
 - **Model:** new playlist flag `sharedWith: [partnerUid]` on local `PlaylistEntity` (schema addition — AGENTS.md forbids schema edits, so needs explicit sign-off), OR mirror shared playlists entirely in Firestore and render them as a special section without Room rows.
 - **Sync strategy (simple version):** Firestore doc per shared playlist holding ordered song-ID list + metadata. Both phones listen to their shared playlists' docs; incoming changes merge into the local Room copy, outgoing adds/deletes write to Firestore first then apply locally on ack. Last-writer-wins per song operation is fine at two users.

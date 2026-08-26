@@ -48,17 +48,21 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.border
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.navigation.NavController
 import androidx.navigation.compose.currentBackStackEntryAsState
 import com.metrolist.innertube.utils.parseCookieString
 import com.metrolist.music.LocalPlayerAwareWindowInsets
+import com.metrolist.music.LocalPlayerConnection
 import com.metrolist.music.R
 import com.metrolist.music.constants.CONTENT_TYPE_HEADER
 import com.metrolist.music.constants.CONTENT_TYPE_PLAYLIST
@@ -79,6 +83,7 @@ import com.metrolist.music.constants.ShowUploadedPlaylistKey
 import com.metrolist.music.constants.YtmSyncKey
 import com.metrolist.music.db.entities.Playlist
 import com.metrolist.music.db.entities.PlaylistEntity
+import com.metrolist.music.models.MediaMetadata
 import com.metrolist.music.ui.screens.Screens
 import com.metrolist.music.ui.component.CreatePlaylistDialog
 import com.metrolist.music.ui.component.LibrarySearchEmptyPlaceholder
@@ -94,6 +99,7 @@ import com.metrolist.music.extensions.normalizeForSearch
 import com.metrolist.music.utils.rememberEnumPreference
 import com.metrolist.music.utils.rememberPreference
 import com.metrolist.music.viewmodels.LibraryPlaylistsViewModel
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.UUID
@@ -133,6 +139,16 @@ fun LibraryPlaylistsScreen(
     val gridItemSize by rememberEnumPreference(GridItemsSizeKey, GridItemSize.BIG)
 
     val playlists by viewModel.allPlaylists.collectAsStateWithLifecycle()
+    val sinceLastOpened by viewModel.sinceLastOpened.collectAsStateWithLifecycle()
+
+    // MainActivity derives the Material color scheme from the current song artwork. Consume that
+    // existing palette plumbing here rather than extracting a second palette for every library
+    // screen. White is the explicit idle fallback required by SPEC_8 D15.
+    val playerConnection = LocalPlayerConnection.current
+    val fallbackMetadataFlow = remember { MutableStateFlow<MediaMetadata?>(null) }
+    val nowPlayingMetadata by (playerConnection?.mediaMetadata ?: fallbackMetadataFlow)
+        .collectAsStateWithLifecycle()
+    val sharedBorderColor = if (nowPlayingMetadata == null) Color.White else MaterialTheme.colorScheme.primary
 
     var isSearchActive by rememberSaveable { mutableStateOf(false) }
     val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
@@ -463,11 +479,22 @@ fun LibraryPlaylistsScreen(
                                         .animateItem(),
                             )
                         } else {
-                            Box(modifier = Modifier.animateItem()) {
+                            Box(
+                                modifier = Modifier
+                                    .animateItem()
+                                    .then(
+                                        if (item.playlist.playlist.isShared) {
+                                            Modifier.border(2.dp, sharedBorderColor, RoundedCornerShape(16.dp))
+                                        } else {
+                                            Modifier
+                                        },
+                                    ),
+                            ) {
                                 LibraryPlaylistListItem(
                                     menuState = menuState,
                                     coroutineScope = coroutineScope,
                                     playlist = item.playlist,
+                                    sharedBorderColor = sharedBorderColor,
                                 )
                                 if (item.playlist.id == PlaylistEntity.TO_LISTEN_PLAYLIST_ID &&
                                     waitingSongCount > 0
@@ -479,6 +506,23 @@ fun LibraryPlaylistsScreen(
                                                 .padding(start = 44.dp, top = 4.dp),
                                     ) {
                                         Text(waitingSongCount.toString())
+                                    }
+                                }
+                                // SPEC_8: "X new" badge for shared playlists.
+                                val newCount = sinceLastOpened[item.playlist.id] ?: 0
+                                if (item.playlist.playlist.isShared && newCount > 0) {
+                                    Badge(
+                                        modifier =
+                                            Modifier
+                                                .align(Alignment.TopStart)
+                                                .padding(start = 44.dp, top = 4.dp),
+                                    ) {
+                                        Text(
+                                            stringResource(
+                                                R.string.shared_playlist_new_songs_format,
+                                                newCount,
+                                            ),
+                                        )
                                     }
                                 }
                             }
@@ -547,11 +591,22 @@ fun LibraryPlaylistsScreen(
                                         .animateItem(),
                             )
                         } else {
-                            Box(modifier = Modifier.animateItem()) {
+                            Box(
+                                modifier = Modifier
+                                    .animateItem()
+                                    .then(
+                                        if (item.playlist.playlist.isShared) {
+                                            Modifier.border(2.dp, sharedBorderColor, RoundedCornerShape(16.dp))
+                                        } else {
+                                            Modifier
+                                        },
+                                    ),
+                            ) {
                                 LibraryPlaylistGridItem(
                                     menuState = menuState,
                                     coroutineScope = coroutineScope,
                                     playlist = item.playlist,
+                                    sharedBorderColor = sharedBorderColor,
                                 )
                                 if (item.playlist.id == PlaylistEntity.TO_LISTEN_PLAYLIST_ID &&
                                     waitingSongCount > 0
@@ -563,6 +618,23 @@ fun LibraryPlaylistsScreen(
                                                 .padding(8.dp),
                                     ) {
                                         Text(waitingSongCount.toString())
+                                    }
+                                }
+                                // SPEC_8: "X new" badge for shared playlists.
+                                val newCount = sinceLastOpened[item.playlist.id] ?: 0
+                                if (item.playlist.playlist.isShared && newCount > 0) {
+                                    Badge(
+                                        modifier =
+                                            Modifier
+                                                .align(Alignment.TopEnd)
+                                                .padding(8.dp),
+                                    ) {
+                                        Text(
+                                            stringResource(
+                                                R.string.shared_playlist_new_songs_format,
+                                                newCount,
+                                            ),
+                                        )
                                     }
                                 }
                             }

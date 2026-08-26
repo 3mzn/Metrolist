@@ -256,6 +256,9 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var inviteNotifier: com.metrolist.music.social.InviteNotifier
 
+    @Inject
+    lateinit var sharedPlaylistRepository: com.metrolist.music.social.SharedPlaylistRepository
+
     private lateinit var navController: NavHostController
     private var pendingIntent: Intent? = null
     private var latestVersionName by mutableStateOf(BuildConfig.BASE_VERSION_NAME)
@@ -1036,6 +1039,7 @@ class MainActivity : ComponentActivity() {
                     LocalSyncUtils provides syncUtils,
                     LocalListenTogetherManager provides listenTogetherManager,
                     LocalInviteNotifier provides inviteNotifier,
+                    LocalSharedPlaylistRepository provides sharedPlaylistRepository,
                     LocalChangelogState provides showChangelog,
                     LocalArtistNameAliases provides artistNameAliases,
                 ) {
@@ -1793,6 +1797,7 @@ val LocalDownloadUtil = staticCompositionLocalOf<DownloadUtil> { error("No Downl
 val LocalSyncUtils = staticCompositionLocalOf<SyncUtils> { error("No SyncUtils provided") }
 val LocalListenTogetherManager = staticCompositionLocalOf<com.metrolist.music.listentogether.ListenTogetherManager?> { null }
 val LocalInviteNotifier = staticCompositionLocalOf<com.metrolist.music.social.InviteNotifier?> { null }
+val LocalSharedPlaylistRepository = staticCompositionLocalOf<com.metrolist.music.social.SharedPlaylistRepository> { error("No SharedPlaylistRepository provided") }
 val LocalChangelogState = staticCompositionLocalOf<MutableState<Boolean>> { error("No LocalChangelogState provided") }
 val LocalArtistNameAliases = staticCompositionLocalOf<Map<String, String>> { emptyMap() }
 val LocalIsPlayerExpanded = compositionLocalOf { false }
