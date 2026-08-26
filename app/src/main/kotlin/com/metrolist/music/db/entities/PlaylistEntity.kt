@@ -35,7 +35,14 @@ data class PlaylistEntity(
     @ColumnInfo(name = "isLocal", defaultValue = false.toString())
     val isLocal: Boolean = false,
     @ColumnInfo(name = "isAutoSync", defaultValue = false.toString())
-    val isAutoSync: Boolean = false
+    val isAutoSync: Boolean = false,
+
+    /**
+     * UID of the partner this playlist is shared with (SPEC_8 "Us" playlists), or null for a
+     * regular local playlist. Exactly two users by design (MAYBE_LATER #8), so a single UID
+     * is sufficient — the full member list lives in the Firestore `sharedPlaylists` doc.
+     */
+    val sharedWith: String? = null,
 ) {
     companion object {
         const val LIKED_PLAYLIST_ID = "LP_LIKED"
@@ -46,6 +53,10 @@ data class PlaylistEntity(
 
         fun generatePlaylistId() = "LP" + RandomStringUtils.insecure().next(8, true, false)
     }
+
+    /** True when this playlist is shared with the partner. */
+    val isShared: Boolean
+        get() = sharedWith != null
 
     val shareLink: String?
         get() {

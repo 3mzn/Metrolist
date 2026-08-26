@@ -118,7 +118,7 @@ class MusicDatabase(
         SortedSongAlbumMap::class,
         PlaylistSongMapPreview::class,
     ],
-    version = 38,
+    version = 39,
     exportSchema = true,
     autoMigrations = [
         AutoMigration(from = 2, to = 3),
@@ -201,6 +201,7 @@ abstract class InternalDatabase : RoomDatabase() {
                     MIGRATION_21_24,
                     MIGRATION_22_24,
                     MIGRATION_24_25,
+                    MIGRATION_38_39,
                 ).fallbackToDestructiveMigration()
                 .setJournalMode(RoomDatabase.JournalMode.WRITE_AHEAD_LOGGING)
                 .setTransactionExecutor(
@@ -868,6 +869,25 @@ class Migration35To36 : AutoMigrationSpec {
         }
         if (!hasIsCached) {
             db.execSQL("ALTER TABLE song ADD COLUMN isCached INTEGER NOT NULL DEFAULT 0")
+        }
+    }
+}
+
+val MIGRATION_38_39 = object : Migration(38, 39) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        // Add sharedWith column (JSON array of UIDs, nullable)
+        var columnExists = false
+        db.query("PRAGMA table_info('playlist')").use { cursor ->
+            val nameIndex = cursor.getColumnIndex("name")
+            while (cursor.moveToNext()) {
+                if (cursor.getString(nameIndex) == "sharedWith") {
+                    columnExists = true
+                    break
+                }
+            }
+        }
+        if (!columnExists) {
+            db.execSQL("ALTER TABLE playlist ADD COLUMN sharedWith TEXT DEFAULT NULL")
         }
     }
 }
