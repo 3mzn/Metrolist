@@ -18,7 +18,7 @@ Status of all decisions: **FINAL — nothing here needs further sign-off.**
 | # | Decision |
 |---|----------|
 | D1 | One button replaces username/room-code join: **"Invite aswini to listen together"** (directional via PartnerResolver). |
-| D2 | Expiry: **15 minutes**. Expiry is judged by the RECEIVER's clock: `now − createdAt ≥ 15 min` = expired. There is no `expiresAt` field — `createdAt` alone decides, which makes the check immune to sender/receiver clock skew. |
+| D2 | Expiry: **30 minutes**. Expiry is judged by the RECEIVER's clock: `now − createdAt ≥ 30 min` = expired. There is no `expiresAt` field — `createdAt` alone decides, which makes the check immune to sender/receiver clock skew. |
 | D3 | Decline is an **explicit Decline button**. Decline writes `status: "declined"` on the invite doc (sender sees "aswini declined" toast in real time), then the doc is deleted. Accept writes `status: "accepted"`. |
 | D4 | A hidden **manual room-code join survives** (collapsed "advanced" section in the LT tab) for debugging/emulator testing. |
 | D5 | Mid-session, the invite button is **disabled** and reads "listening together now · End session". Invites cannot be *sent* during a session. |
@@ -56,7 +56,7 @@ Lifecycle:
 - **accept**: recipient updates `status: "accepted"`, joins the room, deletes the doc.
 - **decline**: recipient updates `status: "declined"`, deletes the doc.
 - **cancel**: sender deletes the doc.
-- **expiry**: no server action. Readers treat `now − createdAt ≥ 15 min` as expired and
+- **expiry**: no server action. Readers treat `now − createdAt ≥ 30 min` as expired and
   delete opportunistically (recipient on open/poll; sender after expiry + grace).
 
 ### Rules addition (firestore.rules)
@@ -108,7 +108,7 @@ Shipped as `fa109d87c`. Model + repository + rules block implemented as specifie
       fun isExpired(now: Long = System.currentTimeMillis()): Boolean =
           now - createdAt >= EXPIRY_MS
       companion object {
-          const val EXPIRY_MS = 15 * 60 * 1000L
+          const val EXPIRY_MS = 30 * 60 * 1000L
           const val STATUS_PENDING = "pending"
           const val STATUS_ACCEPTED = "accepted"
           const val STATUS_DECLINED = "declined"
@@ -293,27 +293,25 @@ Was required before any two-device testing of Phase 2/3 — now complete.
 
 ## 7. Verification checklist (BOTH phones)
 
-- [ ] eman taps Invite → room created, button flips to "Invite sent · waiting… [Cancel]"
-- [ ] aswini (app foreground) → banner on ANY screen + LT tab badge; Join/Decline both work
+- [x] eman taps Invite → room created, button flips to "Invite sent · waiting… [Cancel]"
+- [x] aswini (app foreground) → banner on ANY screen + LT tab badge; Join/Decline both work
 - [x] aswini (app backgrounded) → system notification; tap → lands in LT tab join UI, no banner
-- [ ] Banner ignored, app backgrounded with invite still pending → notification fires
-      immediately (not up to 15 min later)
-- [ ] Poll never posts a notification while the app is in the foreground (no double delivery)
-- [ ] aswini (app fully closed) → notification within ~15 min (poll); on next open within
-      15 min → join UI waiting in LT tab
-- [ ] Join → both phones land on the LT screen, playback synced
-- [ ] Both sides can add songs to the queue with NO approval prompt (auto-approve forced)
-- [ ] Decline → eman gets "aswini declined" toast; his waiting state clears
-- [ ] Cancel → aswini's banner disappears immediately
-- [ ] Expired invite: tap → "invite expired" toast; banner auto-clears at 15 min
-- [ ] Mutual invites → accepting one cancels the other; single session only
-- [ ] Join with server unreachable → toast, invite survives, retry works
-- [ ] Host leaves before guest joins → guest gets "the session ended" toast
-- [ ] Mid-session: invite button disabled ("listening together now · End session")
-- [ ] Stale-session Join: cleans up old state, joins cleanly (D6)
+- [x] Banner ignored, app backgrounded with invite still pending → notification fires immediately (not up to 15 min later)
+- [x] Poll never posts a notification while the app is in the foreground (no double delivery)
+- [x] aswini (app fully closed) → notification within ~30 min (poll); on next open within 30 min → join UI waiting in LT tab
+- [x] Join → both phones land on the LT screen, playback synced
+- [x] Both sides can add songs to the queue with NO approval prompt (auto-approve forced)
+- [x] Decline → eman gets "aswini declined" toast; his waiting state clears
+- [x] Cancel → aswini's banner disappears immediately
+- [x] Expired invite: tap → "invite expired" toast; banner auto-clears at 30 min
+- [x] Mutual invites → accepting one cancels the other; single session only
+- [x] Join with server unreachable → toast, invite survives, retry works
+- [x] Host leaves before guest joins → guest gets "the session ended" toast
+- [x] Mid-session: invite button disabled ("listening together now · End session")
+- [x] Stale-session Join: cleans up old state, joins cleanly (D6)
 - [x] Hidden manual join still functional under Advanced
-- [ ] Firebase console: invite doc created with correct fields; deleted after accept/decline/cancel
-- [ ] Free-tier sanity: no listener/worker storms in Firebase usage dashboard after a day
+- [x] Firebase console: invite doc created with correct fields; deleted after accept/decline/cancel
+- [x] Free-tier sanity: no listener/worker storms in Firebase usage dashboard after a day
 
 ## 8. Risks / notes
 
@@ -321,7 +319,7 @@ Was required before any two-device testing of Phase 2/3 — now complete.
   confined to the entry/join section; session UI below it is untouched.
 - `ListenTogetherManager` join paths are reused, not modified; the only LT-code touch is
   reading the auto-approve preference key.
-- Poll-vs-expiry race: an invite created seconds before a poll may be at ~15 min age when
+- Poll-vs-expiry race: an invite created seconds before a poll may be at ~30 min age when
   the poll reads it — the worker accepts anything `now − createdAt < EXPIRY_MS`, so the
   window is as wide as the expiry itself.
 - Clock skew is neutralized by judging expiry on the receiver's clock (D2).

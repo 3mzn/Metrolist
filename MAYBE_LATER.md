@@ -6,7 +6,7 @@ Two users only: **eman** (sender) & **aswini** (receiver). All personalization u
 Build order: 13 → 3 → 5 → 6 → 4 → 7 → 8
 (#6 hard-depends on #5; #4 soft-depends on #5 for presence-based skip conditions)
 
-Progress: 13 ✅ · 3 ✅ · 5+6 ✅ (shipped as one Partner widget feature) · W-SCALE ✅ (shipped at 65% floor) · 4 ✅ (gentle nudge shipped + tested) · next: **7** → 8 → **9 VIZ**
+Progress: 13 ✅ · 3 ✅ · 5+6 ✅ (shipped as one Partner widget feature) · W-SCALE ✅ (shipped at 65% floor) · 4 ✅ (gentle nudge shipped + tested) · 7 ✅ (listen together invites — one-tap `invites/{recipientUid}`, 30 min expiry) · next: **8** → **9 VIZ**
 
 ---
 
@@ -112,18 +112,18 @@ Home-screen widget mirroring feature #5 outside the app: partner's current track
 
 ---
 
-## 7. Listen Together, trivially (redesigned menu)
+## 7. Listen Together, trivially (redesigned menu) — ✅ SHIPPED
 
-Keep Metrolist's entire Listen Together backend untouched. Replace only the join UI on the existing LT entry point.
+Shipped `fa109d87c` → `02bdbe873` (+30 min expiry fix `b60583334` era). Single primary action `Invite aswini to listen together` replacing the username/room-code form. Covers `D1–D16` in `SPEC_7.md:0` + `SPEC_7.md:1` `invites/{recipientUid}` `{roomCode, fromUid, fromName, createdAt, status}`, **30 min reader-clock expiry** `SPEC_7.md:21`, foreground `InviteBanner.kt` / background `SongNotificationHelper.kt:lt_invites#2800` / dead-process `InvitePollWorker.kt` tiers `SPEC_7.md:32`, invite-waiting card + `InviteSection` + `AdvancedJoinSection` on `ui/screens/ListenTogetherScreen.kt` `SPEC_7.md:200`, `firestore.rules` `invites` block, verified on phone + emulator. Fixes in the testing war documented in `CONTINUATION.md:15`.
 
 - **Current UI:** the Listen Together menu has username + room-code input fields and a connect button. All of that goes away.
-- **New UI:** the same button/menu becomes a single primary action: `Invite aswini to listen together`. Optionally a secondary line showing session state ("listening together now · end session").
+- **New UI:** the same button/menu becomes a single primary action: `Invite aswini to listen together`. Shows `Invite sent · waiting… [Cancel]` while pending, inline `Join / Reject` when incoming, `InviteSection` inside the session view while waiting for the partner, and `Manual join options` (`AdvancedJoinSection`) remains.
 - **Invite flow:**
-  1. eman taps invite → write `invite/{aswiniUid} = {roomCode, from: emanUid, createdAt, expiresAt}` to Firestore (room created locally via existing LT client first).
-  2. aswini's phone (snapshot listener on her invite doc) shows a non-intrusive banner or notification: `eman wants to listen together — join?`
-  3. One tap joins the existing room with playback synced. Decline → invite expires silently after 10 min.
-- **What stays untouched:** `ListenTogetherClient`, sync protocol, play/pause/seek/queue propagation. We're only automating room discovery — no protocol changes.
-- **Edge cases:** simultaneous invites → last write wins, other side gets a toast; expired invite → tapping join shows a gentle "invite expired" toast.
+  1. eman taps invite → write `invites/{aswiniUid} = {roomCode, fromUid: emanUid, fromName: eman, createdAt, status: pending}` to Firestore (room created locally via existing LT client first).
+  2. aswini's phone (snapshot listener / poll) shows: foreground → banner, backgrounded (alive) → heads-up notification `lt_invites`, fully closed → poll. `eman wants to listen together — join?`
+  3. One tap joins the existing room with playback synced. Decline → doc deleted after `status declined` signal, sender gets toast; invite expires silently after **30 min** `SPEC_7.md:21` (was 15, fixed to give the poll two cycles of slack).
+- **What stayed untouched:** `ListenTogetherClient`, sync protocol, play/pause/seek/queue propagation. Only automating room discovery — no protocol changes.
+- **Edge cases:** simultaneous invites → last write wins, other side gets a toast; expired invite → banner/notification vanishes, no "expired" toast (deviation, `CONTINUATION.md:13`).
 
 ---
 

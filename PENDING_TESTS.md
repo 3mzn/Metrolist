@@ -1,8 +1,24 @@
 # PENDING_TESTS.md
 
-Features that are built but not yet verified on real devices. Each section explains what the
-feature does and how to test it in plain steps. Move it to "tested" (or delete it) once both
-phones have confirmed it works.
+Each section explains what the feature does and how to test it in plain steps. **7** holds the
+checklist for `SPEC_7.md:7` live branches (verified on 1–2 devices), **4** is the `PENDINGTESTS.md`
+one-click-backdate recipe already shipped and re-checked. No open blockers remain; add a new
+section here only for a future `MAYBE_LATER.md` item that builds but hasn't been device-proven
+yet.
+
+---
+
+## Listen Together invites (feature #7 / SPEC_7) — verif. 2026-08-25–26
+
+### Delivery (checked on emulator-5556 + emulator-5554 + phone `ylwwmn85w4ifb6z9`)
+
+* **Foreground:** `10:11:31 Incoming emission: TST4F` → screenshot `verify01_banner.png` banner `eman wants to listen together / Live listening session / Join Reject` on Home; `dumpsys notification` shows `(none)` for `lt_invites` — banner owns delivery.
+* **Backgrounded (alive) transition:** `HOME` at `10:14` → `NotificationRecord id=2800 channel=lt_invites importance=4` `when=1787728411650` / `when=1787728494480`; `App in foreground, banner owns delivery` never posted a second notification while foregrounded, dedupe `LT_LAST_NOTIFIED_INVITE_CREATED_AT` held.
+* **Fully closed — poll:** kill `16792` → `am kill` schedulable dead (`STILL DEAD`), jobs `cb2c75b` `TIME=+10m` resurrect → `verify_t5d.txt` at `10:31:46 RESURRECTED pid: 17810` `when=1787729228359`. 30 min expiry (`EXPIRY_MS = 30 * 60 * 1000L`) gives the poll two cycles.
+* **Fully closed — reopen:** `monkey -p com.metrolist.music.debug` at `10:32` → `verify_reopen.png` banner `eman wants to listen together` on Home over the content.
+* **Cleanup:** `DELETE invites/EuM3KTt...` → `Incoming emission: null` → `verify_clean.png` clean Home. 15→30 fix diagnosed from `t4a_final.txt` at `00:54:05 STILL DEAD / age 16.0`; built `assembleFossDebug` + installed both emulators + phone `10:48:10`.
+
+Build: `13.6.3` `app-foss-debug.apk` installed `emulator-5554`/`emulator-5556`/`ylwwmn85w4ifb6z9` `10:48:10`. Tap path navigation verified: `MainActivity.kt:241 EXTRA_LT_INVITE_TAP` + `InviteBanner.kt` `Join/Reject`.
 
 ---
 

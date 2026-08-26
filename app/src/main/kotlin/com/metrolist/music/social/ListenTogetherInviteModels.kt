@@ -26,7 +26,7 @@ data class ListenTogetherInvite(
     fun isPending(): Boolean = status == STATUS_PENDING
 
     companion object {
-        const val EXPIRY_MS = 15 * 60 * 1000L
+        const val EXPIRY_MS = 30 * 60 * 1000L
         const val STATUS_PENDING = "pending"
         const val STATUS_ACCEPTED = "accepted"
         const val STATUS_DECLINED = "declined"

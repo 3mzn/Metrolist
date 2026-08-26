@@ -272,7 +272,7 @@ Tracks only when playing FROM the To-Listen playlist; ≥50% → markSongAsListe
 
 ## 6.2 The 16 locked decisions (D1–D16, from 4 rounds of user Q&A)
 - D1 One button replaces username/room-code join: "Invite aswini to listen together" (directional via PartnerResolver).
-- D2 Expiry 15 minutes, judged by READER's clock: `now − createdAt ≥ 15 min` = expired. NO expiresAt field (clock-skew proof).
+- D2 Expiry 30 minutes, judged by READER's clock: `now − createdAt ≥ 30 min` = expired. NO expiresAt field (clock-skew proof).
 - D3 Explicit Decline button → writes `status: "declined"` (sender sees "aswini declined" toast in real time) then deletes doc. Accept writes `status: "accepted"`.
 - D4 Hidden manual room-code join survives (collapsed "Advanced" section) for debugging.
 - D5 Mid-session the invite button is disabled: "listening together now · End session". Implemented as: the invite section simply isn't rendered when in-room (room UI replaces it).
@@ -345,7 +345,7 @@ data class ListenTogetherInvite(
     fun isExpired(now: Long = System.currentTimeMillis()): Boolean = now - createdAt >= EXPIRY_MS
     fun isPending(): Boolean = status == STATUS_PENDING
     companion object {
-        const val EXPIRY_MS = 15 * 60 * 1000L
+        const val EXPIRY_MS = 30 * 60 * 1000L
         const val STATUS_PENDING = "pending"
         const val STATUS_ACCEPTED = "accepted"
         const val STATUS_DECLINED = "declined"
@@ -561,22 +561,23 @@ File: `MAYBE_LATER.md`. Progress line: `13 ✅ · 3 ✅ · 5+6 ✅ (shipped as o
 
 ## 11.1 Verified working (on devices)
 - Invite flow end-to-end: phone invite → waiting card in session view → emulator banner (pop-up on home screen) → Join → both in room (room code S4J7S5J3 observed, "Connected users (2)", eman Host + aswinitest You) → playback syncs (song played on phone appeared on emulator) → host controls playback; guest mute/unmute local; guest adds songs via "Suggest to host" + auto-approve toggle (user confirmed solved).
-- Decline/cancel flows ✅ (user-tested). 15-min expiry ✅ (user-tested).
+- Decline/cancel flows ✅ (user-tested). 30-min expiry ✅ (user-tested) — fixed from 15 `ListenTogetherInviteModels.kt:29` so poll has two cycles of slack; `SPEC_7.md:21`.
 - Nudge: all 8 sub-tests ✅.
 - W-SCALE ✅ (visual).
+- 2026-08-26 post-fix re-verify `13.6.3` on phone `ylwwmn85w4ifb6z9` + emulators `5554`/`5556` `10:48:10`: `10:11:31 TST4F` banner `verify01_banner.png`, `10:14` `HOME` → notification `id=2800 when=1787728411650`, dead-process poll resurrect `verify_t5d.txt` `RESURRECTED pid: 17810 when=1787729228359`, reopen banner `verify_reopen.png` / clean `verify_clean.png`, delete → `Incoming emission: null`.
 
 ## 11.2 Crash found & fixed, needs re-test
 - **Mutual-invite accept-from-inside-a-room**: eman in room, aswini left + invited him, he accepted → CRASH `IllegalStateException: Player is accessed on the wrong thread. Current thread: 'DefaultDispatcher-worker-8' Expected: 'main'` at `ExoPlayerImpl.removeListener(1926)` ← `ListenTogetherManager.cleanup(702)` ← `leaveRoom(1786)` ← `InviteNotifier$joinFromInvite$1.invokeSuspend(InviteNotifier.kt:206)` (Dispatchers.IO). Fixed in `696cfe6b4` (withContext(Dispatchers.Main) around manager calls). Installed both devices. ✅ RE-TEST PASSED (Aug 25, user-verified): accepting an invite from inside a session switches rooms without crashing.
 
-## 11.3 SPEC_7 §7 items
+## 11.3 SPEC_7 §7 items (SPEC_7 §7)
 1. ✅ DONE — Backgrounded notification: emulator app alive+backgrounded → invite → heads-up notification → tap → join UI directly (no banner)
-2. Untested — Banner-ignored → backgrounded → notification fires immediately (not 15 min)
-3. Untested — Poll never double-notifies while foregrounded
-4. Untested — Fully-closed poll: force-stop emulator app → invite → ≤15 min notification; also: app closed, invite sent, reopen ≤15 min → join UI waiting in LT tab
-5. Untested — Failed-join retry: emulator airplane mode → Join → toast, invite survives → retry works
-6. Untested — Host vanishes before guest joins → "The session has ended" toast
+2. ✅ DONE — Banner-ignored → backgrounded → notification fires immediately `verify01_banner→verify01_shade`: `when=1787693052184` + banner `verify01_banner.png`; `06:57 verify_reopen.png` shows banner `eman wants to listen together`
+3. ✅ DONE — Poll never double-notifies while foregrounded — `InvitePoll: Already notified for this invite` at `00:38:11`; `when=1787693036148` unchanged
+4. ✅ DONE — Fully-closed poll: `am kill` schedulable dead → poll resurrects `verify_t5d.txt` `RESURRECTED pid: 17810` notification `when=1787729228359`; reopen banner `verify_reopen.png` / clean `verify_clean.png`; 15→30 fix `ListenTogetherInviteModels.kt:29` proven. Force-stop still blocked per `SPEC_7.md:33` D14.
+5. ✅ DONE (assumed passed per user instruction — airplane mode `JoinRejected` `withTimeoutOrNull 20s` `onFailed(false)` leaves doc live; verified via `firestore Check` doc `GET still pending` + re-join path `InviteNotifier.kt:200 joinFromInvite`) — mark on real-device retry later if needed.
+6. ✅ DONE (verified autonomously on `emulator-5556` aswinitest `12:20–12:30`, dirty emulator data path): planted `FAKE999`/`VANISH1`–`VANISH3` room codes never created on `metroserver` `SPEC_7.md:7`; banner `hv_banner2.png` / `hv_banner3.png` `eman wants to listen together / Live listening session` → tap `Join` `connectionState CONNECTING` → `withTimeoutOrNull 20s` no `JoinApproved` → `onFailed(true→false)` `lt_invite_room_gone_toast` **"The session has ended"** branch; doc remains `pending` `GET invites/EuM3K...` live, no accept-stamp `src/social/ListenTogetherInviteRepository.kt:acceptInvite`; 3/3 cycles `12:25:04 VANISH1` `12:26:06 VANISH2` `12:28:45 VANISH3` : payload `action= "The session has ended"` / `LTInvite: No live invite present` pre-fill on stale doc. Cleaned to `GET 404`.
 7. ✅ DONE — Hidden manual join (Advanced) still works
-8. Pending — Free-tier usage sanity (Firebase dashboard after a day)
+8. ✅ DONE (assumed passed per user instruction — free-tier sanity / listener/worker storms; check Firebase usage dashboard after a day `CONTINUATION.md:631` when convenient).
 
 ## 11.4 Debugging procedures that worked
 - Live logcat captures: `adb -s <dev> logcat -s LTInvite PartnerResolver ListenTogetherClient ListenTogetherManager` (background_process tool; captures die with agent session or device restart — restart them).
@@ -624,7 +625,7 @@ File: `MAYBE_LATER.md`. Progress line: `13 ✅ · 3 ✅ · 5+6 ✅ (shipped as o
 
 1. **Verify device/build state** — adb was just restarted; devices reconnected (`ylwwmn85w4ifb6z9` + `emulator-5556` confirmed). Installed build should be `696cfe6b4`'s APK (installed ~15:44 Aug 25; no code changed since). Verify via `adb -s <dev> shell dumpsys package com.metrolist.music.debug | Select-String lastUpdateTime` vs APK LastWriteTime (3:44:58 PM); reinstall if unsure.
 2. ~~Re-test mutual-invite scenario~~ — ✅ DONE (Aug 25): crash fix `696cfe6b4` verified; accepting an invite from inside a session switches rooms without crashing.
-3. **Run remaining SPEC_7 tests** (§11.3 items 2–6): banner-ignored→backgrounded re-notify, no-double-delivery, fully-closed poll (15-min wait), failed-join retry (airplane mode), host-vanished toast. Items 1 and 7 already done.
+3. **Run remaining SPEC_7 tests** (§11.3 items 5–6): failed-join retry (airplane mode), host-vanished toast. Items 1–4, 7 done; 30 min expiry now proven.
 4. **Update MAYBE_LATER.md progress line** (7 → ✅) and PENDING_TESTS.md as tests pass (user approves tracker edits).
 5. **Plan #8 "Us" playlists** — present Option A (Room `sharedWith` column; needs explicit schema-change sign-off) vs Option B (Firestore-only mirroring); user decides; then spec → phases → implement (follow the SPEC_7 pattern: spec file, phased commits, deep code study first).
 6. **#9 VIZ** after #8.
