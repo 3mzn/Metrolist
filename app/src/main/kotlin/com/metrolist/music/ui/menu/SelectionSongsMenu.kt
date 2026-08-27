@@ -50,6 +50,7 @@ import com.metrolist.innertube.YouTube
 import com.metrolist.music.LocalDatabase
 import com.metrolist.music.LocalDownloadUtil
 import com.metrolist.music.LocalPlayerConnection
+import com.metrolist.music.LocalSharedPlaylistRepository
 import com.metrolist.music.LocalSyncUtils
 import com.metrolist.music.R
 import com.metrolist.music.db.entities.PlaylistSongMap
@@ -86,6 +87,7 @@ fun SelectionSongMenu(
     val coroutineScope = rememberCoroutineScope()
     val playerConnection = LocalPlayerConnection.current ?: return
     val syncUtils = LocalSyncUtils.current
+    val sharedPlaylistRepo = LocalSharedPlaylistRepository.current
     val deletedNSongsTemplate = stringResource(R.string.deleted_n_songs)
     val listenTogetherManager = com.metrolist.music.LocalListenTogetherManager.current
     val isGuest = listenTogetherManager?.isInRoom == true && listenTogetherManager.isHost == false
@@ -663,16 +665,32 @@ fun SelectionSongMenu(
                                         )
                                     },
                                     onClick = {
+                                        val positions = songPosition.toList()
                                         onDismiss()
-                                        var i = 0
-                                        database.query {
-                                            songPosition.forEach { cur ->
-                                                move(cur.playlistId, cur.position - i, Int.MAX_VALUE)
-                                                delete(cur.copy(position = Int.MAX_VALUE))
-                                                i++
+                                        clearAction()
+                                        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                                            if (positions.isEmpty()) return@launch
+                                            val pid = positions.first().playlistId
+                                            val isShared = try {
+                                                database.playlistBlocking(pid)?.playlist?.sharedWith != null
+                                            } catch (_: Exception) {
+                                                false
+                                            }
+                                            if (isShared) {
+                                                positions.forEach { cur ->
+                                                    sharedPlaylistRepo.removeSong(cur.playlistId, cur.songId)
+                                                }
+                                            } else {
+                                                var i = 0
+                                                database.query {
+                                                    positions.forEach { cur ->
+                                                        move(cur.playlistId, cur.position - i, Int.MAX_VALUE)
+                                                        delete(cur.copy(position = Int.MAX_VALUE))
+                                                        i++
+                                                    }
+                                                }
                                             }
                                         }
-                                        clearAction()
                                     },
                                 ),
                             )

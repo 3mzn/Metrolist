@@ -113,7 +113,7 @@ class SharedPlaylistRepository @Inject constructor(
             parseStringSets(preferences[unseenSongIdsKey].orEmpty()).mapValues { it.value.size }
         }
         .distinctUntilChanged()
-        .stateIn(scope, SharingStarted.Lazily, emptyMap())
+        .stateIn(scope, SharingStarted.Eagerly, emptyMap())
 
     /** Record that the user opened a shared playlist; clears its "new" badge. */
     suspend fun markPlaylistOpened(playlistId: String) {
@@ -352,9 +352,10 @@ class SharedPlaylistRepository @Inject constructor(
         val now = System.currentTimeMillis()
         val myName = partnerResolver.identity.value.myName
 
+        // D19 revised: covers are device-local; cloud thumbnailUrl is always null and ignored by reconcileLocal.
         val doc = mapOf(
             "name" to local.playlist.name,
-            "thumbnailUrl" to local.playlist.thumbnailUrl,
+            "thumbnailUrl" to null,
             "sharedByUid" to myUid,
             "sharedByName" to myName,
             "sharedWith" to partnerUid,
@@ -481,7 +482,10 @@ class SharedPlaylistRepository @Inject constructor(
         }
     }
 
-    /** Update the cover thumbnail URL for a shared playlist. */
+    /**
+     * Update the cover thumbnail URL for a shared playlist.
+     * D19 revised: covers are device-local; only the local row is updated, cloud is untouched.
+     */
     suspend fun setCover(playlistId: String, url: String?): Result<Unit> = withContext(Dispatchers.IO) {
         auth.currentUser?.uid
             ?: return@withContext Result.failure(IllegalStateException("Not signed in"))
@@ -495,12 +499,6 @@ class SharedPlaylistRepository @Inject constructor(
             database.query {
                 update(local.playlist.copy(thumbnailUrl = url))
             }
-            sharedPlaylistsCollection.document(playlistId).update(
-                mapOf(
-                    "thumbnailUrl" to url,
-                    "updatedAt" to FieldValue.serverTimestamp(),
-                ),
-            ).await()
             Result.success(Unit)
         } catch (e: Exception) {
             Timber.tag(TAG).e(e, "Failed to set cover for shared playlist $playlistId")
@@ -598,6 +596,7 @@ class SharedPlaylistRepository @Inject constructor(
         }
 
         // Cloud doc exists. Apply diff.
+        // D19 revised: thumbnailUrl is device-local; cloud value is ignored (always null after this fix, but old docs may still carry a value).
         if (local == null) {
             // First time receiving this shared playlist. Create local row.
             Timber.tag(TAG).d("First-time receive: creating local row for $playlistId")
@@ -610,17 +609,15 @@ class SharedPlaylistRepository @Inject constructor(
                         isLocal = true,
                         isEditable = true,
                         bookmarkedAt = LocalDateTime.now(),
-                        thumbnailUrl = cloud.thumbnailUrl,
                         sharedWith = cloud.sharedByUid, // partner's uid from our perspective
                     ),
                 )
             }
-        } else if (local.playlist.name != cloud.name || local.playlist.thumbnailUrl != cloud.thumbnailUrl) {
+        } else if (local.playlist.name != cloud.name) {
             database.query {
                 update(
                     local.playlist.copy(
                         name = cloud.name,
-                        thumbnailUrl = cloud.thumbnailUrl,
                     ),
                 )
             }
@@ -723,32 +720,33 @@ class SharedPlaylistRepository @Inject constructor(
      * fetch its metadata from YouTube first. Skips silently on fetch failure.
      */
     private suspend fun addSongLocally(playlistId: String, songId: String) {
-        // Guard: already in this playlist.
         if (database.checkInPlaylist(playlistId, songId) > 0) return
 
-        // Ensure the song exists in the local song table.
         val existing = database.getSongByIdBlocking(songId)
-        if (existing == null) {
-            val metadata = fetchSongMetadata(songId)
-            if (metadata == null) {
+        val metadata = if (existing == null) {
+            val fetched = fetchSongMetadata(songId)
+            if (fetched == null) {
                 Timber.tag(TAG).w("Skipping song $songId — metadata fetch failed")
                 return
             }
-            database.query {
+            fetched
+        } else null
+
+        database.withTransaction {
+            if (metadata != null && getSongByIdBlocking(songId) == null) {
                 insert(metadata)
             }
-        }
-
-        val currentMax = database.playlistSongMaps(playlistId, 0).maxOfOrNull { it.position } ?: -1
-        database.transaction {
-            database.insert(
-                PlaylistSongMap(
-                    songId = songId,
-                    playlistId = playlistId,
-                    position = currentMax + 1,
-                ),
-            )
-            database.updatePlaylistLastUpdated(playlistId)
+            if (checkInPlaylist(playlistId, songId) == 0) {
+                val currentMax = playlistSongMaps(playlistId, 0).maxOfOrNull { it.position } ?: -1
+                insert(
+                    PlaylistSongMap(
+                        songId = songId,
+                        playlistId = playlistId,
+                        position = currentMax + 1,
+                    ),
+                )
+                updatePlaylistLastUpdated(playlistId)
+            }
         }
     }
 

@@ -72,6 +72,7 @@ import com.metrolist.music.LocalDatabase
 import com.metrolist.music.LocalDownloadUtil
 import com.metrolist.music.LocalListenTogetherManager
 import com.metrolist.music.LocalPlayerConnection
+import com.metrolist.music.LocalSharedPlaylistRepository
 import com.metrolist.music.LocalSyncUtils
 import com.metrolist.music.R
 import com.metrolist.music.constants.ListItemHeight
@@ -128,6 +129,7 @@ fun SongMenu(
         .collectAsStateWithLifecycle(initialValue = null)
     val coroutineScope = rememberCoroutineScope()
     val syncUtils = LocalSyncUtils.current
+    val sharedPlaylistRepo = LocalSharedPlaylistRepository.current
     val listenTogetherManager = LocalListenTogetherManager.current
     val scope = rememberCoroutineScope()
     var refetchIconDegree by remember { mutableFloatStateOf(0f) }
@@ -877,27 +879,41 @@ fun SongMenu(
                                         )
                                     },
                                     onClick = {
-                                        playlistSong.let { ps ->
-                                            val capturedSetVideoId = ps.map.setVideoId
-                                            database.transaction {
-                                                move(
-                                                    ps.map.playlistId,
-                                                    ps.map.position,
-                                                    Int.MAX_VALUE
-                                                )
-                                                delete(ps.map.copy(position = Int.MAX_VALUE))
-                                            }
-                                            playlistBrowseId?.let { browseId ->
-                                                syncUtils.scheduleRemoveFromPlaylist(
-                                                    browseId,
-                                                    ps.map.songId,
-                                                    ps.map.playlistId
-                                                ) {
-                                                    capturedSetVideoId
+                                        val ps = playlistSong
+                                        val capturedSetVideoId = ps.map.setVideoId
+                                        val pid = ps.map.playlistId
+                                        val sid = ps.map.songId
+                                        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                                            val isShared = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                                try {
+                                                    database.playlistBlocking(pid)?.playlist?.sharedWith != null
+                                                } catch (_: Exception) {
+                                                    false
                                                 }
                                             }
-                                            onDismiss()
+                                            if (isShared) {
+                                                sharedPlaylistRepo.removeSong(pid, sid)
+                                            } else {
+                                                database.transaction {
+                                                    move(
+                                                        pid,
+                                                        ps.map.position,
+                                                        Int.MAX_VALUE
+                                                    )
+                                                    delete(ps.map.copy(position = Int.MAX_VALUE))
+                                                }
+                                                playlistBrowseId?.let { browseId ->
+                                                    syncUtils.scheduleRemoveFromPlaylist(
+                                                        browseId,
+                                                        sid,
+                                                        pid
+                                                    ) {
+                                                        capturedSetVideoId
+                                                    }
+                                                }
+                                            }
                                         }
+                                        onDismiss()
                                     },
                                 ),
                             )
