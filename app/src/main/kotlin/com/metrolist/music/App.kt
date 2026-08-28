@@ -191,6 +191,12 @@ class App :
                     FirebaseMessaging.getInstance().subscribeToTopic(currentFlavorUpdateTopic())
                 }.onFailure { Timber.tag("App").w(it, "subscribeToTopic failed") }
             }
+            appUpdateScope.launch {
+                runCatching {
+                    delay(3000)
+                    AppUpdateNotifier.checkForStartupUpdate(this@App)
+                }.onFailure { Timber.tag("App").w(it, "startup update check failed") }
+            }
         }
 
         // preferencesDataStore uses filesDir/datastore; proactive mkdir reduces failures on odd ROM states

@@ -108,8 +108,8 @@ android {
         applicationId = applicationIdOverride ?: baseApplicationId
         minSdk = 26
         targetSdk = 36
-        versionCode = 156
-        versionName = "13.6.7"
+        versionCode = 157
+        versionName = "13.6.8"
         val baseVersionName = requireNotNull(versionName)
         buildConfigField("String", "BASE_VERSION_NAME", "\"$baseVersionName\"")
         buildCommit?.let { versionName = "$baseVersionName+$it" }
@@ -129,6 +129,7 @@ android {
         buildConfigField("String", "LASTFM_API_KEY", "\"$lastFmKey\"")
         buildConfigField("String", "LASTFM_SECRET", "\"$lastFmSecret\"")
         buildConfigField("String", "ARCHITECTURE", "\"universal\"")
+        buildConfigField("String", "SUPABASE_URL", "\"https://teeafutbybbywitdahpr.supabase.co\"")
         buildConfigField("Long", "DISCORD_APP_ID", "1447278780795064401L")
     }
 

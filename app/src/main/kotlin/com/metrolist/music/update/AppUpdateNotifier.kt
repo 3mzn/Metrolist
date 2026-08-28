@@ -339,4 +339,41 @@ object AppUpdateNotifier {
             .build()
         nm.notify(NOTIFICATION_ID_VERIFY_FAILED, notification)
     }
+
+    suspend fun checkForStartupUpdate(context: Context) {
+        if (!BuildConfig.UPDATER_AVAILABLE) return
+        val latest = try {
+            withContext(Dispatchers.IO) {
+                val url = "${BuildConfig.SUPABASE_URL}/storage/v1/object/public/releases/latest-${BuildConfig.FLAVOR}.json"
+                val client = OkHttpClient.Builder().build()
+                val request = Request.Builder().url(url).get().header("User-Agent", "Metrolist-Updater").build()
+                client.newCall(request).execute().use { resp ->
+                    if (!resp.isSuccessful) return@withContext null
+                    val body = resp.body?.string() ?: return@withContext null
+                    org.json.JSONObject(body)
+                }
+            }
+        } catch (e: Exception) {
+            Timber.tag(TAG).w(e, "Startup update check failed")
+            null
+        } ?: return
+
+        val latestCode = latest.optLong("latestVersionCode", -1)
+        val installedCode = try {
+            val info = context.packageManager.getPackageInfo(context.packageName, 0)
+            PackageInfoCompat.getLongVersionCode(info)
+        } catch (_: Exception) { -1 }
+
+        if (latestCode <= 0 || latestCode <= installedCode) return
+
+        val data = mapOf(
+            "latestVersionCode" to latestCode.toString(),
+            "latestVersionName" to latest.optString("latestVersionName", latestCode.toString()),
+            "apkUrl" to latest.optString("apkUrl", ""),
+            "apkSha256" to latest.optString("apkSha256", ""),
+            "releaseNotesUrl" to latest.optString("releaseNotesUrl", ""),
+        )
+        if (data["apkUrl"].isNullOrBlank() || data["apkSha256"].isNullOrBlank()) return
+        handle(context, data)
+    }
 }
