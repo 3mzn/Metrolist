@@ -25,7 +25,7 @@ jobs:
       # happens in this job.
       - uses: actions/checkout@v6
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
       - name: Check if version changed
         id: check_version
@@ -55,9 +55,21 @@ jobs:
             exit 0
           fi
 
-          if git show HEAD^:app/build.gradle.kts > /dev/null 2>&1; then
-            OLD_VERSION=$(git show HEAD^:app/build.gradle.kts | grep -oP 'versionName\s*=\s*"\K[^"]+' || echo "")
-            echo "Previous version: $OLD_VERSION"
+          # Use the SHA before the push as the baseline, not just HEAD^.
+          # This handles multi-commit pushes where the version bump is not in HEAD^.
+          OLD_REF="${{ github.event.before }}"
+          if [ -z "$OLD_REF" ] || [ "$OLD_REF" = "0000000000000000000000000000000000000000" ]; then
+            OLD_REF="HEAD^"
+          fi
+          # Ensure the ref is available (shallow clones may lack it)
+          if ! git cat-file -e "$OLD_REF^{commit}" 2>/dev/null; then
+            echo "OLD_REF $OLD_REF not found locally, fetching..."
+            git fetch origin "$OLD_REF" --depth=1 2>/dev/null || git fetch --unshallow 2>/dev/null || true
+          fi
+
+          if git show "$OLD_REF":app/build.gradle.kts > /dev/null 2>&1; then
+            OLD_VERSION=$(git show "$OLD_REF":app/build.gradle.kts | grep -oP 'versionName\s*=\s*"\K[^"]+' || echo "")
+            echo "Previous version (from $OLD_REF): $OLD_VERSION"
             
             if [ "$OLD_VERSION" != "$NEW_VERSION" ]; then
               echo "Version changed from $OLD_VERSION to $NEW_VERSION"

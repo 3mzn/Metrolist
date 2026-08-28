@@ -164,7 +164,11 @@ jobs:
           if [ -f changelog.md ]; then
             # Extract section for this version (## ... $VER ... until next ##)
             NOTES=$(awk -v ver="$VER" 'BEGIN{p=0} $0 ~ "^##.*\\["ver" {p=1; print; next} p && /^## / {exit} p' changelog.md | head -c 8000)
-            if [ -z "$NOTES" ]; then NOTES="Release $TAG"; fi
+            if [ -z "$NOTES" ]; then
+              # Fallback: latest changelog section (top-most ## block) so notes.html is never a bare placeholder
+              NOTES=$(awk 'BEGIN{p=0} /^## /{if(p) exit; p=1; print; next} p' changelog.md | head -c 8000)
+              if [ -z "$NOTES" ]; then NOTES="Release $TAG"; fi
+            fi
           else
             NOTES="Release $TAG"
           fi
