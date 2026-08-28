@@ -1,0 +1,22 @@
+name: Supabase keepalive
+on:
+  schedule:
+    - cron: '0 0 */5 * *'
+  workflow_dispatch:
+
+concurrency:
+  group: supabase-keepalive
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hit Supabase REST root to reset inactivity timer
+        run: |
+          status=$(curl -s -o /dev/null -w "%{http_code}" "https://teeafutbybbywitdahpr.supabase.co/rest/v1/")
+          echo "Supabase REST root returned HTTP $status"
+          if [ "$status" -lt 200 ] || [ "$status" -ge 500 ]; then
+            echo "::error::Unexpected status from Supabase: $status"
+            exit 1
+          fi

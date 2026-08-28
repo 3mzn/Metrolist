@@ -21,7 +21,7 @@ Metrolist is a 3rd party YouTube Music client written in Kotlin. It follows mate
 6. Prioritize performance, battery efficiency, and maintainability in all code contributions. Always consider the impact of your changes on the overall user experience and app performance.
 7. If you have any doubts ask a human contributor. Never make assumptions about the requirements or implementation details without clarification.
 8. If you do not test your changes using the instructions in the next section, you will be faced with reprimands from human contributors and may be asked to redo your work. Always ensure that you test your changes thoroughly before asking for a final review.
-9. You are absolutely **not allowed to bump the version** of the app in ANY way. Version bumps are only done by the core development team after manual review.
+9. You are not allowed to bump the version of the app without approval from the user, and only if it is deemed perfectly safe.
 
 ## Building and testing your changes
 
