@@ -253,24 +253,12 @@ class PartnerWidgetManager @Inject constructor(
         val textWidth = width - textX - height * 0.09f
 
         if (!live) {
-            // Idle: partner name prominent, soft message underneath.
-            val namePaint = android.text.TextPaint().apply {
-                isAntiAlias = true
-                color = Color.WHITE
-                textSize = height * 0.16f
-                isFakeBoldText = true
-            }
             val msgPaint = android.text.TextPaint().apply {
                 isAntiAlias = true
                 color = Color.argb(200, 255, 255, 255)
-                textSize = height * 0.115f
+                textSize = height * 0.135f
+                isFakeBoldText = true
             }
-            canvas.drawText(
-                partnerName ?: context.getString(R.string.song_listened_fallback_friend),
-                textX,
-                height * 0.45f,
-                namePaint,
-            )
             canvas.drawText(
                 TextUtils.ellipsize(
                     context.getString(R.string.partner_widget_idle_message),
@@ -279,7 +267,7 @@ class PartnerWidgetManager @Inject constructor(
                     TextUtils.TruncateAt.END,
                 ).toString(),
                 textX,
-                height * 0.45f + msgPaint.textSize * 1.4f,
+                height * 0.55f,
                 msgPaint,
             )
             return bitmap

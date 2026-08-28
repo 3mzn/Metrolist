@@ -1011,7 +1011,7 @@
     <string name="widget_ui_debug_test_title">Widget UI debug test</string>
     <string name="widget_ui_debug_test_subtitle">Shows YOUR currently playing song in the Partner widget instead of the partner\'s. Toggle off to restore.</string>
     <string name="partner_widget_listening_label">Listening:</string>
-    <string name="partner_widget_idle_message">isn\'t listening 🌙</string>
+    <string name="partner_widget_idle_message">It\'s quiet 🌙</string>
     <string name="partner_widget_options_subtitle">Resize on your home screen by long-pressing it.</string>
     <string name="partner_heartbeat_broadcast_title">Share what I\'m listening to</string>
     <string name="partner_heartbeat_broadcast_subtitle">Lets their widget show your current song.</string>
