@@ -1100,4 +1100,15 @@
     <string name="shared_playlist_share_failed">Couldn\'t share — is your partner signed in?</string>
     <string name="shared_playlist_duplicate_blocked">Already in %1$s</string>
     <string name="shared_playlist_edit_failed">Couldn\'t sync the shared playlist. Check your connection and try again.</string>
+
+    <!-- App updates (SPEC_9) -->
+    <string name="app_update_available_title">Update available — %1$s</string>
+    <string name="app_update_available_text">Tap to install</string>
+    <string name="app_update_install_now">Install now</string>
+    <string name="app_update_open_release">Open release page</string>
+    <string name="app_update_verify_failed_title">Update verification failed</string>
+    <string name="app_update_verify_failed_text">Couldn\'t verify update. Tap to open release page.</string>
+    <string name="app_update_download_failed_title">Couldn\'t download update</string>
+    <string name="post_notifications_rationale">Notifications are needed to inform you about app updates</string>
+    <string name="post_notifications_denied">Notifications denied — you won\'t be notified about updates</string>
 </resources>

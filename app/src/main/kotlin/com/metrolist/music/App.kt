@@ -46,8 +46,12 @@ import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreSettings
 import com.google.firebase.firestore.PersistentCacheSettings
 import dagger.hilt.android.HiltAndroidApp
+import com.google.firebase.messaging.FirebaseMessaging
+import com.metrolist.music.update.AppUpdateNotifier
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
@@ -75,6 +79,8 @@ class App :
     @Inject
     @ApplicationScope
     lateinit var applicationScope: CoroutineScope
+
+    val appUpdateScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     @Inject
     lateinit var workerFactory: HiltWorkerFactory
@@ -176,6 +182,15 @@ class App :
         // listener or the WorkManager jobs the notifier schedules.
         if (isMainProcess) {
             initializeSocialFeatures()
+        }
+
+        if (BuildConfig.UPDATER_AVAILABLE) {
+            AppUpdateNotifier.createChannel(this)
+            applicationScope.launch {
+                runCatching {
+                    FirebaseMessaging.getInstance().subscribeToTopic(currentFlavorUpdateTopic())
+                }.onFailure { Timber.tag("App").w(it, "subscribeToTopic failed") }
+            }
         }
 
         // preferencesDataStore uses filesDir/datastore; proactive mkdir reduces failures on odd ROM states
@@ -450,6 +465,17 @@ class App :
                     networkCachePolicy(CachePolicy.ENABLED)
                 }
             }.build()
+    }
+
+    private fun currentFlavorUpdateTopic(): String = when (BuildConfig.FLAVOR) {
+        "gms" -> "metrolist_gms_updates"
+        "foss" -> "metrolist_foss_updates"
+        else -> error("UPDATER_AVAILABLE=true but flavor=${BuildConfig.FLAVOR} has no topic")
+    }
+
+    override fun onTerminate() {
+        appUpdateScope.cancel()
+        super.onTerminate()
     }
 
     companion object {

@@ -7,9 +7,13 @@ package com.metrolist.music.services
 
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
+import com.metrolist.music.App
+import com.metrolist.music.BuildConfig
 import com.metrolist.music.R
 import com.metrolist.music.social.PartnerResolver
+import com.metrolist.music.update.AppUpdateNotifier
 import com.metrolist.music.utils.SongNotificationHelper
+import kotlinx.coroutines.launch
 import timber.log.Timber
 
 /**
@@ -25,6 +29,7 @@ class SongListenedMessagingService : FirebaseMessagingService() {
         const val KEY_SENT_SONG_ID = "sentSongId"
 
         const val TYPE_SONG_LISTENED = "song_listened"
+        const val TYPE_APP_UPDATE = "app_update"
     }
 
     override fun onMessageReceived(message: RemoteMessage) {
@@ -37,6 +42,13 @@ class SongListenedMessagingService : FirebaseMessagingService() {
 
         when (type) {
             TYPE_SONG_LISTENED -> handleSongListenedNotification(data)
+            TYPE_APP_UPDATE -> {
+                if (!BuildConfig.UPDATER_AVAILABLE) return
+                val app = applicationContext as? App ?: return
+                app.appUpdateScope.launch {
+                    AppUpdateNotifier.handle(app, data)
+                }
+            }
             else -> Timber.w("SongListenedMessaging", "Unknown notification type: $type")
         }
     }

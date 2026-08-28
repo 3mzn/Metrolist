@@ -311,9 +311,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
-        // Request notification permission on Android 13+
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        if (BuildConfig.UPDATER_AVAILABLE && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                if (ActivityCompat.shouldShowRequestPermissionRationale(this, Manifest.permission.POST_NOTIFICATIONS)) {
+                    Toast.makeText(this, getString(R.string.post_notifications_rationale), Toast.LENGTH_LONG).show()
+                }
                 ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1000)
             }
         }
@@ -355,6 +357,15 @@ class MainActivity : ComponentActivity() {
         // the player listener here used to break LT for any host that wasn't staring at the
         // app the whole session. Full teardown happens in onDestroy() via safeUnbindService().
         super.onStop()
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 1000 && BuildConfig.UPDATER_AVAILABLE) {
+            if (grantResults.isNotEmpty() && grantResults[0] != PackageManager.PERMISSION_GRANTED) {
+                Toast.makeText(this, getString(R.string.post_notifications_denied), Toast.LENGTH_LONG).show()
+            }
+        }
     }
 
     override fun onDestroy() {

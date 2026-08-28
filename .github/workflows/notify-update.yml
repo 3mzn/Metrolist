@@ -1,0 +1,274 @@
+name: Notify Update
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to broadcast (e.g. v13.6.4)"
+        required: true
+        type: string
+
+concurrency:
+  group: notify-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  SUPABASE_URL: https://teeafutbybbywitdahpr.supabase.co
+  SUPABASE_BUCKET: releases
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        include:
+          - flavor: foss
+            asset_name: Metrolist.apk
+            topic: metrolist_foss_updates
+          - flavor: gms
+            asset_name: Metrolist-with-Google-Cast.apk
+            topic: metrolist_gms_updates
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3.2.2
+
+      - name: Install build-tools 34.0.0
+        run: |
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "build-tools;34.0.0" || yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "build-tools;34.0.0"
+          ls -la $ANDROID_HOME/build-tools/34.0.0/aapt2 || ls -la $ANDROID_HOME/build-tools/*/aapt2
+
+      - name: Install google-auth-library
+        run: npm ci --prefix /tmp 2>/dev/null || npm install --prefix /tmp google-auth-library
+
+      - name: Resolve release tag
+        id: resolve_tag
+        run: |
+          TAG="${{ github.event.release.tag_name || inputs.tag }}"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "Release tag: $TAG"
+
+      - name: Find asset URL
+        id: find_asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.resolve_tag.outputs.tag }}"
+          ASSET="${{ matrix.asset_name }}"
+          echo "Looking for asset $ASSET in release $TAG"
+          if command -v gh >/dev/null 2>&1; then
+            BROWSER_URL=$(gh release view "$TAG" --json assets --jq ".assets[] | select(.name==\"$ASSET\") | .browserDownloadUrl" 2>/dev/null || true)
+            if [ -n "$BROWSER_URL" ]; then
+              echo "url=$BROWSER_URL" >> $GITHUB_OUTPUT
+              echo "Found via gh: $BROWSER_URL"
+              exit 0
+            fi
+          fi
+          URL=$(echo '${{ toJson(github.event.release.assets) }}' | jq -r ".[] | select(.name==\"$ASSET\") | .browser_download_url" 2>/dev/null || true)
+          if [ -n "$URL" ] && [ "$URL" != "null" ]; then
+            echo "url=$URL" >> $GITHUB_OUTPUT
+            echo "Found via event payload: $URL"
+            exit 0
+          fi
+          API_URL="https://api.github.com/repos/${{ github.repository }}/releases/tags/$TAG"
+          echo "Fetching $API_URL"
+          JSON=$(curl -sL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github.v3+json" "$API_URL" || true)
+          BROWSER_URL=$(echo "$JSON" | jq -r ".assets[] | select(.name==\"$ASSET\") | .browser_download_url" 2>/dev/null || true)
+          if [ -n "$BROWSER_URL" ] && [ "$BROWSER_URL" != "null" ]; then
+            echo "url=$BROWSER_URL" >> $GITHUB_OUTPUT
+            echo "Found via API: $BROWSER_URL"
+            exit 0
+          fi
+          echo "::error::Asset $ASSET not found in release $TAG"
+          echo "Available assets:"
+          echo "$JSON" | jq -r '.assets[].name' 2>/dev/null || echo "Could not list assets"
+          exit 1
+
+      - name: Download APK
+        run: |
+          URL="${{ steps.find_asset.outputs.url }}"
+          echo "Downloading $URL"
+          curl -L -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" -H "Accept: application/octet-stream" -o /tmp/${{ matrix.asset_name }} "$URL"
+          ls -lh /tmp/${{ matrix.asset_name }}
+
+      - name: Extract version and compute SHA-256
+        id: apk_info
+        run: |
+          APK=/tmp/${{ matrix.asset_name }}
+          AAPT=$ANDROID_HOME/build-tools/34.0.0/aapt2
+          if [ ! -f "$AAPT" ]; then
+            AAPT=$(find $ANDROID_HOME/build-tools -name "aapt2" | head -1)
+          fi
+          echo "Using aapt2: $AAPT"
+          BADGING=$("$AAPT" dump badging "$APK" 2>&1)
+          echo "$BADGING" | head -5
+          VC=$(echo "$BADGING" | grep -oP "versionCode='\K[^']+" | head -1)
+          VN=$(echo "$BADGING" | grep -oP "versionName='\K[^']+" | head -1)
+          if [ -z "$VC" ]; then echo "::error::Failed to parse versionCode from aapt2 output"; exit 1; fi
+          if [ -z "$VN" ]; then VN="${{ steps.resolve_tag.outputs.tag }}"; VN="${VN#v}"; fi
+          SHA=$(sha256sum "$APK" | cut -d' ' -f1)
+          echo "versionCode=$VC" >> $GITHUB_OUTPUT
+          echo "versionName=$VN" >> $GITHUB_OUTPUT
+          echo "sha256=$SHA" >> $GITHUB_OUTPUT
+          echo "APK $APK: versionCode=$VC versionName=$VN sha256=${SHA:0:12}..."
+
+      - name: Upload APK to Supabase
+        id: upload_apk
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          TAG="${{ steps.resolve_tag.outputs.tag }}"
+          VER="${TAG#v}"
+          OBJECT_PATH="$VER/${{ matrix.asset_name }}"
+          APK=/tmp/${{ matrix.asset_name }}
+          echo "Uploading $APK to $SUPABASE_BUCKET/$OBJECT_PATH ..."
+          HTTP_CODE=$(curl -s -o /tmp/upload_resp.json -w "%{http_code}" -X POST \
+            "$SUPABASE_URL/storage/v1/object/$SUPABASE_BUCKET/$OBJECT_PATH" \
+            -H "apikey: $SUPABASE_SERVICE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
+            -H "Content-Type: application/octet-stream" \
+            -H "x-upsert: true" \
+            --data-binary "@$APK")
+          echo "Upload HTTP $HTTP_CODE"
+          cat /tmp/upload_resp.json || true
+          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+            echo "::error::Supabase APK upload failed HTTP $HTTP_CODE"
+            exit 1
+          fi
+          PUBLIC_URL="$SUPABASE_URL/storage/v1/object/public/$SUPABASE_BUCKET/$OBJECT_PATH"
+          echo "public_url=$PUBLIC_URL" >> $GITHUB_OUTPUT
+          echo "Public URL: $PUBLIC_URL"
+
+      - name: Generate and upload notes.html
+        id: upload_notes
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          TAG="${{ steps.resolve_tag.outputs.tag }}"
+          VER="${TAG#v}"
+          VN="${{ steps.apk_info.outputs.versionName }}"
+          OBJECT_PATH="$VER/notes.html"
+          # Generate HTML from changelog.md section for this version
+          if [ -f changelog.md ]; then
+            # Extract section for this version (## ... $VER ... until next ##)
+            NOTES=$(awk -v ver="$VER" 'BEGIN{p=0} $0 ~ "^##.*\\["ver" {p=1; print; next} p && /^## / {exit} p' changelog.md | head -c 8000)
+            if [ -z "$NOTES" ]; then NOTES="Release $TAG"; fi
+          else
+            NOTES="Release $TAG"
+          fi
+          DATE=$(date -u +%Y-%m-%d)
+          # Escape for HTML
+          ESCAPED_NOTES=$(echo "$NOTES" | sed 's/</\&lt;/g')
+          cat > /tmp/notes.html <<EOF
+          <!doctype html><html><head><title>Metrolist $VN</title><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><h1>Metrolist $VN</h1><p>Posted $DATE. Tap "Update" on the notification to install.</p><h2>Changes</h2><pre>$ESCAPED_NOTES</pre></body></html>
+          EOF
+          echo "Uploading notes.html to $SUPABASE_BUCKET/$OBJECT_PATH ..."
+          HTTP_CODE=$(curl -s -o /tmp/notes_resp.json -w "%{http_code}" -X POST \
+            "$SUPABASE_URL/storage/v1/object/$SUPABASE_BUCKET/$OBJECT_PATH" \
+            -H "apikey: $SUPABASE_SERVICE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
+            -H "Content-Type: text/html" \
+            -H "x-upsert: true" \
+            --data-binary "@/tmp/notes.html")
+          echo "Notes upload HTTP $HTTP_CODE"
+          cat /tmp/notes_resp.json || true
+          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+            echo "::warning::Notes upload failed HTTP $HTTP_CODE (non-fatal)"
+          fi
+          PUBLIC_URL="$SUPABASE_URL/storage/v1/object/public/$SUPABASE_BUCKET/$OBJECT_PATH"
+          echo "public_url=$PUBLIC_URL" >> $GITHUB_OUTPUT
+          echo "Notes public URL: $PUBLIC_URL"
+
+      - name: Mint OAuth token
+        id: mint_token
+        env:
+          FCM_SA_JSON: ${{ secrets.OUTERTUNE_FCM_SERVICE_ACCOUNT }}
+        run: |
+          if [ -z "$FCM_SA_JSON" ]; then
+            echo "::error::OUTERTUNE_FCM_SERVICE_ACCOUNT secret not configured"
+            exit 1
+          fi
+          echo "$FCM_SA_JSON" > /tmp/sa.json
+          cat > /tmp/mint.js << 'EOS'
+          const { JWT } = require('/tmp/node_modules/google-auth-library/build/src/auth/jwtclient.js');
+          const fs = require('fs');
+          const sa = JSON.parse(fs.readFileSync('/tmp/sa.json', 'utf8'));
+          const jwt = new JWT({
+            email: sa.client_email,
+            key: sa.private_key,
+            scopes: ['https://www.googleapis.com/auth/firebase.messaging'],
+          });
+          jwt.authorize().then(tokens => {
+            if (!tokens.access_token) { console.error('No access_token'); process.exit(1); }
+            console.log(tokens.access_token);
+          }).catch(e => { console.error(e.message); process.exit(1); });
+          EOS
+          if [ ! -d /tmp/node_modules/google-auth-library ]; then
+            npm install --prefix /tmp google-auth-library --no-save 2>&1 | tail -5
+          fi
+          TOKEN=$(node /tmp/mint.js)
+          if [ -z "$TOKEN" ]; then echo "::error::Failed to mint token"; exit 1; fi
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> $GITHUB_OUTPUT
+          echo "Token minted (masked)"
+
+      - name: POST to FCM
+        env:
+          FCM_TOKEN: ${{ steps.mint_token.outputs.token }}
+          APK_URL: ${{ steps.upload_apk.outputs.public_url }}
+          NOTES_URL: ${{ steps.upload_notes.outputs.public_url }}
+          VC: ${{ steps.apk_info.outputs.versionCode }}
+          VN: ${{ steps.apk_info.outputs.versionName }}
+          SHA: ${{ steps.apk_info.outputs.sha256 }}
+          TAG: ${{ steps.resolve_tag.outputs.tag }}
+        run: |
+          echo "::add-mask::$FCM_TOKEN"
+          PAYLOAD=$(jq -n \
+            --arg topic "${{ matrix.topic }}" \
+            --arg code "$VC" \
+            --arg name "$VN" \
+            --arg url "$APK_URL" \
+            --arg notes "$NOTES_URL" \
+            --arg sha "$SHA" \
+            --arg tag "$TAG" \
+            '{
+              message: {
+                topic: $topic,
+                data: {
+                  type: "app_update",
+                  latestVersionCode: $code,
+                  latestVersionName: $name,
+                  apkUrl: $url,
+                  releaseNotesUrl: $notes,
+                  apkSha256: $sha
+                },
+                android: { priority: "high", ttl: "604800s" }
+              }
+            }')
+          echo "Payload:"
+          echo "$PAYLOAD" | jq .
+          RESP=$(curl -s -w "\n%{http_code}" -X POST \
+            -H "Authorization: Bearer $FCM_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD" \
+            "https://fcm.googleapis.com/v1/projects/outertune-social/messages:send")
+          BODY=$(echo "$RESP" | head -n -1)
+          CODE=$(echo "$RESP" | tail -n 1)
+          echo "FCM HTTP $CODE"
+          echo "$BODY" | jq . 2>/dev/null || echo "$BODY"
+          if [ "$CODE" -lt 200 ] || [ "$CODE" -ge 300 ]; then
+            echo "::error::FCM send failed HTTP $CODE: $BODY"
+            exit 1
+          fi
