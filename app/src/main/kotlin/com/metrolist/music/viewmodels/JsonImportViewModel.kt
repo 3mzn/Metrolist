@@ -19,16 +19,26 @@ import com.metrolist.music.sync.JsonTrack
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import java.time.LocalDateTime
+import java.util.Collections
+import java.util.concurrent.atomic.AtomicInteger
 import javax.inject.Inject
 
 @HiltViewModel
@@ -155,6 +165,8 @@ class JsonImportViewModel @Inject constructor(
 
     /**
      * Import tracks and add to playlist with retry logic, duplicate detection, and error handling.
+     * Parallelized: YouTube searches run concurrently with bounded concurrency (4) to cut wall-time
+     * ~3-4x vs serial. DB check/insert is serialized via Mutex to avoid duplicate races.
      */
     private suspend fun performJsonImport(
         tracks: List<JsonTrack>,
@@ -163,80 +175,91 @@ class JsonImportViewModel @Inject constructor(
     ) {
         withContext(Dispatchers.IO) {
             _statusText.value = "Matching songs with YouTube Music..."
-            var songsImported = 0
-            var songsSkipped = 0
             val totalSongs = tracks.size
-            val failed = mutableListOf<ImportResult.Failed>()
+            val failed = Collections.synchronizedList(mutableListOf<ImportResult.Failed>())
+            val songsImported = AtomicInteger(0)
+            val songsSkipped = AtomicInteger(0)
+            val completed = AtomicInteger(0)
+            val semaphore = Semaphore(4)
+            val dbMutex = Mutex()
 
-            tracks.forEachIndexed { index, track ->
-                // Check for cancellation
-                if (!currentImportJob?.isActive!!) {
-                    return@withContext
-                }
-
-                try {
-                    _progress.value = index.toFloat() / totalSongs
-                    _statusText.value = "Matching [${index + 1}/$totalSongs]: ${track.displayName()}"
-
-                    // Match with retry logic
-                    val matchedSong = matchJsonTrackWithRetry(track, maxAttempts = 2)
-
-                    if (matchedSong != null) {
-                        // Check for duplicates
-                        val isDuplicate = database.checkInPlaylist(playlistId, matchedSong.id) > 0
-
-                        if (isDuplicate) {
-                            songsSkipped++
-                            _statusText.value = "Skipped duplicate [${index + 1}/$totalSongs]: ${track.displayName()}"
-                        } else {
-                            val metadata = matchedSong.toMediaMetadata()
-
-                            // Insert song into library if not exists
-                            val existing = database.song(matchedSong.id).firstOrNull()
-                            if (existing == null) {
-                                try {
-                                    database.insert(mediaMetadata = metadata)
-                                } catch (e: Exception) {
-                                    failed.add(ImportResult.Failed(track, "Database error: ${e.message}"))
-                                    return@forEachIndexed
-                                }
+            coroutineScope {
+                tracks.mapIndexed { index, track ->
+                    async {
+                        // Bounded concurrency — network is the bottleneck
+                        semaphore.withPermit {
+                            ensureActive()
+                            // Cooperative cancel check for ViewModel job
+                            if (currentImportJob?.isActive == false) {
+                                ensureActive() // throws CancellationException
                             }
-
-                            // Add to playlist
                             try {
-                                val playlist = database.playlist(playlistId).first()
-                                if (playlist != null) {
-                                    database.query {
-                                        addSongToPlaylist(playlist, listOf(matchedSong.id))
+                                // Progress/status (thread-safe; StateFlow is atomic)
+                                _statusText.value = "Matching [${index + 1}/$totalSongs]: ${track.displayName()}"
+
+                                // Parallel search (retains retry+500ms delay)
+                                val matchedSong = matchJsonTrackWithRetry(track, maxAttempts = 2)
+
+                                if (matchedSong != null) {
+                                    // Serialize DB critical section to prevent duplicate race
+                                    dbMutex.withLock {
+                                        ensureActive()
+                                        val isDuplicate = database.checkInPlaylist(playlistId, matchedSong.id) > 0
+                                        if (isDuplicate) {
+                                            songsSkipped.incrementAndGet()
+                                        } else {
+                                            val metadata = matchedSong.toMediaMetadata()
+                                            val existing = database.song(matchedSong.id).firstOrNull()
+                                            if (existing == null) {
+                                                try {
+                                                    database.insert(mediaMetadata = metadata)
+                                                } catch (e: Exception) {
+                                                    failed.add(ImportResult.Failed(track, "Database error: ${e.message}"))
+                                                    return@withLock
+                                                }
+                                            }
+                                            try {
+                                                val playlist = database.playlist(playlistId).first()
+                                                if (playlist != null) {
+                                                    database.query {
+                                                        addSongToPlaylist(playlist, listOf(matchedSong.id))
+                                                    }
+                                                    val imported = songsImported.incrementAndGet()
+                                                    _syncState.value =
+                                                        SyncState.Syncing(imported, totalSongs, matchedSong.title)
+                                                } else {
+                                                    failed.add(ImportResult.Failed(track, "Playlist not found"))
+                                                }
+                                            } catch (e: Exception) {
+                                                failed.add(ImportResult.Failed(track, "Failed to add to playlist: ${e.message}"))
+                                            }
+                                        }
                                     }
-                                    songsImported++
-                                    _syncState.value =
-                                        SyncState.Syncing(songsImported, totalSongs, matchedSong.title)
                                 } else {
-                                    failed.add(ImportResult.Failed(track, "Playlist not found"))
+                                    failed.add(ImportResult.Failed(track, "No match found on YouTube Music after retries"))
                                 }
+                            } catch (e: kotlinx.coroutines.CancellationException) {
+                                throw e
                             } catch (e: Exception) {
-                                failed.add(ImportResult.Failed(track, "Failed to add to playlist: ${e.message}"))
+                                failed.add(ImportResult.Failed(track, "Unexpected error: ${e.message}"))
+                            } finally {
+                                val done = completed.incrementAndGet()
+                                _progress.value = done.toFloat() / totalSongs
                             }
                         }
-                    } else {
-                        failed.add(ImportResult.Failed(track, "No match found on YouTube Music after retries"))
                     }
-                } catch (e: kotlinx.coroutines.CancellationException) {
-                    throw e // Re-throw cancellation
-                } catch (e: Exception) {
-                    failed.add(ImportResult.Failed(track, "Unexpected error: ${e.message}"))
-                    _statusText.value = "Error processing ${track.displayName()}: ${e.message}"
-                }
+                }.awaitAll()
             }
 
-            _failedImports.value = failed
+            _failedImports.value = failed.toList()
             _syncState.value = SyncState.Success
 
             // Build status message
             val parts = mutableListOf<String>()
-            if (songsImported > 0) parts.add("Added $songsImported songs")
-            if (songsSkipped > 0) parts.add("skipped $songsSkipped duplicates")
+            val imported = songsImported.get()
+            val skipped = songsSkipped.get()
+            if (imported > 0) parts.add("Added $imported songs")
+            if (skipped > 0) parts.add("skipped $skipped duplicates")
             if (failed.size > 0) parts.add("${failed.size} failed")
 
             _statusText.value = "Import complete! ${parts.joinToString(", ")} to \"$playlistName\"."
