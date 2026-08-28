@@ -180,6 +180,7 @@ class JsonImportViewModel @Inject constructor(
             val songsImported = AtomicInteger(0)
             val songsSkipped = AtomicInteger(0)
             val completed = AtomicInteger(0)
+            val started = AtomicInteger(0)
             val semaphore = Semaphore(4)
             val dbMutex = Mutex()
 
@@ -194,8 +195,9 @@ class JsonImportViewModel @Inject constructor(
                                 ensureActive() // throws CancellationException
                             }
                             try {
-                                // Progress/status (thread-safe; StateFlow is atomic)
-                                _statusText.value = "Matching [${index + 1}/$totalSongs]: ${track.displayName()}"
+                                // Progress/status (thread-safe; linear count via atomic started counter)
+                                val displayIndex = started.incrementAndGet()
+                                _statusText.value = "Matching [$displayIndex/$totalSongs]: ${track.displayName()}"
 
                                 // Parallel search (retains retry+500ms delay)
                                 val matchedSong = matchJsonTrackWithRetry(track, maxAttempts = 2)
