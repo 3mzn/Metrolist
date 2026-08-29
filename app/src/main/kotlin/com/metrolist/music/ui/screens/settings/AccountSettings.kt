@@ -412,17 +412,7 @@ fun AccountSettings(
 
             PreferenceEntry(
                 title = { Text(stringResource(R.string.settings)) },
-                icon = {
-                    BadgedBox(
-                        badge = {
-                            if (BuildConfig.UPDATER_AVAILABLE && latestVersionName != BuildConfig.BASE_VERSION_NAME) {
-                                Badge()
-                            }
-                        }
-                    ) {
-                        Icon(painterResource(R.drawable.settings), contentDescription = null)
-                    }
-                },
+                icon = { Icon(painterResource(R.drawable.settings), contentDescription = null) },
                 onClick = {
                     onClose()
                     navController.navigate("settings")
@@ -431,30 +421,6 @@ fun AccountSettings(
                     .fillMaxWidth()
                     .background(MaterialTheme.colorScheme.surfaceContainer)
             )
-
-            Spacer(Modifier.height(4.dp))
-
-            if (BuildConfig.UPDATER_AVAILABLE && latestVersionName != BuildConfig.BASE_VERSION_NAME) {
-                val releaseInfo = Updater.getCachedLatestRelease()
-                val downloadUrl = releaseInfo?.let { Updater.getDownloadUrlForCurrentVariant(it) }
-                
-                if (downloadUrl != null) {
-                    PreferenceEntry(
-                        title = {
-                            Text(text = stringResource(R.string.new_version_available))
-                        },
-                        description = latestVersionName,
-                        icon = {
-                            BadgedBox(badge = { Badge() }) {
-                                Icon(painterResource(R.drawable.update), null)
-                            }
-                        },
-                        onClick = {
-                            uriHandler.openUri(downloadUrl)
-                        }
-                    )
-                }
-            }
         }
     }
 }

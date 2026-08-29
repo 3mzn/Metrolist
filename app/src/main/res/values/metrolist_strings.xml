@@ -376,6 +376,21 @@
     <string name="kmp_upgrade_action">Upgrade to KMP</string>
     <string name="kmp_upgrade_later">Not now</string>
 
+    <!-- Onboarding -->
+    <string name="onboarding_slide1">hiiiii</string>
+    <string name="onboarding_slide2">to my one and only-</string>
+    <string name="onboarding_slide3">so i made you an app..</string>
+    <string name="onboarding_slide4">well more like took someone else\'s app, broke it and made it ours</string>
+    <string name="onboarding_slide5a">yes you can still send me songs and i wont miss a single one,</string>
+    <string name="onboarding_slide5b">vice versa too and no you cant skip to the chorus.</string>
+    <string name="onboarding_slide5c">you\'re gonna listen to the whole thing</string>
+    <string name="onboarding_slide6a">also we can listen together now!!! hehehehe cant wait to feel like im always with u whenever we\'re listening together in the same room</string>
+    <string name="onboarding_slide6b">anw here\'s another thing, we can build our own shared playlist now, fully in sync, always.</string>
+    <string name="onboarding_slide6c">ts miles better than spotify</string>
+    <string name="onboarding_slide7">im not gonna talk too much, go ahead..  sign up with ur account from the social tab in the bottom and you\'ll see everything</string>
+    <string name="onboarding_next">next</string>
+    <string name="onboarding_done">yes i get the gist</string>
+
     <!-- Offload -->
     <string name="audio_offload">Enable audio offload</string>
     <string name="audio_offload_description">Uses the hardware audio offload path for playback. Disabling this may increase battery usage, but can help if you experience issues with playback or audio post-processing</string>
