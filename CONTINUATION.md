@@ -1,11 +1,8 @@
-# CONTINUATION.md — COMPLETE CONTEXT DUMP (v2, exhaustive)
+# CONTINUATION.md — COMPLETE CONTEXT DUMP (v3, exhaustive)
 
-> Written 2026-08-25 ~20:00 (+03:00). This file is a ZERO-SUMMARIZATION dump of everything
-> the outgoing agent knows: every decision, every bug, every stack trace, every commit,
-> every code path, every user instruction, every environment fact. Written for an agent
-> with ZERO prior context. Read all of it. Where the outgoing agent's memory of exact code
-> is paraphrased rather than verbatim, it is marked `[paraphrased]` — re-read the actual
-> file before editing.
+> Written 2026-08-30 ~13:00. This file is a ZERO-SUMMARIZATION dump of everything
+> the outgoing agent knows. Supersedes v2. Written for an agent with ZERO prior
+> context. Read all of it.
 
 ---
 
@@ -49,8 +46,10 @@
 ## 1.2 App identity
 
 - Application id: `com.metrolist.music`; **debug builds are `com.metrolist.music.debug`** (debug applicationIdSuffix). Launching: `adb -s <device> shell monkey -p com.metrolist.music.debug -c android.intent.category.LAUNCHER 1`
-- App version: 13.6.3 (152). compileSdk 37, minSdk 26, targetSdk 36, JDK 21. Flavors: **foss** (what we build), gms, izzy. Build type: debug.
+- App version: **13.6.9 (158)**. compileSdk 37, minSdk 26, targetSdk 36, JDK 21. Flavors: **foss** (what we build), gms, izzy. Build type: debug.
 - Build: `cd C:\musicapp\metrolist; .\gradlew :app:assembleFossDebug` (full APK) or `.\gradlew :app:compileFossDebugKotlin -q` (fast compile check; prints "COMPILE OK" via `if ($?)`).
+- Release keystore: `app/keystore/release.keystore` (alias `metrolist`, SHA256 `21:5A:B5:EB:74:E2:F1:CA:49:38:68:01:85:32:4F:A8:01:DC:15:66:A5:3A:15:AE:49:8C:EA:E1:76:4D:F3:A0`). Sign with: `apksigner sign --ks app/keystore/release.keystore --ks-pass pass:metrolist123 --key-pass pass:metrolist123 --ks-key-alias metrolist --out Metrolist.apk app-foss-release-unsigned.apk`
+- Release APK output: `app/build/outputs/apk/foss/release/Metrolist.apk`
 - Unit tests: `.\gradlew :app:testFossDebugUnitTest` — 95 tests, all green. (One historical failure: `LyricsBackgroundTimingTest` died because Robolectric couldn't download `org.robolectric:android-all-instrumented:6.0.1_r3-robolectric-r1-i7` — transient network, passed on retry. Not a code issue.)
 - Gradle: configuration cache reused, daemon persists; builds take ~1-4 min warm.
 - The `:app` build has a protobuf-lite codegen task (`generateProto`) that writes into `app/src/main/java` from the metroproto submodule.
@@ -60,8 +59,8 @@
 
 | Device | adb id | Notes |
 |---|---|---|
-| User's phone | `ylwwmn85w4ifb6z9` | Xiaomi 24117RN76G (Redmi Note 14), HyperOS, Android 16 (SDK 36). Runs as **eman** (the user). USB or wireless. |
-| Emulator | `emulator-5556` (port can shift; always check `adb devices`) | Runs as **aswinitest** (partner test account). Confirmed signed into Firebase as UID `EuM3KTt25ReXt7BFjBKQvzwbBPx1` (verified via logcat line: `FirebaseAuth: Notifying id token listeners about user ( EuM3KTt25ReXt7BFjBKQvzwbBPx1 )`). |
+| User's phone | `ylwwmn85w4ifb6z9` | Xiaomi 24117RN76G (Redmi Note 14), HyperOS, Android 16 (SDK 36). Runs as **eman** (the user). USB or wireless. Currently has **release-signed v13.6.9** installed (cert `21:5A...`). |
+| Emulator | `emulator-5556` (port can shift; always check `adb devices`) | Runs as **aswinitest** (partner test account). Confirmed signed into Firebase as UID `EuM3KTt25ReXt7BFjBKQvzwbBPx1`. Currently has **debug-signed v13.6.9** installed (no GMS → can't receive FCM, but pull-based update check works). |
 
 Wireless ADB saga (important context): MIUI/HyperOS auto-disables the phone's "Wireless debugging" toggle (screen-off, Wi-Fi band change, after pairing). QR pairing exists via Android Studio. The RELIABLE method: plug USB once → `adb -s ylwwmn85w4ifb6z9 tcpip 5555` → `adb connect 192.168.18.234:5555` (phone's Wi-Fi IP; persists until phone reboot). The user has used USB connection recently.
 
@@ -600,6 +599,7 @@ File: `MAYBE_LATER.md`. Progress line: `13 ✅ · 3 ✅ · 5+6 ✅ (shipped as o
 8. Queued messages ("if you stopped in the middle, continue; if you finished, say Standing by") — comply: continue work or say "Standing by."
 9. AGENTS.md in the repo has the project rules (no md edits except feature spec files, no schema changes without sign-off, conventional commits, no force-push except own-branch rebases, etc.). User-ordered doc edits override.
 10. The user appreciates being asked questions before big implementations ("ask me every possible question") — for SPEC_7 this was done via the question tool in 4 rounds.
+11. **Agent handoff:** I do planning and small tasks. For risky/surgical work, I suggest delegating to Muse Spark 1.2 and write the prompt. Muse Spark 1.2 uses `low` effort (its dial runs backward).
 
 ---
 
@@ -623,45 +623,125 @@ File: `MAYBE_LATER.md`. Progress line: `13 ✅ · 3 ✅ · 5+6 ✅ (shipped as o
 
 # 14. NEXT STEPS (in order)
 
-## 14.1 Aug 26 SPEC_8 checkpoint (newest state; supersedes the older list below)
+## 14.1 Current state (post-v13.6.9)
+- SPEC_9 update system: ✅ complete (FCM push + Supabase pull)
+- Onboarding slideshow: ✅ complete
+- Official updater removal: ✅ complete
+- SPEC_8 "Us" playlists: implemented, has open defects (see §14.2)
+- SPEC_7 invites: code-complete, tested
 
-SPEC_8 "Us" playlists are implemented in the working tree and Firestore rules are deployed to
-`outertune-social`. `./gradlew :app:testFossDebugUnitTest :app:assembleFossDebug` passed and the APK
-was installed on phone `ylwwmn85w4ifb6z9` and MuMu emulator `127.0.0.1:7555`.
+## 14.2 SPEC_8 open defects (from previous agent)
+1. SQLiteConstraintException FOREIGN KEY constraint failed at `SharedPlaylistRepository.addSongLocally` during large import
+2. Remove-song disappeared only locally, reappeared after cloud reconciliation
+3. Remote-additions `X new` badge not observed
+4. Shared card outline hard to see, doesn't react to palette
+5. User changed D19: playlist cover art is now device-local (remove Firestore cover sync)
 
-First two-device results: receive of a 408-song playlist completed; receive, rename, add, duplicate
-guard, local-song guard, independent reorder, independent playback, offline recovery, symmetric
-delete, and no-unshare passed. User counts the destructive account-delete scenario as passed without
-deleting either real test account. Rules were deployed twice, with the final deployment compiling
-without warnings.
-
-Confirmed open defects:
-
-1. Emulator logcat captured repeated `SQLiteConstraintException: FOREIGN KEY constraint failed` at
-   `SharedPlaylistRepository.addSongLocally` during the 408-song import. `database.query` queues the
-   song insert asynchronously, so the playlist-map transaction can run first.
-2. Remove-song disappeared only locally, did not disappear on the partner, then reappeared after
-   cloud reconciliation 1–2 minutes later.
-3. The remote-additions `X new` badge was not observed.
-4. The shared two-person glyph appears, but the 2dp whole-card outline is difficult to see and did
-   not visibly react to the current song palette.
-5. User changed D19: playlist cover art is now device-local. Remove/avoid Firestore cover syncing.
-
-Next action after this checkpoint commit/push: fix those four functional/UI defects, remove cover
-sync, rerun unit/build checks, reinstall both devices, and retest only those focused cases.
-
-1. **Verify device/build state** — adb was just restarted; devices reconnected (`ylwwmn85w4ifb6z9` + `emulator-5556` confirmed). Installed build should be `696cfe6b4`'s APK (installed ~15:44 Aug 25; no code changed since). Verify via `adb -s <dev> shell dumpsys package com.metrolist.music.debug | Select-String lastUpdateTime` vs APK LastWriteTime (3:44:58 PM); reinstall if unsure.
-2. ~~Re-test mutual-invite scenario~~ — ✅ DONE (Aug 25): crash fix `696cfe6b4` verified; accepting an invite from inside a session switches rooms without crashing.
-3. **Run remaining SPEC_7 tests** (§11.3 items 5–6): failed-join retry (airplane mode), host-vanished toast. Items 1–4, 7 done; 30 min expiry now proven.
-4. **Update MAYBE_LATER.md progress line** (7 → ✅) and PENDING_TESTS.md as tests pass (user approves tracker edits).
-5. **Plan #8 "Us" playlists** — present Option A (Room `sharedWith` column; needs explicit schema-change sign-off) vs Option B (Firestore-only mirroring); user decides; then spec → phases → implement (follow the SPEC_7 pattern: spec file, phased commits, deep code study first).
-6. **#9 VIZ** after #8.
-7. Free-tier dashboard check after a day of usage.
-8. CONTINUATION.md (this file) — uncommitted; commit/push if the user wants it preserved in git.
+## 14.3 Future features (when user is ready)
+- **#8 "Us" playlists** — fix open defects (Option A = Room schema change, Option B = Firestore-only)
+- **#9 VIZ** — FFT visualizer for downloaded songs
+- **Recon fixes** — SPEC_9_RECON.md has ~20 safe findings (InputStream leaks, empty states, pull-to-refresh, etc.)
+- **Download improvements** — deferred (user said current speed is sufficient)
 
 ---
 
-# 15. SESSION NARRATIVE (chronological — everything that happened)
+# 17. IN-APP UPDATE SYSTEM (SPEC_9) — complete
+
+## 17.1 Architecture
+Two independent paths to deliver updates to devices:
+
+**Push (FCM):** `push-update.js --tag v13.6.9 --flavor foss` uploads APK to Supabase Storage, writes `latest-foss.json`, broadcasts to `metrolist_foss_updates` FCM topic. `AppUpdateNotifier.handle()` receives the data message, downloads, verifies SHA-256 + signing cert, fires "Update available" notification.
+
+**Pull (Supabase JSON):** On every app start (3s after launch), `AppUpdateNotifier.checkForStartupUpdate()` fetches `latest-{flavor}.json` from Supabase. If version is newer than installed, fires the same notification. This is the backup for users who swipe away the FCM notification.
+
+## 17.2 Files
+- `update/AppUpdateNotifier.kt` — `handle()` (FCM path) + `checkForStartupUpdate()` (pull path) + host pin (line 80 includes `teeafutbybbywitdahpr.supabase.co`)
+- `App.kt` — `appUpdateScope.launch { delay(3000); AppUpdateNotifier.checkForStartupUpdate(this@App) }`
+- `build.gradle.kts` — `SUPABASE_URL` BuildConfig field + version bump
+- `push-update.js` (at `C:\Users\emanf\AppData\Local\Temp\kilo\push-update.js`) — manual broadcast script
+- `~/.config/supabase-key` — service key (chmod 600)
+
+## 17.3 Release signing
+- `app/keystore/release.keystore` created with `keytool -genkeypair -alias metrolist -storepass metrolist123`
+- Both paths (push/pull) verify the downloaded APK's signing cert matches the installed one via `verifySigningCert()` — only release-signed APKs accepted
+- Host pin at `AppUpdateNotifier.kt:80`: host == "github.com" || host.endsWith(".githubusercontent.com") || host == "teeafutbybbywitdahpr.supabase.co"
+
+## 17.4 Version history (this session)
+- 13.6.6/155: startup notification test ("this is the latest version")
+- 13.6.7/156: JSON import linearization (bumped by previous agent)
+- 13.6.8/157: startup update check via Supabase
+- 13.6.9/158: onboarding slideshow + official updater removal (commit `13eadbe54`)
+
+---
+
+# 18. ONBOARDING SLIDESHOW — complete
+
+## 18.1 What it does
+One-time slideshow shown before main UI on first launch after install. 7 slides with typewriter text effect, dark gradient backgrounds, "next" buttons, "yes i get the gist" on last slide. Survives app updates (DataStore boolean). Only resets on uninstall.
+
+## 18.2 Files
+- `ui/onboarding/OnboardingScreen.kt` — full composable (typewriter, sequential fade-ins, button navigation)
+- `MainActivity.kt` — `runBlocking(Dispatchers.IO)` reads `onboardingCompleted` before `setContent` (avoids purple flash), conditionally shows OnboardingScreen or MetrolistApp
+- `constants/PreferenceKeys.kt` — `OnboardingCompletedKey = booleanPreferencesKey("onboarding_completed")`
+- `metrolist_strings.xml` — 7 slide strings + "next" + "yes i get the gist"
+
+## 18.3 Slide text (verbatim, all lowercase)
+1. "hiiiii"
+2. "to my one and only-"
+3. "so i made you an app.."
+4. "well more like took someone else's app, broke it and made it ours"
+5a. "yes you can still send me songs and i wont miss a single one,"
+5b. "vice versa too and no you cant skip to the chorus."
+5c. "you're gonna listen to the whole thing"
+6a. "also we can listen together now!!! hehehehe cant wait to feel like im always with u whenever we're listening together in the same room"
+6b. "anw here's another thing, we can build our own shared playlist now, fully in sync, always."
+6c. "ts miles better than spotify"
+7. "im not gonna talk too much, go ahead..  sign up with ur account from the social tab in the bottom and you'll see everything"
+
+---
+
+# 19. AGENT HANDOFF WORKFLOW
+
+- **Me (LongCat-2.0):** planning, small/easy tasks, big-picture analysis, recon, simple bug fixes
+- **Delegate to Muse Spark 1.2 (other agent):** risky changes, surgical fixes, bug-finding, code audits — anything where precision matters more than speed
+- **When to suggest delegation:** I flag tasks that are risky or require surgical precision, ask the user if they want to delegate. If yes, write a detailed prompt for Muse Spark 1.2.
+- **Muse Spark 1.2 quirk:** Its reasoning dial runs **backward** — use `low` effort, NOT xhigh. At xhigh it generates 2-33× more tokens and times out.
+
+---
+
+# 20. RECON FINDINGS (SPEC_9_RECON.md)
+
+Recon report at `C:\Users\emanf\.opencode\plan\SPEC_9_RECON.md`. Key findings (all safe-in-isolation):
+
+**Reliability:** InputStream leaks (3 files), EQViewModel double-close, `.first()` on empty list crashes, 11 ViewModels with `savedStateHandle!!` NPE risk, `map[!!]` in MusicDatabase.
+
+**UX:** Playlist delete has no confirmation (strings exist but unused), empty states missing on Charts/Home, hardcoded English not in strings file, no pull-to-refresh on Home/Charts.
+
+**Debt:** Speed-dial delete copy-pasted 9×, AlertDialog boilerplate 7×.
+
+**Performance:** 32× `delay(DB_OPERATION_DELAY_MS)` in SyncUtils, artificial `delay(1000)` on Home screen.
+
+**User-confirmed pain point:** F5 (no pull-to-refresh) — the only issue the user personally experienced.
+
+---
+
+# 21. DOWNLOAD SYSTEM ANALYSIS
+
+**Current:** Media3 `DownloadManager` with `maxParallelDownloads=3`. URL resolution happens at download time via `runBlocking` inside `ResolvingDataSource`. No retry, no resume.
+
+**Potential safe improvements (not yet implemented):**
+1. Increase `maxParallelDownloads` to 5-8 (1 line, zero risk)
+2. Batch URL resolution at enqueue time in chunks of 20 (prevents InnerTube rate limits, removes blocking)
+3. Auto-retry failed downloads (3 attempts, exponential backoff)
+4. Per-song progress count instead of indeterminate spinner
+
+**Reality check:** User tested 650 songs in 5-8 min. Bandwidth is the bottleneck, not concurrency. Estimated improvement: 1.5-2× (not 3-4×). User decided current speed is sufficient — deferred.
+
+---
+
+# 22. UPSTREAM SYNC STATUS
+
+**Verdict: NEVER SYNC.** Upstream (MetrolistGroup) migrated to InnerTubeX and deleted the entire cipher/stream layer plus all social features. Sync would require 1-2 weeks of porting 85 commits. Fork is permanently diverged. Monitor upstream only for YTM breakage indicators.
 
 1. **Full repo analysis** (user: "Analyze whole repo metrolist... read every md file, every document. read all the code."): analyzed architecture, git topology (fork +48 over upstream `732dd13db`), all docs (README, AGENTS.md, development_guide, MAYBE_LATER, SPEC_13, changelog, docs/port-design/*, docs/outertune-dev/* — 12 files incl. PENDINGFIXES/PENDINGTESTS), all code areas via subagent exploration. Delivered comprehensive report.
 2. **Original repo comparison**: user asked to clone upstream to a separate folder; first clone attempt aborted by user ("stop. i will clone it myself"); user cloned without --recursive (metroproto empty); agent initialized submodule; user deleted and re-cloned; final successful clone `--recursive` verified (tip = `732dd13db` = exact fork point). Diff analysis delivered (§3).
@@ -704,6 +784,136 @@ sync, rerun unit/build checks, reinstall both devices, and retest only those foc
 - `two_device_checklist_setup` — one phone + one emulator (aswini partner account); don't set emulator clock forward.
 - Correction record: **always use Read tool for reading code, never shell**.
 - `latest_session_digest` — session handoff digests exist; this CONTINUATION.md supersedes them.
+- `release_keystore` — `app/keystore/release.keystore`, alias `metrolist`, pass `metrolist123`. Both devices release-signed.
+- `update_system` — FCM push + Supabase JSON pull. Both work. v13.6.9/158 latest.
+- `onboarding` — one-time DataStore-gated slideshow, `OnboardingCompletionKey`.
+- `agent_handoff` — I do planning/small tasks; delegate risky/surgical to Muse Spark 1.2 (use `low` effort).
+- `upstream_never_sync` — fork permanently diverged; upstream deleted social + InnerTubeX migration.
+
+# 23. IMPLEMENTATION DETAILS (all sessions — granular reference)
+
+## 23.1 Onboarding slideshow (v13.6.9)
+
+**Typewriter effect** (`OnboardingScreen.kt`):
+- Character delay: `delay(28L)` per character
+- Alpha fade-in: `Animatable(0f)` → `animateTo(1f, tween(600, EaseOutCubic))`
+- Typewriter starts only when `startTyping = true` (LaunchedEffect keyed on `text, startTyping`)
+
+**Sequential text appearance:**
+- Slide 5 delays: `listOf(0L, 1000L, 3000L)` — text1 immediate, text2 after 1s, text3 after 3s from slide start
+- Slide 6 delays: `listOf(0L, 1000L, 1000L)` — text1 immediate, text2 after 1s, text3 immediately after text2 (same delay value = chains right after)
+- Mechanism: `completedCount` state increments on each `onTypingComplete`; `LaunchedEffect(completedCount.intValue, slide)` starts next text when `completedCount == index` after `delay(gapDelay)`
+
+**OnboardingScreen signature:**
+```kotlin
+@Composable
+fun OnboardingScreen(
+    initialOnboardingCompleted: Boolean,  // passed from MainActivity
+    onComplete: () -> Unit,               // sets DataBoard key + advances state
+)
+```
+- `if (initialOnboardingCompleted) { onComplete(); return }` — immediate exit if already done
+
+**MainActivity integration:**
+```kotlin
+val initialOnboardingCompleted = runBlocking(Dispatchers.IO) {
+    dataStore.data.first()[OnboardingCompletedKey] ?: false
+}
+setContent {
+    var onboardingCompleted by remember { mutableStateOf(initialOnboardingCompleted) }
+    when (onboardingCompleted) {
+        false -> OnboardingScreen(
+            initialOnboardingCompleted = false,
+            onComplete = {
+                lifecycleScope.launch { dataStore.edit { it[OnboardingCompletedKey] = true } }
+                onboardingCompleted = true
+            }
+        )
+        true -> MetrolistApp(...)
+    }
+}
+```
+- The `runBlocking(Dispatchers.IO)` BEFORE setContent prevents the purple flash (previously `null` state showed purple Box for 1-2 frames)
+- `import kotlinx.coroutines.runBlocking` and `import kotlinx.coroutines.Dispatchers` added to MainActivity
+
+**PreferenceKeys:**
+```kotlin
+val OnboardingCompletedKey = booleanPreferencesKey("onboarding_completed")
+```
+
+**Strings (metrolist_strings.xml):**
+- `onboarding_slide1` = "hiiiii"
+- `onboarding_slide2` = "to my one and only-"
+- `onboarding_slide3` = "so i made you an app.."
+- `onboarding_slide4` = "well more like took someone else's app, broke it and made it ours"
+- `onboarding_slide5a/b/c`, `onboarding_slide6a/b/c` (multi-text slides)
+- `onboarding_slide7` = "im not gonna talk too much..."
+- `onboarding_next` = "next"
+- `onboarding_done` = "yes i get the gist"
+
+**Text positioning:** Centered, with backglow (`Modifier.drawBehind` drawing 2 semi-transparent circles behind text + `Shadow` on TextStyle). `isBottomText = index == 2 && slide.textResIds.size == 3` adds `padding(top = 16.dp)` to third text on slides 5 & 6.
+
+**Button:** Appears after `delay(maxDelay + 1200L)` where maxDelay is the largest delay in the slide. Slides with 0 delay → button appears after 1200ms.
+
+## 23.2 In-App Update System (SPEC_9, v13.6.6-v13.6.9)
+
+**Two paths:**
+
+**Push (FCM):** `node push-update.js --tag v13.6.9 --flavor foss`
+1. Reads local APK at `app/build\outputs\apk\foss\release\Metrolist.apk`
+2. Computes SHA-256 of the APK
+3. Uploads to Supabase Storage: `releases/13.6.9/Metrolist.apk`
+4. Uploads `notes.html` (changelog)
+5. Writes `latest-foss.json` to `releases/latest-foss.json`
+6. Mints OAuth token, POSTs to FCM topic `metrolist_foss_updates`
+
+**Pull (Supabase JSON):** On app start:
+- `App.kt`: `appUpdateScope.launch { delay(3000); AppUpdateNotifier.checkForStartupUpdate(this@App) }`
+- `checkForStartupUpdate(context)`: fetches `${BuildConfig.SUPABASE_URL}/storage/v1/object/public/releases/latest-foss.json`
+- Compares `latestCode` (from JSON) vs `installedCode` (from PackageInfoCompat.getLongVersionCode)
+- If newer, builds data map and calls `handle(context, data)`
+
+**Supabase details:**
+- URL: `https://teeafutbybbywitdahpr.supabase.co`
+- Bucket: `releases` (public)
+- Key file: `~/.config/supabase-key` (chmod 600)
+- `SUPABASE_URL` BuildConfig field added to `build.gradle.kts`
+
+**Host pin (AppUpdateNotifier.kt:80):**
+```kotlin
+host == "github.com" || host.endsWith(".githubusercontent.com") || host == "teeafutbybbywitdahpr.supabase.co"
+```
+
+**Startup notification (v13.6.6, still present):**
+- `MainActivity.kt`: `Handler(Looper.getMainLooper()).postDelayed({ ... }, 1500)` after `listenTogetherManager.initialize()`
+- Shows notification on channel "app_updates" with title `startup_latest_version_title` ("You're up to date") and text `startup_latest_version_text` ("This is the latest version of Metrolist (%s)")
+- Uses `R.drawable.music_note` (changed from `R.drawable.ic_metrolist` which didn't exist)
+- Guarded by `NotificationManagerCompat.from(this).areNotificationsEnabled()`
+
+**BuildConfig.UPDATER_AVAILABLE** — guards all update-related code (true for foss/gms flavors, false for izzy)
+
+## 23.3 Agent Handoff Details
+
+**My role (LongCat-2.0):** Planning, small tasks, recon, analysis, simple bug fixes, writing prompts for the other agent
+
+**Muse Spark 1.2 role:** Risky changes, surgical fixes, bug-finding, code audits
+
+**Critical quirk:** Muse Spark 1.2's reasoning dial runs **backward**:
+- `low` effort = best results (87% on VulcanBench, 3.2min median, $0.41/solved)
+- `xhigh` effort = worst results (52%, timeouts, 2-33× more tokens)
+- Always use `low` effort for delegation prompts
+
+**When to delegate:** I flag tasks that are risky or require surgical precision, ask the user "want me to delegate this to Muse Spark 1.2?" If yes, I write the prompt.
+
+## 23.4 Device & Environment Details
+
+**Emulator (emulator-5556):** No Google Play Services installed → cannot receive FCM. Pull-based update check works fine.
+
+**Xiaomi (ylwwmn85w4ifb6z9):** Has GMS → receives FCM. Currently release-signed (cert `21:5A...`).
+
+**Firebase:** Project `outertune-social`, region `me-central1`. FCM topic `metrolist_foss_updates`.
+
+**Supabase:** Project `teeafutbybbywitdahpr`, bucket `releases` (public).
 
 ---
 
