@@ -79,9 +79,11 @@ import com.metrolist.music.LocalPlayerAwareWindowInsets
 import com.metrolist.music.R
 import com.metrolist.music.constants.ListenTogetherAutoApprovalKey
 import com.metrolist.music.constants.ListenTogetherAutoApproveSuggestionsKey
+import com.metrolist.music.constants.LtChatAutoDeleteDaysKey
 import com.metrolist.music.constants.ListenTogetherServerUrlKey
 import com.metrolist.music.constants.ListenTogetherSyncVolumeKey
 import com.metrolist.music.constants.ListenTogetherUsernameKey
+import com.metrolist.music.ltchat.LtChatRepository
 import com.metrolist.music.listentogether.ConnectionState
 import com.metrolist.music.listentogether.ListenTogetherEvent
 import com.metrolist.music.listentogether.ListenTogetherServer
@@ -122,7 +124,10 @@ fun ListenTogetherSettings(
     var autoApproveSuggestions by rememberPreference(ListenTogetherAutoApproveSuggestionsKey, false)
     var syncHostVolume by rememberPreference(ListenTogetherSyncVolumeKey, true)
 
+    var ltChatAutoDeleteDays by rememberPreference(LtChatAutoDeleteDaysKey, LtChatRepository.DEFAULT_AUTO_DELETE_DAYS)
+
     var showServerUrlDialog by rememberSaveable { mutableStateOf(false) }
+    var showAutoDeleteDialog by rememberSaveable { mutableStateOf(false) }
     var showUsernameDialog by rememberSaveable { mutableStateOf(false) }
     var showCreateRoomDialog by rememberSaveable { mutableStateOf(false) }
     var showJoinRoomDialog by rememberSaveable { mutableStateOf(false) }
@@ -502,6 +507,23 @@ fun ListenTogetherSettings(
                             onClick = { syncHostVolume = !syncHostVolume },
                         ),
                         IntegrationCardItem(
+                            icon = painterResource(R.drawable.delete_history),
+                            title = { Text(stringResource(R.string.lt_chat_auto_delete_title)) },
+                            description = {
+                                Text(
+                                    stringResource(
+                                        when (ltChatAutoDeleteDays) {
+                                            7 -> R.string.lt_chat_auto_delete_7
+                                            90 -> R.string.lt_chat_auto_delete_90
+                                            0 -> R.string.lt_chat_auto_delete_never
+                                            else -> R.string.lt_chat_auto_delete_30
+                                        },
+                                    ),
+                                )
+                            },
+                            onClick = { showAutoDeleteDialog = true },
+                        ),
+                        IntegrationCardItem(
                             icon = painterResource(R.drawable.bug_report),
                             title = { Text(stringResource(R.string.listen_together_view_logs)) },
                             description = {
@@ -514,6 +536,40 @@ fun ListenTogetherSettings(
         }
 
         Spacer(modifier = Modifier.height(16.dp))
+    }
+
+    if (showAutoDeleteDialog) {
+        DefaultDialog(
+            onDismiss = { showAutoDeleteDialog = false },
+            title = { Text(stringResource(R.string.lt_chat_auto_delete_title)) },
+        ) {
+            listOf(
+                7 to R.string.lt_chat_auto_delete_7,
+                30 to R.string.lt_chat_auto_delete_30,
+                90 to R.string.lt_chat_auto_delete_90,
+                0 to R.string.lt_chat_auto_delete_never,
+            ).forEach { (days, labelRes) ->
+                TextButton(
+                    onClick = {
+                        ltChatAutoDeleteDays = days
+                        showAutoDeleteDialog = false
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        text =
+                            stringResource(labelRes) +
+                                if (ltChatAutoDeleteDays == days) " ✓" else "",
+                        color =
+                            if (ltChatAutoDeleteDays == days) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurface
+                            },
+                    )
+                }
+            }
+        }
     }
 
     TopAppBar(

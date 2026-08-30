@@ -1126,4 +1126,17 @@
     <string name="app_update_download_failed_title">Couldn\'t download update</string>
     <string name="post_notifications_rationale">Notifications are needed to inform you about app updates</string>
     <string name="post_notifications_denied">Notifications denied — you won\'t be notified about updates</string>
+
+    <!-- LT chat (SPEC_LT_CHAT) -->
+    <string name="lt_chat_typing">%1$s is typing…</string>
+    <string name="lt_chat_hint">Message…</string>
+    <string name="lt_chat_open">Chat with %1$s</string>
+    <string name="lt_chat_collapse">Close chat</string>
+    <string name="lt_chat_empty">Say hi 👋</string>
+    <string name="lt_chat_auto_delete_title">Auto-delete chat messages</string>
+    <string name="lt_chat_auto_delete_desc">Remove chat messages older than the selected age</string>
+    <string name="lt_chat_auto_delete_7">After 7 days</string>
+    <string name="lt_chat_auto_delete_30">After 30 days</string>
+    <string name="lt_chat_auto_delete_90">After 90 days</string>
+    <string name="lt_chat_auto_delete_never">Never</string>
 </resources>

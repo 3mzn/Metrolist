@@ -7,6 +7,7 @@ package com.metrolist.music.ui.screens
 
 import android.content.Context
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Spring
@@ -87,6 +88,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
 import androidx.navigation.compose.currentBackStackEntryAsState
+import androidx.hilt.navigation.compose.hiltViewModel
 import com.metrolist.music.LocalInviteNotifier
 import com.metrolist.music.LocalListenTogetherManager
 import com.metrolist.music.LocalPlayerAwareWindowInsets
@@ -95,6 +97,7 @@ import com.metrolist.music.constants.AppBarHeight
 import com.metrolist.music.constants.ListenTogetherAutoApproveSuggestionsKey
 import com.metrolist.music.constants.ListenTogetherInTopBarKey
 import com.metrolist.music.constants.ListenTogetherUsernameKey
+import com.metrolist.music.ltchat.LtChatViewModel
 import com.metrolist.music.social.ListenTogetherInvite
 import com.metrolist.music.listentogether.ConnectionState
 import com.metrolist.music.listentogether.JoinRequestPayload
@@ -102,6 +105,8 @@ import com.metrolist.music.listentogether.ListenTogetherEvent
 import com.metrolist.music.listentogether.RoomRole
 import com.metrolist.music.listentogether.SuggestionReceivedPayload
 import com.metrolist.music.listentogether.UserInfo
+import com.metrolist.music.ui.component.ChatBox
+import com.metrolist.music.ui.component.ChatBubble
 import com.metrolist.music.ui.component.DefaultDialog
 import com.metrolist.music.ui.component.IconButton
 import com.metrolist.music.ui.utils.backToMain
@@ -276,6 +281,11 @@ fun ListenTogetherScreen(
         )
     }
 
+    // --- LT chat (SPEC_LT_CHAT) ---
+    val ltChatViewModel: LtChatViewModel = hiltViewModel()
+    val ltChatUnread by ltChatViewModel.unreadCount.collectAsStateWithLifecycle()
+    var chatExpanded by rememberSaveable { mutableStateOf(false) }
+
     val lazyListState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
     val bringIntoViewRequester = remember { BringIntoViewRequester() }
@@ -290,6 +300,9 @@ fun ListenTogetherScreen(
         }
     }
 
+    // The whole screen (list + optional top bar + chat overlay) lives in ONE Box so the
+    // chat bubble/panel can float above the list without touching its layout.
+    Box(modifier = Modifier.fillMaxSize()) {
     LazyColumn(
         state = lazyListState,
         modifier =
@@ -553,6 +566,61 @@ fun ListenTogetherScreen(
                 }
             },
         )
+    }
+
+        // LT chat overlay (SPEC_LT_CHAT): floating bubble at bottom-end, expanding into the
+        // chat panel. The bubble's bottom padding rides on windowInsets — which already
+        // includes the nav bar AND the mini player when visible — so it clears the player bar.
+        // Hidden entirely while signed out or the partner is unresolved (no couple_id).
+        if (partnerIdentity?.partnerUid != null) {
+            val chatPartnerName = partnerIdentity.partnerName?.ifBlank { null }
+                ?: partnerIdentity.partnerUid?.take(6)
+                ?: stringResource(R.string.partner)
+            val chatPartnerInitial = chatPartnerName.take(1).uppercase()
+            val partnerPresenceForBubble by ltChatViewModel.partnerPresence.collectAsStateWithLifecycle()
+            val isOnlineFresh = partnerPresenceForBubble?.let {
+                System.currentTimeMillis() - it.lastSeenMs < 120_000
+            } ?: false
+            BackHandler(enabled = chatExpanded) { chatExpanded = false }
+            if (chatExpanded) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.32f))
+                        .clickable { chatExpanded = false }
+                        .align(Alignment.Center),
+                ) {}
+            }
+            if (!chatExpanded) {
+                ChatBubble(
+                    partnerInitial = chatPartnerInitial,
+                    unreadCount = ltChatUnread,
+                    onClick = { chatExpanded = true },
+                    modifier =
+                        Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(
+                                end = 16.dp,
+                                bottom = windowInsets.asPaddingValues().calculateBottomPadding() + 16.dp,
+                            ),
+                    partnerName = chatPartnerName,
+                    isOnline = isOnlineFresh,
+                )
+            }
+            AnimatedVisibility(
+                visible = chatExpanded,
+                enter = slideInVertically { it } + fadeIn(),
+                exit = slideOutVertically { it } + fadeOut(),
+                modifier = Modifier.align(Alignment.BottomCenter),
+            ) {
+                ChatBox(
+                    viewModel = ltChatViewModel,
+                    partnerName = chatPartnerName,
+                    partnerInitial = chatPartnerInitial,
+                    onCollapse = { chatExpanded = false },
+                )
+            }
+        }
     }
 }
 

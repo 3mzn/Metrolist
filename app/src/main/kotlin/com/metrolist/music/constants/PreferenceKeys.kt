@@ -14,6 +14,8 @@ import java.time.LocalDateTime
 import java.time.ZoneOffset
 
 val OnboardingCompletedKey = booleanPreferencesKey("onboarding_completed")
+val LtChatAutoDeleteDaysKey = intPreferencesKey("lt_chat_auto_delete_days")
+val LtChatLastPruneMsKey = longPreferencesKey("lt_chat_last_prune_ms")
 val EnableHighRefreshRateKey = booleanPreferencesKey("enableHighRefreshRate")
 val EnableLandscapeScalingKey = booleanPreferencesKey("enableLandscapeScaling")
 val DynamicThemeKey = booleanPreferencesKey("dynamicTheme")
