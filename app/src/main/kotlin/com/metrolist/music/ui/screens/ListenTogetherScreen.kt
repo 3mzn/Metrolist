@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -607,13 +608,18 @@ fun ListenTogetherScreen(
                     isOnline = isOnlineFresh,
                 )
             }
+            val imeBottom = WindowInsets.ime.asPaddingValues().calculateBottomPadding()
+            val isImeVisible = imeBottom > 0.dp
             AnimatedVisibility(
                 visible = chatExpanded,
                 enter = slideInVertically { it } + fadeIn(),
                 exit = slideOutVertically { it } + fadeOut(),
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(bottom = windowInsets.asPaddingValues().calculateBottomPadding() + 8.dp),
+                    .padding(
+                        bottom = if (isImeVisible) imeBottom
+                        else windowInsets.asPaddingValues().calculateBottomPadding() + 8.dp
+                    ),
             ) {
                 ChatBox(
                     viewModel = ltChatViewModel,
