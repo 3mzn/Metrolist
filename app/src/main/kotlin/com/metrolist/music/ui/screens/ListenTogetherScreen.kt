@@ -611,7 +611,9 @@ fun ListenTogetherScreen(
                 visible = chatExpanded,
                 enter = slideInVertically { it } + fadeIn(),
                 exit = slideOutVertically { it } + fadeOut(),
-                modifier = Modifier.align(Alignment.BottomCenter),
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = windowInsets.asPaddingValues().calculateBottomPadding() + 8.dp),
             ) {
                 ChatBox(
                     viewModel = ltChatViewModel,
