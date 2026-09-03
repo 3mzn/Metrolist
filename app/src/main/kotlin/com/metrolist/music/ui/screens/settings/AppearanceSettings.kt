@@ -6,9 +6,13 @@
 package com.metrolist.music.ui.screens.settings
 
 import android.app.Activity
+import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -53,6 +57,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.edit
+import androidx.core.content.ContextCompat
 import androidx.navigation.NavController
 import com.metrolist.music.LocalPlayerAwareWindowInsets
 import com.metrolist.music.R
@@ -82,6 +87,9 @@ import com.metrolist.music.constants.LyricsTextPositionKey
 import com.metrolist.music.constants.LyricsTextSizeKey
 import com.metrolist.music.constants.MiniPlayerBackgroundStyle
 import com.metrolist.music.constants.MiniPlayerBackgroundStyleKey
+import com.metrolist.music.constants.CoverPulseIntensity
+import com.metrolist.music.constants.PlayerCoverPulseIntensityKey
+import com.metrolist.music.constants.PlayerCoverPulseKey
 import com.metrolist.music.constants.PlayerBackgroundStyle
 import com.metrolist.music.constants.PlayerBackgroundStyleKey
 import com.metrolist.music.constants.PlayerButtonsStyle
@@ -200,6 +208,34 @@ fun AppearanceSettings(
             PlayerBackgroundStyleKey,
             defaultValue = PlayerBackgroundStyle.DEFAULT,
         )
+    val (coverPulse, onCoverPulseChange) =
+        rememberPreference(
+            PlayerCoverPulseKey,
+            defaultValue = true,
+        )
+    val (pulseIntensity, onPulseIntensityChange) =
+        rememberEnumPreference(
+            PlayerCoverPulseIntensityKey,
+            defaultValue = CoverPulseIntensity.MEDIUM,
+        )
+    var showPulseIntensityDialog by rememberSaveable { mutableStateOf(false) }
+
+    // SPEC_COVER_PULSE: runtime RECORD_AUDIO request fired when the pulse
+    // toggle is flipped ON. Denied = silent static (Thumbnail pre-checks the
+    // grant before driving the Visualizer; re-flipping the toggle re-asks).
+    val pulsePermissionLauncher =
+        rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+            // No-op: grant state is re-read wherever it is needed.
+        }
+    val onCoverPulseToggle: (Boolean) -> Unit = { enabled ->
+        onCoverPulseChange(enabled)
+        if (enabled &&
+            ContextCompat.checkSelfPermission(iconContext, Manifest.permission.RECORD_AUDIO) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            pulsePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
 
     val (defaultOpenTab, onDefaultOpenTabChange) =
         rememberEnumPreference(
@@ -596,6 +632,69 @@ fun AppearanceSettings(
                 }
             },
         )
+    }
+
+    // SPEC_COVER_PULSE Phase 1: Low/Med/High intensity via slider dialog
+    // (mirrors the swipe-sensitivity slider dialog pattern).
+    if (showPulseIntensityDialog) {
+        var tempIntensity by remember { mutableFloatStateOf(pulseIntensity.ordinal.toFloat()) }
+
+        DefaultDialog(
+            onDismiss = {
+                tempIntensity = pulseIntensity.ordinal.toFloat()
+                showPulseIntensityDialog = false
+            },
+            buttons = {
+                Spacer(modifier = Modifier.weight(1f))
+
+                TextButton(
+                    onClick = {
+                        tempIntensity = pulseIntensity.ordinal.toFloat()
+                        showPulseIntensityDialog = false
+                    },
+                ) {
+                    Text(stringResource(android.R.string.cancel))
+                }
+                TextButton(
+                    onClick = {
+                        onPulseIntensityChange(CoverPulseIntensity.entries[tempIntensity.roundToInt()])
+                        showPulseIntensityDialog = false
+                    },
+                ) {
+                    Text(stringResource(android.R.string.ok))
+                }
+            },
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier.padding(16.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.player_cover_pulse_intensity),
+                    style = MaterialTheme.typography.headlineSmall,
+                    modifier = Modifier.padding(bottom = 16.dp),
+                )
+
+                Text(
+                    text =
+                        when (CoverPulseIntensity.entries[tempIntensity.roundToInt()]) {
+                            CoverPulseIntensity.LOW -> stringResource(R.string.player_cover_pulse_low)
+                            CoverPulseIntensity.MEDIUM -> stringResource(R.string.player_cover_pulse_medium)
+                            CoverPulseIntensity.HIGH -> stringResource(R.string.player_cover_pulse_high)
+                        },
+                    style = MaterialTheme.typography.bodyLarge,
+                    modifier = Modifier.padding(bottom = 16.dp),
+                )
+
+                Slider(
+                    value = tempIntensity,
+                    onValueChange = { tempIntensity = it },
+                    valueRange = 0f..2f,
+                    steps = 1,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
     }
 
     var showDefaultOpenTabDialog by rememberSaveable {
@@ -1180,6 +1279,42 @@ fun AppearanceSettings(
                             )
                         },
                         onClick = { onUseNewPlayerDesignChange(!useNewPlayerDesign) },
+                    ),
+                    Material3SettingsItem(
+                        icon = painterResource(R.drawable.music_note),
+                        title = { Text(stringResource(R.string.player_cover_pulse)) },
+                        description = { Text(stringResource(R.string.player_cover_pulse_desc)) },
+                        trailingContent = {
+                            Switch(
+                                checked = coverPulse,
+                                onCheckedChange = onCoverPulseToggle,
+                                thumbContent = {
+                                    Icon(
+                                        painter =
+                                            painterResource(
+                                                id = if (coverPulse) R.drawable.check else R.drawable.close,
+                                            ),
+                                        contentDescription = null,
+                                        modifier = Modifier.size(SwitchDefaults.IconSize),
+                                    )
+                                },
+                            )
+                        },
+                        onClick = { onCoverPulseToggle(!coverPulse) },
+                    ),
+                    Material3SettingsItem(
+                        icon = painterResource(R.drawable.sliders),
+                        title = { Text(stringResource(R.string.player_cover_pulse_intensity)) },
+                        description = {
+                            Text(
+                                when (pulseIntensity) {
+                                    CoverPulseIntensity.LOW -> stringResource(R.string.player_cover_pulse_low)
+                                    CoverPulseIntensity.MEDIUM -> stringResource(R.string.player_cover_pulse_medium)
+                                    CoverPulseIntensity.HIGH -> stringResource(R.string.player_cover_pulse_high)
+                                },
+                            )
+                        },
+                        onClick = { showPulseIntensityDialog = true },
                     ),
                     Material3SettingsItem(
                         icon = painterResource(R.drawable.gradient),

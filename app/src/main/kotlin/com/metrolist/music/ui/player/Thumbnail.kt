@@ -5,6 +5,8 @@
 
 package com.metrolist.music.ui.player
 
+import android.Manifest
+import android.content.pm.PackageManager
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -34,6 +36,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
@@ -46,6 +49,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -56,6 +60,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -64,6 +69,9 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
@@ -73,10 +81,14 @@ import coil3.request.ImageRequest
 import com.metrolist.music.LocalListenTogetherManager
 import com.metrolist.music.LocalPlayerConnection
 import com.metrolist.music.R
+import com.metrolist.music.constants.CoverPulseIntensity
 import com.metrolist.music.constants.CropAlbumArtKey
 import com.metrolist.music.constants.HidePlayerThumbnailKey
 import com.metrolist.music.constants.PlayerBackgroundStyle
 import com.metrolist.music.constants.PlayerBackgroundStyleKey
+import com.metrolist.music.constants.PlayerCoverPulseIntensityKey
+import com.metrolist.music.constants.PlayerCoverPulseKey
+import com.metrolist.music.constants.UseNewPlayerDesignKey
 import com.metrolist.music.constants.PlayerHorizontalPadding
 import com.metrolist.music.constants.SeekExtraSeconds
 import com.metrolist.music.constants.SwipeThumbnailKey
@@ -87,6 +99,7 @@ import com.metrolist.music.ui.component.CastButton
 import com.metrolist.music.utils.rememberEnumPreference
 import com.metrolist.music.utils.rememberPreference
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 
 /**
  * Pre-calculated thumbnail dimensions to avoid repeated calculations during recomposition.
@@ -514,6 +527,110 @@ private fun ThumbnailItem(
     val seekRestricted = isListenTogetherGuest ||
         activePlaylistId == PlaylistEntity.TO_LISTEN_PLAYLIST_ID
 
+    // SPEC_COVER_PULSE Phase 3: bass-pulse for the current item's cover art only.
+    // smoothedBass is read ONLY inside graphicsLayer below (draw invalidation,
+    // no per-FFT recomposition). Pausing/muting releases the Visualizer, which
+    // freezes smoothedBass at its last value -> the cover holds its scale.
+    val useNewPlayerDesign by rememberPreference(UseNewPlayerDesignKey, true)
+    val coverPulse by rememberPreference(PlayerCoverPulseKey, true)
+    val pulseIntensity by rememberEnumPreference(
+        PlayerCoverPulseIntensityKey,
+        CoverPulseIntensity.MEDIUM,
+    )
+    val isPlaying by playerConnection.isPlaying.collectAsState()
+    val isMuted by playerConnection.isMuted.collectAsStateWithLifecycle()
+    val castHandler =
+        remember(playerConnection) {
+            try {
+                playerConnection.service.castConnectionHandler
+            } catch (_: Exception) {
+                null
+            }
+        }
+    val isCasting by castHandler?.isCasting?.collectAsStateWithLifecycle()
+        ?: remember { mutableStateOf(false) }
+    val isCurrentItem = item.mediaId == currentMediaId
+    var foregroundTick by remember { mutableIntStateOf(0) }
+    // Re-evaluated on each recomposition; foregroundTick forces a re-check on
+    // return from background/settings (covers a late RECORD_AUDIO grant).
+    val hasAudioPermission =
+        ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+    val pulseGated =
+        coverPulse && useNewPlayerDesign && isCurrentItem && !hidePlayerThumbnail &&
+            !isCasting && hasAudioPermission
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, item.mediaId) {
+        val observer =
+            LifecycleEventObserver { _, event ->
+                when (event) {
+                    Lifecycle.Event.ON_START -> foregroundTick++
+                    Lifecycle.Event.ON_STOP -> CoverBassPulse.release()
+                    else -> Unit
+                }
+            }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            CoverBassPulse.releaseIf(item.mediaId)
+        }
+    }
+
+    // Simplest song-change semantics: drop the envelope on every new track.
+    LaunchedEffect(currentMediaId) {
+        CoverBassPulse.reset()
+    }
+
+    LaunchedEffect(
+        isPlaying,
+        isMuted,
+        isCasting,
+        coverPulse,
+        useNewPlayerDesign,
+        hidePlayerThumbnail,
+        currentMediaId,
+        foregroundTick,
+        hasAudioPermission,
+    ) {
+        fun currentSession(): Int =
+            try {
+                playerConnection.player.audioSessionId
+            } catch (_: Exception) {
+                C.AUDIO_SESSION_ID_UNSET
+            }
+
+        val wantPulse = pulseGated && isPlaying && !isMuted
+        if (!wantPulse) {
+            CoverBassPulse.releaseIf(item.mediaId)
+            return@LaunchedEffect
+        }
+        var sessionId = currentSession()
+        if (sessionId == C.AUDIO_SESSION_ID_UNSET || sessionId <= 0) {
+            delay(500)
+            sessionId = currentSession()
+        }
+        if (sessionId == C.AUDIO_SESSION_ID_UNSET || sessionId <= 0) {
+            CoverBassPulse.releaseIf(item.mediaId)
+            return@LaunchedEffect
+        }
+        CoverBassPulse.init(sessionId, item.mediaId)
+        try {
+            // 60fps display driver: this composition owns the frame clock, so
+            // the release glide is re-sampled every frame until the effect
+            // restarts (key change) or leaves composition — finally releases.
+            var lastNs = 0L
+            while (isActive) {
+                withFrameNanos { nowNs ->
+                    if (lastNs != 0L) CoverBassPulse.advanceFrame(lastNs, nowNs)
+                    lastNs = nowNs
+                }
+            }
+        } finally {
+            CoverBassPulse.releaseIf(item.mediaId)
+        }
+    }
+
     Box(
         modifier = modifier
             .then(
@@ -567,6 +684,13 @@ private fun ThumbnailItem(
             modifier = Modifier
                 .size(dimensions.thumbnailSize)
                 .clip(RoundedCornerShape(dimensions.cornerRadius))
+                .graphicsLayer {
+                    // Overflow allowed: scale applies outside the clip, so the
+                    // cover grows past its frame without re-laying out siblings.
+                    val s = if (pulseGated) CoverBassPulse.scaleFor(pulseIntensity) else 1f
+                    scaleX = s
+                    scaleY = s
+                }
         ) {
             if (hidePlayerThumbnail) {
                 HiddenThumbnailPlaceholder(textBackgroundColor = textBackgroundColor)

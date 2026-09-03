@@ -59,6 +59,14 @@ val SquigglySliderKey = booleanPreferencesKey("squigglySlider")
 val SwipeToSongKey = booleanPreferencesKey("SwipeToSong")
 val SwipeToRemoveSongKey = booleanPreferencesKey("SwipeToRemoveSong")
 val UseNewPlayerDesignKey = booleanPreferencesKey("useNewPlayerDesign")
+val PlayerCoverPulseKey = booleanPreferencesKey("playerCoverPulse")
+val PlayerCoverPulseIntensityKey = stringPreferencesKey("playerCoverPulseIntensity")
+
+enum class CoverPulseIntensity {
+    LOW,
+    MEDIUM,
+    HIGH,
+}
 val UseNewMiniPlayerDesignKey = booleanPreferencesKey("useNewMiniPlayerDesign")
 val HidePlayerThumbnailKey = booleanPreferencesKey("hidePlayerThumbnail")
 val CropAlbumArtKey = booleanPreferencesKey("cropAlbumArt")
