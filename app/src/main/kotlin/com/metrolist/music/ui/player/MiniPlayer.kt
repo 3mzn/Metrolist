@@ -60,7 +60,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -92,6 +94,9 @@ import com.metrolist.music.constants.MiniPlayerHeight
 import com.metrolist.music.constants.PureBlackMiniPlayerKey
 import com.metrolist.music.constants.SwipeSensitivityKey
 import com.metrolist.music.constants.SwipeThumbnailKey
+import com.metrolist.music.constants.BorderGlowIntensity
+import com.metrolist.music.constants.MiniPlayerBorderGlowIntensityKey
+import com.metrolist.music.constants.MiniPlayerBorderGlowKey
 import com.metrolist.music.constants.ThumbnailCornerRadius
 import com.metrolist.music.constants.UseNewMiniPlayerDesignKey
 import com.metrolist.music.db.entities.ArtistEntity
@@ -104,6 +109,7 @@ import com.metrolist.music.ui.utils.resize
 import com.metrolist.music.utils.joinToArtistString
 import com.metrolist.music.utils.rememberEnumPreference
 import com.metrolist.music.utils.rememberPreference
+import timber.log.Timber
 import kotlinx.coroutines.launch
 import kotlin.math.absoluteValue
 import kotlin.math.roundToInt
@@ -234,6 +240,28 @@ private fun NewMiniPlayer(
             (windowInfo.containerSize.width / density.density) >= 600f && configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
         }
 
+    // SPEC_MINI_BORDER B4: bass-reactive pill border. Custom draw (not
+    // border()) so bass is read in draw scope — no per-frame recomposition.
+    val borderGlow by rememberPreference(MiniPlayerBorderGlowKey, true)
+    val borderGlowIntensity by rememberEnumPreference(
+        MiniPlayerBorderGlowIntensityKey,
+        BorderGlowIntensity.MEDIUM,
+    )
+    val miniIsMuted by playerConnection.isMuted.collectAsStateWithLifecycle()
+    // TEMP-DIAG: one-shot snapshot, remove after diagnosis.
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.delay(4000)
+        Timber.tag("MiniBorderGlow").d(
+            "diag glow=%s muted=%s casting=%s kick=%.3f sus=%.3f onset=%.3f",
+            borderGlow,
+            miniIsMuted,
+            isCasting,
+            CoverBassPulse.kickEnv,
+            CoverBassPulse.sustainLevel,
+            CoverBassPulse.onsetEnv,
+        )
+    }
+
     // Swipe animation state
     val offsetXAnimatable = remember { Animatable(0f) }
     var dragStartTime by remember { mutableLongStateOf(0L) }
@@ -249,42 +277,42 @@ private fun NewMiniPlayer(
             (600 / (1f + kotlin.math.exp(-(-11.44748 * swipeSensitivity + 9.04945)))).roundToInt()
         }
 
-    LaunchedEffect(mediaMetadata?.id, miniPlayerBackground) {
+    // SPEC_MINI_BORDER B3: palette for every song in the new mini-player
+    // (not just GRADIENT mode) — feeds the gradient background AND the
+    // border glow. Cached per song id via the effect key.
+    LaunchedEffect(mediaMetadata?.id) {
         gradientColors = emptyList()
-        if (miniPlayerBackground == MiniPlayerBackgroundStyle.GRADIENT) {
-            val url = mediaMetadata?.thumbnailUrl
-            if (url != null) {
-                withContext(Dispatchers.IO) {
-                    val request = ImageRequest.Builder(context)
-                        .data(url)
-                        .size(100, 100)
-                        .allowHardware(false)
-                        .build()
-                    val result = runCatching { context.imageLoader.execute(request) }.getOrNull()
-                    val bitmap = result?.image?.toBitmap()
-                    if (bitmap != null) {
-                        val palette = withContext(Dispatchers.Default) {
-                            Palette.from(bitmap)
-                                .maximumColorCount(8)
-                                .resizeBitmapArea(100 * 100)
-                                .generate()
-                        }
-                        val extracted = PlayerColorExtractor.extractGradientColors(
-                            palette = palette,
-                            fallbackColor = 0xFF000000.toInt(),
-                        )
-                        withContext(Dispatchers.Main) {
-                            gradientColors = extracted
-                        }
-                    } else {
-                        withContext(Dispatchers.Main) {
-                            gradientColors = emptyList()
-                        }
+        val url = mediaMetadata?.thumbnailUrl
+        if (url != null) {
+            withContext(Dispatchers.IO) {
+                val request = ImageRequest.Builder(context)
+                    .data(url)
+                    .size(100, 100)
+                    .allowHardware(false)
+                    .build()
+                val result = runCatching { context.imageLoader.execute(request) }.getOrNull()
+                val bitmap = result?.image?.toBitmap()
+                if (bitmap != null) {
+                    val palette = withContext(Dispatchers.Default) {
+                        Palette.from(bitmap)
+                            .maximumColorCount(8)
+                            .resizeBitmapArea(100 * 100)
+                            .generate()
+                    }
+                    val extracted = PlayerColorExtractor.extractGradientColors(
+                        palette = palette,
+                        fallbackColor = 0xFF000000.toInt(),
+                    )
+                    withContext(Dispatchers.Main) {
+                        gradientColors = extracted
+                    }
+                    Timber.tag("MiniBorderGlow").d("Fetched palette for %s", mediaMetadata?.id)
+                } else {
+                    withContext(Dispatchers.Main) {
+                        gradientColors = emptyList()
                     }
                 }
             }
-        } else {
-            gradientColors = emptyList()
         }
     }
 
@@ -384,7 +412,51 @@ private fun NewMiniPlayer(
                     .offset { IntOffset(offsetXAnimatable.value.roundToInt(), 0) }
                     .clip(RoundedCornerShape(32.dp))
                     .background(color = backgroundColor)
-                    .border(1.dp, outlineColor.copy(alpha = 0.3f), RoundedCornerShape(32.dp))
+                    .drawBehind {
+                        // Static look when toggled off: exactly the old border
+                        // (1.dp stroke centered half-inside the edge).
+                        if (!borderGlow) {
+                            drawRoundRect(
+                                color = outlineColor.copy(alpha = 0.3f),
+                                topLeft = Offset(0.5.dp.toPx(), 0.5.dp.toPx()),
+                                size = Size(size.width - 1.dp.toPx(), size.height - 1.dp.toPx()),
+                                cornerRadius = CornerRadius(32.dp.toPx() - 0.5.dp.toPx()),
+                                style = Stroke(width = 1.dp.toPx()),
+                            )
+                        } else {
+                            val peak =
+                                when (borderGlowIntensity) {
+                                    BorderGlowIntensity.LOW -> 0.7f
+                                    BorderGlowIntensity.MEDIUM -> 0.85f
+                                    BorderGlowIntensity.HIGH -> 1f
+                                }
+                            // Same signal as the cover pulse (smoothedBass) — if
+                            // the cover moves, the ring must move. White ring
+                            // for all songs; 2.dp idle swelling to 4.dp.
+                            // Mute/cast: faint idle.
+                            val dimmed = miniIsMuted || isCasting
+                            val bass = CoverBassPulse.smoothedBass.coerceIn(0f, 1f)
+                            val a =
+                                if (dimmed) {
+                                    0.2f
+                                } else {
+                                    (0.2f + bass * (peak - 0.2f)).coerceIn(0.2f, peak)
+                                }
+                            val w =
+                                if (dimmed) {
+                                    2.dp.toPx()
+                                } else {
+                                    2.dp.toPx() + bass * 2.dp.toPx()
+                                }
+                            drawRoundRect(
+                                color = Color.White.copy(alpha = a),
+                                topLeft = Offset(w / 2f, w / 2f),
+                                size = Size(size.width - w, size.height - w),
+                                cornerRadius = CornerRadius(32.dp.toPx() - w / 2f),
+                                style = Stroke(width = w),
+                            )
+                        }
+                    }
                     .clickable(
                         interactionSource = interactionSource,
                         indication = LocalIndication.current,

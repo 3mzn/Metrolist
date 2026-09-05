@@ -37,6 +37,20 @@ object CoverBassPulse {
     var smoothedBass by mutableFloatStateOf(0f)
         private set
 
+    /**
+     * SPEC_MINI_BORDER B1: split signals for the mini-player border.
+     * [kickEnv] is the kick-only envelope (attack snaps in captures, release
+     * glides in [advanceFrame]); [sustainLevel] is the slow floor (sustain
+     * proxy); [onsetEnv] spikes to 1 on each kick onset crossing and decays
+     * over ~200ms for the width pop. All safe for draw-scope reads.
+     */
+    var kickEnv by mutableFloatStateOf(0f)
+        private set
+    var sustainLevel by mutableFloatStateOf(0f)
+        private set
+    var onsetEnv by mutableFloatStateOf(0f)
+        private set
+
     private var visualizer: Visualizer? = null
     private var lastCaptureMs: Long = 0L
 
@@ -48,8 +62,10 @@ object CoverBassPulse {
     // identical timing — sampling a curve more finely adds no lag).
     private var follow = 0f
     private var baseline = 0f
-    private var kickEnv = 0f
     private var kickTarget = 0f
+    private var onsetArmed = true
+    private var wasStalled = false
+    private var frameCount = 0L
 
     /**
      * Owner token (the initiating item's media id). The Visualizer is a
@@ -58,6 +74,7 @@ object CoverBassPulse {
      * capture. [release] force-releases regardless of owner.
      */
     private var owner: String? = null
+    private var lastInitSession: Int? = null
 
     fun peakFor(intensity: CoverPulseIntensity): Float =
         when (intensity) {
@@ -71,62 +88,84 @@ object CoverBassPulse {
         1f + smoothedBass * (peakFor(intensity) - 1f)
 
     fun reset() {
+        Timber.tag(TAG).d("reset (song change)")
+        fftCallbackCount = 0L
         smoothedBass = 0f
         follow = 0f
         baseline = 0f
+        sustainLevel = 0f
         kickEnv = 0f
+        onsetEnv = 0f
+        onsetArmed = true
+        wasStalled = false
         kickTarget = 0f
         lastCaptureMs = 0L
     }
 
+    /**
+     * Idempotent start: returns without touching anything if a live capture
+     * already exists for this session+owner (effect restarts from buffering
+     * flaps must not destroy it). New session/owner (or dead instance)
+     * recreates. Never resets the envelope — song changes reset separately
+     * so flap churn preserves motion instead of zeroing it.
+     */
     fun init(audioSessionId: Int, owner: String) {
         if (audioSessionId <= 0) return
+        val sameSession = visualizer != null &&
+            audioSessionId == lastInitSession && owner == this.owner
+        Timber.tag(TAG).d(
+            "init session=%d owner=%s existing=%s sameSession=%s",
+            audioSessionId, owner.take(8), visualizer != null, sameSession,
+        )
+        if (sameSession) return
+        lastInitSession = audioSessionId
         try {
             release()
-            reset()
             this.owner = owner
-            visualizer =
-                Visualizer(audioSessionId).apply {
-                    enabled = false
-                    captureSize = 1024
-                    setDataCaptureListener(
-                        object : Visualizer.OnDataCaptureListener {
-                            override fun onWaveFormDataCapture(
-                                visualizer: Visualizer?,
-                                waveform: ByteArray,
-                                samplingRate: Int,
-                            ) = Unit
+            val v = Visualizer(audioSessionId)
+            v.captureSize = 1024
+            v.setDataCaptureListener(
+                object : Visualizer.OnDataCaptureListener {
+                    override fun onWaveFormDataCapture(
+                        visualizer: Visualizer?,
+                        waveform: ByteArray,
+                        samplingRate: Int,
+                    ) = Unit
 
-                            override fun onFftDataCapture(
-                                visualizer: Visualizer?,
-                                fft: ByteArray,
-                                samplingRate: Int,
-                            ) {
-                                onFft(fft)
-                            }
-                        },
-                        Visualizer.getMaxCaptureRate(),
-                        false,
-                        true,
-                    )
-                    enabled = true
-                }
-            Timber.tag(TAG).d("Initialized with session %d", audioSessionId)
+                    override fun onFftDataCapture(
+                        visualizer: Visualizer?,
+                        fft: ByteArray,
+                        samplingRate: Int,
+                    ) {
+                        onFft(fft)
+                    }
+                },
+                Visualizer.getMaxCaptureRate(),
+                false,
+                true,
+            )
+            v.enabled = true
+            visualizer = v
+            Timber.tag(TAG).d(
+                "Visualizer LIVE on session %d, captureRate=%d",
+                audioSessionId, Visualizer.getMaxCaptureRate(),
+            )
         } catch (e: Exception) {
-            Timber.tag(TAG).w(e, "Visualizer init failed, cover stays static")
+            Timber.tag(TAG).w(e, "Visualizer init FAILED for session %d", audioSessionId)
             release()
         }
     }
 
     fun release() {
+        val hadVis = visualizer != null
         try {
             visualizer?.release()
         } catch (_: Exception) {
-            // Best effort; a half-initialized Visualizer must not crash playback.
         } finally {
             visualizer = null
             owner = null
         }
+        if (hadVis) Timber.tag(TAG).d("Released visualizer")
     }
 
     /**
@@ -134,26 +173,74 @@ object CoverBassPulse {
      * the frame clock — a standalone scope has none and crashes). Captures
      * arrive at ~20Hz and only move [kickTarget]; this re-samples the 250ms
      * release glide every frame for smooth motion with identical timing.
+     *
+     * Watchdog: if captures stall (dead session, DSP hiccup) the last target
+     * would pin the envelope at max forever — after 1s of silence the target
+     * is forced to 0 so visuals glide home instead. Recovers automatically
+     * when captures resume.
      */
     fun advanceFrame(prevNs: Long, nowNs: Long) {
         val dtMs = (nowNs - prevNs) / 1_000_000f
         if (dtMs !in 0f..250f) return
+        if (frameCount == 0L) {
+            Timber.tag(TAG).d("FIRST advanceFrame call")
+        }
+        val stalled = SystemClock.elapsedRealtime() - lastCaptureMs > 1000L
+        if (stalled) {
+            if (!wasStalled) {
+                wasStalled = true
+                Timber.tag(TAG).d("capture stall detected, forcing target 0")
+            }
+            kickTarget = 0f
+        } else {
+            wasStalled = false
+        }
         kickEnv = maxOf(kickTarget, kickEnv * exp(-dtMs / 250f))
+        onsetEnv *= exp(-dtMs / 200f)
         smoothedBass = (kickEnv * 0.9f + baseline * 0.1f).coerceIn(0f, 1f)
+        frameCount++
+        if (frameCount % 300L == 0L) {
+            Timber.tag(TAG).d(
+                "frame sm=%.3f kick=%.3f tgt=%.3f base=%.3f stalled=%s",
+                smoothedBass,
+                kickEnv,
+                kickTarget,
+                baseline,
+                stalled,
+            )
+        }
     }
 
     /** Releases only if [requester] owns the live capture; else no-op. */
     fun releaseIf(requester: String) {
-        if (owner == requester) release()
+        if (owner == requester) {
+            Timber.tag(TAG).d("releaseIf: releasing (owner=%s)", requester.take(8))
+            release()
+        }
     }
 
+    /** Milliseconds since the last FFT capture (huge if none yet). */
+    fun feedAgeMs(): Long = SystemClock.elapsedRealtime() - lastCaptureMs
+
+    private var fftCallbackCount = 0L
+
     private fun onFft(fft: ByteArray) {
+        fftCallbackCount++
+        if (fftCallbackCount == 1L) {
+            Timber.tag(TAG).d("FIRST FFT callback! size=%d", fft.size)
+        }
+        if (fftCallbackCount % 20L == 0L) {
+            Timber.tag(TAG).d("FFT callbacks so far: %d", fftCallbackCount)
+        }
         val raw = kickBand(fft)
         val now = SystemClock.elapsedRealtime()
         if (lastCaptureMs == 0L) {
             follow = raw
             baseline = raw
+            sustainLevel = raw
             kickEnv = 0f
+            onsetEnv = 0f
+            onsetArmed = true
             smoothedBass = 0f
         } else {
             val dt = (now - lastCaptureMs).coerceAtLeast(0L).toFloat()
@@ -174,11 +261,22 @@ object CoverBassPulse {
                 } else {
                     baseline + (follow - baseline) * (1f - exp(-dt / 3000f))
                 }
+            sustainLevel = baseline
             // Absolute gate: spikes smaller than this are bin noise, vocal
             // wobble or bass-note edges — not kicks. Kills the trembling in
             // quiet passages where the relative division would amplify them.
             val spike = maxOf(0f, follow - baseline - 0.065f)
             kickTarget = (spike / (0.39f + baseline * 0.5f)).coerceIn(0f, 1f)
+            // Onset edge-trigger for the border width pop: fires once per
+            // crossing above 0.55, re-arms below 0.2.
+            if (kickTarget > 0.55f) {
+                if (onsetArmed) {
+                    onsetEnv = 1f
+                    onsetArmed = false
+                }
+            } else if (kickTarget < 0.2f) {
+                onsetArmed = true
+            }
             // Attack snaps here (identical timing to before); the frame loop
             // owns the release glide, so single noisy frames can't chatter.
             if (kickTarget > kickEnv) kickEnv = kickTarget

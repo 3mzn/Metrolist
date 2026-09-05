@@ -68,6 +68,14 @@ enum class CoverPulseIntensity {
     HIGH,
 }
 val UseNewMiniPlayerDesignKey = booleanPreferencesKey("useNewMiniPlayerDesign")
+val MiniPlayerBorderGlowKey = booleanPreferencesKey("miniPlayerBorderGlow")
+val MiniPlayerBorderGlowIntensityKey = stringPreferencesKey("miniPlayerBorderGlowIntensity")
+
+enum class BorderGlowIntensity {
+    LOW,
+    MEDIUM,
+    HIGH,
+}
 val HidePlayerThumbnailKey = booleanPreferencesKey("hidePlayerThumbnail")
 val CropAlbumArtKey = booleanPreferencesKey("cropAlbumArt")
 val SeekExtraSeconds = booleanPreferencesKey("seekExtraSeconds")

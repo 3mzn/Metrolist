@@ -73,7 +73,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import android.Manifest
+import android.content.pm.PackageManager
 import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.withFrameNanos
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -143,10 +149,12 @@ import com.metrolist.music.constants.DarkModeKey
 import com.metrolist.music.constants.HidePlayerThumbnailKey
 import com.metrolist.music.constants.HideStatusBarOnFullscreenKey
 import com.metrolist.music.constants.KeepScreenOn
+import com.metrolist.music.constants.MiniPlayerBorderGlowKey
 import com.metrolist.music.constants.PlayerBackgroundStyle
 import com.metrolist.music.constants.PlayerBackgroundStyleKey
 import com.metrolist.music.constants.PlayerButtonsStyle
 import com.metrolist.music.constants.PlayerButtonsStyleKey
+import com.metrolist.music.constants.PlayerCoverPulseKey
 import com.metrolist.music.constants.PlayerHorizontalPadding
 import com.metrolist.music.constants.QueuePeekHeight
 import com.metrolist.music.constants.SleepTimerDefaultKey
@@ -364,6 +372,85 @@ fun BottomSheetPlayer(
             } catch (e: Exception) {
                 // Ignore if focus request fails
             }
+        }
+    }
+
+    // ── CoverBassPulse: Visualizer lifecycle + 60 fps frame loop ──────
+    // Lives in BottomSheetPlayer (always composed) because Thumbnail and
+    // MiniPlayer are mutually exclusive via BottomSheet — only one is
+    // composed at a time, so neither can own the Visualizer alone.
+    val coverPulse by rememberPreference(PlayerCoverPulseKey, true)
+    val borderGlow by rememberPreference(MiniPlayerBorderGlowKey, true)
+    val hasAudioPermission =
+        ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+    var pulseForegroundTick by remember { mutableIntStateOf(0) }
+    val pulseLifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(pulseLifecycleOwner) {
+        val observer =
+            LifecycleEventObserver { _, event ->
+                when (event) {
+                    Lifecycle.Event.ON_START -> pulseForegroundTick++
+                    Lifecycle.Event.ON_STOP -> CoverBassPulse.release()
+                    else -> Unit
+                }
+            }
+        pulseLifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { pulseLifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    LaunchedEffect(mediaMetadata?.id) {
+        CoverBassPulse.reset()
+    }
+
+    LaunchedEffect(
+        isPlaying,
+        isMuted,
+        isCasting,
+        coverPulse,
+        borderGlow,
+        useNewPlayerDesign,
+        hidePlayerThumbnail,
+        mediaMetadata?.id,
+        pulseForegroundTick,
+        hasAudioPermission,
+    ) {
+        fun currentSession(): Int =
+            try {
+                playerConnection.player.audioSessionId
+            } catch (_: Exception) {
+                C.AUDIO_SESSION_ID_UNSET
+            }
+
+        val pulseActive = (coverPulse && useNewPlayerDesign) || borderGlow
+        val wantPulse = pulseActive && isPlaying && !isMuted && !isCasting &&
+            hasAudioPermission && !hidePlayerThumbnail
+        if (!wantPulse) {
+            CoverBassPulse.release()
+            return@LaunchedEffect
+        }
+        var sessionId = currentSession()
+        var waits = 0
+        while ((sessionId == C.AUDIO_SESSION_ID_UNSET || sessionId <= 0) && waits < 20 && isActive) {
+            delay(500)
+            sessionId = currentSession()
+            waits++
+        }
+        if (sessionId == C.AUDIO_SESSION_ID_UNSET || sessionId <= 0) {
+            CoverBassPulse.release()
+            return@LaunchedEffect
+        }
+        CoverBassPulse.init(sessionId, mediaMetadata?.id ?: "player")
+        try {
+            var lastNs = 0L
+            while (isActive) {
+                withFrameNanos { nowNs ->
+                    if (lastNs != 0L) CoverBassPulse.advanceFrame(lastNs, nowNs)
+                    lastNs = nowNs
+                }
+            }
+        } finally {
+            CoverBassPulse.release()
         }
     }
 

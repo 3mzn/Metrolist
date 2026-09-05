@@ -87,6 +87,9 @@ import com.metrolist.music.constants.LyricsTextPositionKey
 import com.metrolist.music.constants.LyricsTextSizeKey
 import com.metrolist.music.constants.MiniPlayerBackgroundStyle
 import com.metrolist.music.constants.MiniPlayerBackgroundStyleKey
+import com.metrolist.music.constants.BorderGlowIntensity
+import com.metrolist.music.constants.MiniPlayerBorderGlowIntensityKey
+import com.metrolist.music.constants.MiniPlayerBorderGlowKey
 import com.metrolist.music.constants.CoverPulseIntensity
 import com.metrolist.music.constants.PlayerCoverPulseIntensityKey
 import com.metrolist.music.constants.PlayerCoverPulseKey
@@ -193,6 +196,17 @@ fun AppearanceSettings(
             UseNewMiniPlayerDesignKey,
             defaultValue = true,
         )
+    val (borderGlow, onBorderGlowChange) =
+        rememberPreference(
+            MiniPlayerBorderGlowKey,
+            defaultValue = true,
+        )
+    val (borderGlowIntensity, onBorderGlowIntensityChange) =
+        rememberEnumPreference(
+            MiniPlayerBorderGlowIntensityKey,
+            defaultValue = BorderGlowIntensity.MEDIUM,
+        )
+    var showBorderGlowIntensityDialog by rememberSaveable { mutableStateOf(false) }
     val (hidePlayerThumbnail, onHidePlayerThumbnailChange) =
         rememberPreference(
             HidePlayerThumbnailKey,
@@ -632,6 +646,68 @@ fun AppearanceSettings(
                 }
             },
         )
+    }
+
+    // SPEC_MINI_BORDER B2: border glow intensity slider dialog.
+    if (showBorderGlowIntensityDialog) {
+        var tempBorderGlow by remember { mutableFloatStateOf(borderGlowIntensity.ordinal.toFloat()) }
+
+        DefaultDialog(
+            onDismiss = {
+                tempBorderGlow = borderGlowIntensity.ordinal.toFloat()
+                showBorderGlowIntensityDialog = false
+            },
+            buttons = {
+                Spacer(modifier = Modifier.weight(1f))
+
+                TextButton(
+                    onClick = {
+                        tempBorderGlow = borderGlowIntensity.ordinal.toFloat()
+                        showBorderGlowIntensityDialog = false
+                    },
+                ) {
+                    Text(stringResource(android.R.string.cancel))
+                }
+                TextButton(
+                    onClick = {
+                        onBorderGlowIntensityChange(BorderGlowIntensity.entries[tempBorderGlow.roundToInt()])
+                        showBorderGlowIntensityDialog = false
+                    },
+                ) {
+                    Text(stringResource(android.R.string.ok))
+                }
+            },
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier.padding(16.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.mini_player_border_glow_intensity),
+                    style = MaterialTheme.typography.headlineSmall,
+                    modifier = Modifier.padding(bottom = 16.dp),
+                )
+
+                Text(
+                    text =
+                        when (BorderGlowIntensity.entries[tempBorderGlow.roundToInt()]) {
+                            BorderGlowIntensity.LOW -> stringResource(R.string.mini_player_border_glow_low)
+                            BorderGlowIntensity.MEDIUM -> stringResource(R.string.mini_player_border_glow_medium)
+                            BorderGlowIntensity.HIGH -> stringResource(R.string.mini_player_border_glow_high)
+                        },
+                    style = MaterialTheme.typography.bodyLarge,
+                    modifier = Modifier.padding(bottom = 16.dp),
+                )
+
+                Slider(
+                    value = tempBorderGlow,
+                    onValueChange = { tempBorderGlow = it },
+                    valueRange = 0f..2f,
+                    steps = 1,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
     }
 
     // SPEC_COVER_PULSE Phase 1: Low/Med/High intensity via slider dialog
@@ -1246,6 +1322,46 @@ fun AppearanceSettings(
                                 )
                             },
                             onClick = { if (useNewMiniPlayerDesign) showMiniPlayerBackgroundDialog = true },
+                        ),
+                    )
+                    add(
+                        Material3SettingsItem(
+                            icon = painterResource(R.drawable.music_note),
+                            title = { Text(stringResource(R.string.mini_player_border_glow)) },
+                            description = { Text(stringResource(R.string.mini_player_border_glow_desc)) },
+                            trailingContent = {
+                                Switch(
+                                    checked = borderGlow,
+                                    onCheckedChange = onBorderGlowChange,
+                                    thumbContent = {
+                                        Icon(
+                                            painter =
+                                                painterResource(
+                                                    id = if (borderGlow) R.drawable.check else R.drawable.close,
+                                                ),
+                                            contentDescription = null,
+                                            modifier = Modifier.size(SwitchDefaults.IconSize),
+                                        )
+                                    },
+                                )
+                            },
+                            onClick = { onBorderGlowChange(!borderGlow) },
+                        ),
+                    )
+                    add(
+                        Material3SettingsItem(
+                            icon = painterResource(R.drawable.sliders),
+                            title = { Text(stringResource(R.string.mini_player_border_glow_intensity)) },
+                            description = {
+                                Text(
+                                    when (borderGlowIntensity) {
+                                        BorderGlowIntensity.LOW -> stringResource(R.string.mini_player_border_glow_low)
+                                        BorderGlowIntensity.MEDIUM -> stringResource(R.string.mini_player_border_glow_medium)
+                                        BorderGlowIntensity.HIGH -> stringResource(R.string.mini_player_border_glow_high)
+                                    },
+                                )
+                            },
+                            onClick = { showBorderGlowIntensityDialog = true },
                         ),
                     )
                 },

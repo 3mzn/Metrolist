@@ -450,6 +450,12 @@
     <string name="advanced_desc">Adjust the song\'s tempo and pitch</string>
     <string name="equalizer_desc">Open the audio equalizer</string>
     <string name="mini_player">Mini-player</string>
+    <string name="mini_player_border_glow">Border glow</string>
+    <string name="mini_player_border_glow_desc">Pill border breathes with the bass</string>
+    <string name="mini_player_border_glow_intensity">Glow intensity</string>
+    <string name="mini_player_border_glow_low">Low</string>
+    <string name="mini_player_border_glow_medium">Medium</string>
+    <string name="mini_player_border_glow_high">High</string>
     <string name="mini_player_background_style">Mini-player background style</string>
     <string name="transparent">Transparent</string>
     <string name="mini_player_background_not_available">Unavailable when the new mini-player design is disabled</string>
