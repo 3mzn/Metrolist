@@ -65,7 +65,6 @@ object CoverBassPulse {
     private var kickTarget = 0f
     private var onsetArmed = true
     private var wasStalled = false
-    private var frameCount = 0L
 
     /**
      * Owner token (the initiating item's media id). The Visualizer is a
@@ -88,8 +87,6 @@ object CoverBassPulse {
         1f + smoothedBass * (peakFor(intensity) - 1f)
 
     fun reset() {
-        Timber.tag(TAG).d("reset (song change)")
-        fftCallbackCount = 0L
         smoothedBass = 0f
         follow = 0f
         baseline = 0f
@@ -111,13 +108,9 @@ object CoverBassPulse {
      */
     fun init(audioSessionId: Int, owner: String) {
         if (audioSessionId <= 0) return
-        val sameSession = visualizer != null &&
+        if (visualizer != null &&
             audioSessionId == lastInitSession && owner == this.owner
-        Timber.tag(TAG).d(
-            "init session=%d owner=%s existing=%s sameSession=%s",
-            audioSessionId, owner.take(8), visualizer != null, sameSession,
-        )
-        if (sameSession) return
+        ) return
         lastInitSession = audioSessionId
         try {
             release()
@@ -146,18 +139,13 @@ object CoverBassPulse {
             )
             v.enabled = true
             visualizer = v
-            Timber.tag(TAG).d(
-                "Visualizer LIVE on session %d, captureRate=%d",
-                audioSessionId, Visualizer.getMaxCaptureRate(),
-            )
         } catch (e: Exception) {
-            Timber.tag(TAG).w(e, "Visualizer init FAILED for session %d", audioSessionId)
+            Timber.tag(TAG).w(e, "Visualizer init failed for session %d", audioSessionId)
             release()
         }
     }
 
     fun release() {
-        val hadVis = visualizer != null
         try {
             visualizer?.release()
         } catch (_: Exception) {
@@ -165,7 +153,6 @@ object CoverBassPulse {
             visualizer = null
             owner = null
         }
-        if (hadVis) Timber.tag(TAG).d("Released visualizer")
     }
 
     /**
@@ -182,56 +169,29 @@ object CoverBassPulse {
     fun advanceFrame(prevNs: Long, nowNs: Long) {
         val dtMs = (nowNs - prevNs) / 1_000_000f
         if (dtMs !in 0f..250f) return
-        if (frameCount == 0L) {
-            Timber.tag(TAG).d("FIRST advanceFrame call")
-        }
         val stalled = SystemClock.elapsedRealtime() - lastCaptureMs > 1000L
         if (stalled) {
             if (!wasStalled) {
                 wasStalled = true
-                Timber.tag(TAG).d("capture stall detected, forcing target 0")
+                kickTarget = 0f
             }
-            kickTarget = 0f
         } else {
             wasStalled = false
         }
         kickEnv = maxOf(kickTarget, kickEnv * exp(-dtMs / 250f))
         onsetEnv *= exp(-dtMs / 200f)
         smoothedBass = (kickEnv * 0.9f + baseline * 0.1f).coerceIn(0f, 1f)
-        frameCount++
-        if (frameCount % 300L == 0L) {
-            Timber.tag(TAG).d(
-                "frame sm=%.3f kick=%.3f tgt=%.3f base=%.3f stalled=%s",
-                smoothedBass,
-                kickEnv,
-                kickTarget,
-                baseline,
-                stalled,
-            )
-        }
     }
 
     /** Releases only if [requester] owns the live capture; else no-op. */
     fun releaseIf(requester: String) {
-        if (owner == requester) {
-            Timber.tag(TAG).d("releaseIf: releasing (owner=%s)", requester.take(8))
-            release()
-        }
+        if (owner == requester) release()
     }
 
     /** Milliseconds since the last FFT capture (huge if none yet). */
     fun feedAgeMs(): Long = SystemClock.elapsedRealtime() - lastCaptureMs
 
-    private var fftCallbackCount = 0L
-
     private fun onFft(fft: ByteArray) {
-        fftCallbackCount++
-        if (fftCallbackCount == 1L) {
-            Timber.tag(TAG).d("FIRST FFT callback! size=%d", fft.size)
-        }
-        if (fftCallbackCount % 20L == 0L) {
-            Timber.tag(TAG).d("FFT callbacks so far: %d", fftCallbackCount)
-        }
         val raw = kickBand(fft)
         val now = SystemClock.elapsedRealtime()
         if (lastCaptureMs == 0L) {

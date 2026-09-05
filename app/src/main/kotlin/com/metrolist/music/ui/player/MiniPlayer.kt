@@ -60,7 +60,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -248,19 +247,8 @@ private fun NewMiniPlayer(
         BorderGlowIntensity.MEDIUM,
     )
     val miniIsMuted by playerConnection.isMuted.collectAsStateWithLifecycle()
-    // TEMP-DIAG: one-shot snapshot, remove after diagnosis.
-    LaunchedEffect(Unit) {
-        kotlinx.coroutines.delay(4000)
-        Timber.tag("MiniBorderGlow").d(
-            "diag glow=%s muted=%s casting=%s kick=%.3f sus=%.3f onset=%.3f",
-            borderGlow,
-            miniIsMuted,
-            isCasting,
-            CoverBassPulse.kickEnv,
-            CoverBassPulse.sustainLevel,
-            CoverBassPulse.onsetEnv,
-        )
-    }
+    // Palette color extracted from album art, used for border glow tint.
+    var borderSongColor by remember { mutableStateOf(Color.Unspecified) }
 
     // Swipe animation state
     val offsetXAnimatable = remember { Animatable(0f) }
@@ -282,6 +270,7 @@ private fun NewMiniPlayer(
     // border glow. Cached per song id via the effect key.
     LaunchedEffect(mediaMetadata?.id) {
         gradientColors = emptyList()
+        borderSongColor = Color.Unspecified
         val url = mediaMetadata?.thumbnailUrl
         if (url != null) {
             withContext(Dispatchers.IO) {
@@ -305,8 +294,10 @@ private fun NewMiniPlayer(
                     )
                     withContext(Dispatchers.Main) {
                         gradientColors = extracted
+                        if (extracted.isNotEmpty()) {
+                            borderSongColor = extracted[0]
+                        }
                     }
-                    Timber.tag("MiniBorderGlow").d("Fetched palette for %s", mediaMetadata?.id)
                 } else {
                     withContext(Dispatchers.Main) {
                         gradientColors = emptyList()
@@ -412,7 +403,10 @@ private fun NewMiniPlayer(
                     .offset { IntOffset(offsetXAnimatable.value.roundToInt(), 0) }
                     .clip(RoundedCornerShape(32.dp))
                     .background(color = backgroundColor)
-                    .drawBehind {
+                    .drawWithContent {
+                        // Render the ring AFTER content so it sits on top of
+                        // gradient/blur overlays that would hide a drawBehind.
+                        drawContent()
                         // Static look when toggled off: exactly the old border
                         // (1.dp stroke centered half-inside the edge).
                         if (!borderGlow) {
@@ -431,8 +425,8 @@ private fun NewMiniPlayer(
                                     BorderGlowIntensity.HIGH -> 1f
                                 }
                             // Same signal as the cover pulse (smoothedBass) — if
-                            // the cover moves, the ring must move. White ring
-                            // for all songs; 2.dp idle swelling to 4.dp.
+                            // the cover moves, the ring must move. Inverted
+                            // palette color; 2.dp idle swelling to 4.dp.
                             // Mute/cast: faint idle.
                             val dimmed = miniIsMuted || isCasting
                             val bass = CoverBassPulse.smoothedBass.coerceIn(0f, 1f)
@@ -448,8 +442,16 @@ private fun NewMiniPlayer(
                                 } else {
                                     2.dp.toPx() + bass * 2.dp.toPx()
                                 }
+                            // Invert the palette color so the ring pops against
+                            // the gradient background. Fall back to white if no
+                            // palette has been extracted yet.
+                            val ringColor = if (borderSongColor != Color.Unspecified) {
+                                borderSongColor
+                            } else {
+                                Color.White
+                            }
                             drawRoundRect(
-                                color = Color.White.copy(alpha = a),
+                                color = ringColor.copy(alpha = a),
                                 topLeft = Offset(w / 2f, w / 2f),
                                 size = Size(size.width - w, size.height - w),
                                 cornerRadius = CornerRadius(32.dp.toPx() - w / 2f),
