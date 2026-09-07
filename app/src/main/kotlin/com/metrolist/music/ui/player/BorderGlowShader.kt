@@ -67,14 +67,13 @@ object BorderGlowShader {
             float angle = atan(fragCoord.y - ringCenter.y, fragCoord.x - ringCenter.x);
             float orbitSpeed = 0.8 + b * 4.0;
             float hotspotPhase = angle - time * orbitSpeed;
-            float sharpness = 2.5 + b * 4.0;
+            float sharpness = 1.5 + b * 2.5;   // wider lobe
             float hotspotLobe = pow(max(0.0, cos(hotspotPhase)), sharpness);
-            // Wider mask — hotspot visible in a broad band around the ring
-            float hotspotMask = exp(-dist * dist / 120.0);
-            float hotspot = hotspotLobe * hotspotMask * (0.4 + b * 0.6);
-            // Modulate: hotspot multiplies the base glow, creating a bright
-            // traveling spot that's 2-3x brighter than the surrounding glow.
-            baseGlow *= 1.0 + hotspot * 2.5;
+            // Wide mask — hotspot visible across the full pill area
+            float hotspotMask = exp(-dist * dist / 200.0);
+            float hotspot = hotspotLobe * hotspotMask * (0.5 + b * 0.5);
+            // Strong modulation — hotspot is 4-5x brighter than surrounding glow
+            baseGlow *= 1.0 + hotspot * 4.5;
 
             // --- Kick shockwave (modulates base glow) ---
             float shockwave = 0.0;
