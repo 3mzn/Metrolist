@@ -29,17 +29,16 @@ object BorderGlowShader {
     // AGSL source — runs on the GPU via Skia
     // ---------------------------------------------------------------
     private val SHADER_SRC = """
-        uniform float2  resolution;   // draw scope size in px
-        uniform float4  ring;         // x, y, w, h  of the ring rect
+        uniform float2  resolution;
+        uniform float4  ring;
         uniform float   cornerRadius;
-        uniform float   ringAlpha;    // overall opacity
-        uniform float   bass;         // 0..1  — controls glow spread
-        uniform float   cr, cg, cb;  // palette color (0..1 per channel)
-        uniform float   time;         // seconds — drives orbit rotation
-        uniform float   onset;        // 0..1 — kick trigger, decays fast
-        uniform float   lastOnsetMs;  // ms since last kick (< 0 if none)
+        uniform float   ringAlpha;
+        uniform float   bass;
+        uniform float   cr, cg, cb;
+        uniform float   time;
+        uniform float   onset;
+        uniform float   lastOnsetMs;
 
-        // Signed-distance to a rounded rectangle centered at origin.
         float sdRoundedRect(vec2 p, vec2 b, float r) {
             vec2 q = abs(p) - b + r;
             return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
@@ -52,44 +51,45 @@ object BorderGlowShader {
             float sdf = sdRoundedRect(fragCoord - ringCenter, halfSize, cornerRadius);
             float dist = abs(sdf);
 
-            // --- Bass scaling (silent below 0.08) ---
             float b = smoothstep(0.08, 0.55, bass);
 
-            // === Layer 1: core glow ===
-            float coreFalloff = 3.0 - b * 1.5;
+            // --- Core glow (tight) ---
+            float coreFalloff = 2.5 - b * 1.0;
             float core = exp(-dist / coreFalloff) * b;
 
-            // === Layer 2: wide bloom ===
-            float bloomFalloff = 8.0 - b * 4.0;
-            float bloom = exp(-dist / bloomFalloff) * b * 0.5;
+            // --- Bloom (wide) ---
+            float bloomFalloff = 6.0 - b * 3.0;
+            float bloom = exp(-dist / bloomFalloff) * b * 0.4;
 
-            // === Layer 3: orbiting hotspot ===
+            float baseGlow = core + bloom;
+
+            // --- Orbiting hotspot (modulates base glow) ---
             float angle = atan(fragCoord.y - ringCenter.y, fragCoord.x - ringCenter.x);
-            // Speed: 0.5 rad/s idle → 5 rad/s at full bass
-            float orbitSpeed = 0.5 + b * 4.5;
+            float orbitSpeed = 0.8 + b * 4.0;
             float hotspotPhase = angle - time * orbitSpeed;
-            // Single bright lobe, sharpness increases with bass
-            float sharpness = 3.0 + b * 5.0;
-            float hotspot = pow(max(0.0, cos(hotspotPhase)), sharpness) * b;
-            // Hotspot visible within ~14px of ring centerline
-            float hotspotMask = exp(-dist * dist / 40.0);
-            hotspot *= hotspotMask;
+            float sharpness = 2.5 + b * 4.0;
+            float hotspotLobe = pow(max(0.0, cos(hotspotPhase)), sharpness);
+            // Wider mask — hotspot visible in a broad band around the ring
+            float hotspotMask = exp(-dist * dist / 120.0);
+            float hotspot = hotspotLobe * hotspotMask * (0.4 + b * 0.6);
+            // Modulate: hotspot multiplies the base glow, creating a bright
+            // traveling spot that's 2-3x brighter than the surrounding glow.
+            baseGlow *= 1.0 + hotspot * 2.5;
 
-            // === Layer 4: kick shockwave ===
+            // --- Kick shockwave (modulates base glow) ---
             float shockwave = 0.0;
-            float shockAge = lastOnsetMs / 300.0;   // 0→1 over 300ms
+            float shockAge = lastOnsetMs / 300.0;
             if (shockAge < 1.0 && shockAge >= 0.0) {
-                float maxRadius = 30.0;               // px spread
+                float maxRadius = 30.0;
                 float waveRadius = shockAge * maxRadius;
                 float waveDist = abs(dist - waveRadius);
                 float waveWidth = 4.0 + (1.0 - shockAge) * 3.0;
                 shockwave = onset * exp(-waveDist * waveWidth) * (1.0 - shockAge * 0.5);
             }
+            baseGlow *= 1.0 + shockwave * 3.0;
 
-            // --- Composite ---
-            float intensity = (core + bloom) * (1.0 + b * 1.0)
-                            + hotspot * 2.5
-                            + shockwave * 2.0;
+            // --- Final intensity ---
+            float intensity = baseGlow * (1.0 + b * 0.8);
 
             return half4(cr, cg, cb, intensity * ringAlpha);
         }
