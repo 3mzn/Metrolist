@@ -127,6 +127,8 @@ import coil3.toBitmap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import com.metrolist.music.ui.theme.PlayerColorExtractor
+import com.metrolist.music.ui.player.BorderGlowShader
+import android.os.Build
 import com.metrolist.music.ui.component.LocalMenuState
 import com.metrolist.music.ui.menu.AddToPlaylistDialog
 
@@ -249,6 +251,10 @@ private fun NewMiniPlayer(
     val miniIsMuted by playerConnection.isMuted.collectAsStateWithLifecycle()
     // Palette color extracted from album art, used for border glow tint.
     var borderSongColor by remember { mutableStateOf(Color.Unspecified) }
+    // AGSL glow shader brush — remembered across recompositions, only on API 33+.
+    val glowBrush = remember {
+        if (BorderGlowShader.isSupported()) BorderGlowShader.createBrush() else null
+    }
 
     // Swipe animation state
     val offsetXAnimatable = remember { Animatable(0f) }
@@ -424,10 +430,6 @@ private fun NewMiniPlayer(
                                     BorderGlowIntensity.MEDIUM -> 0.85f
                                     BorderGlowIntensity.HIGH -> 1f
                                 }
-                            // Same signal as the cover pulse (smoothedBass) — if
-                            // the cover moves, the ring must move. Inverted
-                            // palette color; 2.dp idle swelling to 4.dp.
-                            // Mute/cast: faint idle.
                             val dimmed = miniIsMuted || isCasting
                             val bass = CoverBassPulse.smoothedBass.coerceIn(0f, 1f)
                             val a =
@@ -436,27 +438,38 @@ private fun NewMiniPlayer(
                                 } else {
                                     (0.2f + bass * (peak - 0.2f)).coerceIn(0.2f, peak)
                                 }
-                            val w =
-                                if (dimmed) {
-                                    2.dp.toPx()
-                                } else {
-                                    2.dp.toPx() + bass * 2.dp.toPx()
-                                }
-                            // Invert the palette color so the ring pops against
-                            // the gradient background. Fall back to white if no
-                            // palette has been extracted yet.
                             val ringColor = if (borderSongColor != Color.Unspecified) {
                                 borderSongColor
                             } else {
                                 Color.White
                             }
-                            drawRoundRect(
-                                color = ringColor.copy(alpha = a),
-                                topLeft = Offset(w / 2f, w / 2f),
-                                size = Size(size.width - w, size.height - w),
-                                cornerRadius = CornerRadius(32.dp.toPx() - w / 2f),
-                                style = Stroke(width = w),
-                            )
+
+                            if (glowBrush != null) {
+                                // API 33+: AGSL shader glow + crisp core ring.
+                                with(BorderGlowShader) {
+                                    drawGlowRing(
+                                        glowBrush = glowBrush,
+                                        ringColor = ringColor,
+                                        bass = bass,
+                                        alpha = a,
+                                    )
+                                }
+                            } else {
+                                // Fallback: plain stroke ring (no soft glow).
+                                val w =
+                                    if (dimmed) {
+                                        2.dp.toPx()
+                                    } else {
+                                        2.dp.toPx() + bass * 2.dp.toPx()
+                                    }
+                                drawRoundRect(
+                                    color = ringColor.copy(alpha = a),
+                                    topLeft = Offset(w / 2f, w / 2f),
+                                    size = Size(size.width - w, size.height - w),
+                                    cornerRadius = CornerRadius(32.dp.toPx() - w / 2f),
+                                    style = Stroke(width = w),
+                                )
+                            }
                         }
                     }
                     .clickable(
