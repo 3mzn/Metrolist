@@ -36,8 +36,6 @@ object BorderGlowShader {
         uniform float   bass;
         uniform float   cr, cg, cb;
         uniform float   time;
-        uniform float   onset;
-        uniform float   lastOnsetMs;
         uniform float   hotspotMult;
 
         float sdRoundedRect(vec2 p, vec2 b, float r) {
@@ -76,18 +74,6 @@ object BorderGlowShader {
             // Strong modulation — hotspot is hotspotMult x brighter than surrounding glow
             baseGlow *= 1.0 + hotspot * hotspotMult;
 
-            // --- Kick shockwave (modulates base glow) ---
-            float shockwave = 0.0;
-            float shockAge = lastOnsetMs / 300.0;
-            if (shockAge < 1.0 && shockAge >= 0.0) {
-                float maxRadius = 30.0;
-                float waveRadius = shockAge * maxRadius;
-                float waveDist = abs(dist - waveRadius);
-                float waveWidth = 4.0 + (1.0 - shockAge) * 3.0;
-                shockwave = onset * exp(-waveDist * waveWidth) * (1.0 - shockAge * 0.5);
-            }
-            baseGlow *= 1.0 + shockwave * 3.0;
-
             // --- Final intensity ---
             float intensity = baseGlow * (1.0 + b * 0.8);
 
@@ -121,8 +107,6 @@ object BorderGlowShader {
             alpha: Float,
             bass: Float,
             time: Float,
-            onset: Float,
-            lastOnsetMs: Float,
             hotspotMult: Float,
         ) {
             val s = shader ?: return
@@ -141,8 +125,6 @@ object BorderGlowShader {
             s.setFloatUniform("cg", color.green)
             s.setFloatUniform("cb", color.blue)
             s.setFloatUniform("time", time)
-            s.setFloatUniform("onset", onset)
-            s.setFloatUniform("lastOnsetMs", lastOnsetMs)
             s.setFloatUniform("hotspotMult", hotspotMult)
         }
     }
@@ -162,8 +144,6 @@ object BorderGlowShader {
         bass: Float,
         alpha: Float,
         time: Float,
-        onset: Float,
-        lastOnsetMs: Float,
         hotspotMult: Float,
     ) {
         val pad = 2.dp.toPx()          // match the stroke centerline
@@ -181,8 +161,6 @@ object BorderGlowShader {
             alpha = alpha,
             bass = bass,
             time = time,
-            onset = onset,
-            lastOnsetMs = lastOnsetMs,
             hotspotMult = hotspotMult,
         )
         drawRoundRect(

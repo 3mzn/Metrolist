@@ -449,16 +449,9 @@ private fun NewMiniPlayer(
 
                             if (glowBrush != null) {
                                 // API 33+: AGSL shader glow + crisp core ring.
-                                val nowMs = System.currentTimeMillis()
                                 // Modulo to keep shader time small (avoids
                                 // float precision loss in cos() at ~1e9).
                                 val timeSec = (System.nanoTime() % 60_000_000_000L) / 1_000_000_000f
-                                val onsetVal = CoverBassPulse.onsetEnv
-                                val sinceOnset = if (CoverBassPulse.lastOnsetMs > 0L) {
-                                    (nowMs - CoverBassPulse.lastOnsetMs).toFloat()
-                                } else {
-                                    -1f
-                                }
                                 with(BorderGlowShader) {
                                     drawGlowRing(
                                         glowBrush = glowBrush,
@@ -466,8 +459,6 @@ private fun NewMiniPlayer(
                                         bass = bass,
                                         alpha = a,
                                         time = timeSec,
-                                        onset = onsetVal,
-                                        lastOnsetMs = sinceOnset,
                                         hotspotMult = hotspotMult,
                                     )
                                 }

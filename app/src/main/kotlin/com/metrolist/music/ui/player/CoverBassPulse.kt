@@ -51,10 +51,6 @@ object CoverBassPulse {
     var onsetEnv by mutableFloatStateOf(0f)
         private set
 
-    /** Wall-clock time of the most recent onset crossing (for shockwave timing). */
-    var lastOnsetMs: Long = 0L
-        private set
-
     private var visualizer: Visualizer? = null
     private var lastCaptureMs: Long = 0L
 
@@ -97,7 +93,6 @@ object CoverBassPulse {
         sustainLevel = 0f
         kickEnv = 0f
         onsetEnv = 0f
-        lastOnsetMs = 0L
         onsetArmed = true
         wasStalled = false
         kickTarget = 0f
@@ -205,7 +200,6 @@ object CoverBassPulse {
             sustainLevel = raw
             kickEnv = 0f
             onsetEnv = 0f
-            lastOnsetMs = 0L
             onsetArmed = true
             smoothedBass = 0f
         } else {
@@ -238,7 +232,6 @@ object CoverBassPulse {
             if (kickTarget > 0.55f) {
                 if (onsetArmed) {
                     onsetEnv = 1f
-                    lastOnsetMs = now
                     onsetArmed = false
                 }
             } else if (kickTarget < 0.2f) {
