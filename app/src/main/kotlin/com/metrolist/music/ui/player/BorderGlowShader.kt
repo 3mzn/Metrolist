@@ -35,6 +35,9 @@ object BorderGlowShader {
         uniform float   ringAlpha;    // overall opacity
         uniform float   bass;         // 0..1  — controls glow spread
         uniform float   cr, cg, cb;  // palette color (0..1 per channel)
+        uniform float   time;         // seconds — drives orbit rotation
+        uniform float   onset;        // 0..1 — kick trigger, decays fast
+        uniform float   lastOnsetMs;  // ms since last kick (< 0 if none)
 
         // Signed-distance to a rounded rectangle centered at origin.
         float sdRoundedRect(vec2 p, vec2 b, float r) {
@@ -43,30 +46,50 @@ object BorderGlowShader {
         }
 
         half4 main(float2 fragCoord) {
-            // Ring geometry in local coords (y-down).
             float2 ringCenter = ring.xy + ring.zw * 0.5;
             float2 halfSize   = ring.zw * 0.5;
 
             float sdf = sdRoundedRect(fragCoord - ringCenter, halfSize, cornerRadius);
-
-            // Absolute distance from the ring centerline.
             float dist = abs(sdf);
 
-            // Scale bass aggressively: <0.08 is silent (no visible glow),
-            // then ramps to 1.0 quickly so kicks pop.
+            // --- Bass scaling (silent below 0.08) ---
             float b = smoothstep(0.08, 0.55, bass);
 
-            // --- Layer 1: tight core glow ---
-            float coreFalloff = 3.0 - b * 1.5;   // 3.0 → 1.5
+            // === Layer 1: core glow ===
+            float coreFalloff = 3.0 - b * 1.5;
             float core = exp(-dist / coreFalloff) * b;
 
-            // --- Layer 2: wide bloom (light scattering) ---
-            float bloomFalloff = 8.0 - b * 4.0;  // 8.0 → 4.0
+            // === Layer 2: wide bloom ===
+            float bloomFalloff = 8.0 - b * 4.0;
             float bloom = exp(-dist / bloomFalloff) * b * 0.5;
 
-            // Additive composite — values > 1 are fine (clamped to max
-            // brightness, which reads as "blown-out light emission").
-            float intensity = (core + bloom) * (1.0 + b * 1.0);
+            // === Layer 3: orbiting hotspot ===
+            float angle = atan(fragCoord.y - ringCenter.y, fragCoord.x - ringCenter.x);
+            // Speed: 0.5 rad/s idle → 5 rad/s at full bass
+            float orbitSpeed = 0.5 + b * 4.5;
+            float hotspotPhase = angle - time * orbitSpeed;
+            // Single bright lobe, sharpness increases with bass
+            float sharpness = 3.0 + b * 5.0;
+            float hotspot = pow(max(0.0, cos(hotspotPhase)), sharpness) * b;
+            // Hotspot visible within ~14px of ring centerline
+            float hotspotMask = exp(-dist * dist / 40.0);
+            hotspot *= hotspotMask;
+
+            // === Layer 4: kick shockwave ===
+            float shockwave = 0.0;
+            float shockAge = lastOnsetMs / 300.0;   // 0→1 over 300ms
+            if (shockAge < 1.0 && shockAge >= 0.0) {
+                float maxRadius = 30.0;               // px spread
+                float waveRadius = shockAge * maxRadius;
+                float waveDist = abs(dist - waveRadius);
+                float waveWidth = 4.0 + (1.0 - shockAge) * 3.0;
+                shockwave = onset * exp(-waveDist * waveWidth) * (1.0 - shockAge * 0.5);
+            }
+
+            // --- Composite ---
+            float intensity = (core + bloom) * (1.0 + b * 1.0)
+                            + hotspot * 2.5
+                            + shockwave * 2.0;
 
             return half4(cr, cg, cb, intensity * ringAlpha);
         }
@@ -97,6 +120,9 @@ object BorderGlowShader {
             color: Color,
             alpha: Float,
             bass: Float,
+            time: Float,
+            onset: Float,
+            lastOnsetMs: Float,
         ) {
             val s = shader ?: return
             s.setFloatUniform("resolution", drawScope.size.width, drawScope.size.height)
@@ -113,6 +139,9 @@ object BorderGlowShader {
             s.setFloatUniform("cr", color.red)
             s.setFloatUniform("cg", color.green)
             s.setFloatUniform("cb", color.blue)
+            s.setFloatUniform("time", time)
+            s.setFloatUniform("onset", onset)
+            s.setFloatUniform("lastOnsetMs", lastOnsetMs)
         }
     }
 
@@ -130,6 +159,9 @@ object BorderGlowShader {
         ringColor: Color,
         bass: Float,
         alpha: Float,
+        time: Float,
+        onset: Float,
+        lastOnsetMs: Float,
     ) {
         val pad = 2.dp.toPx()          // match the stroke centerline
         val cr = 32.dp.toPx() - pad    // corner radius at the stroke center
@@ -145,6 +177,9 @@ object BorderGlowShader {
             color = ringColor,
             alpha = alpha,
             bass = bass,
+            time = time,
+            onset = onset,
+            lastOnsetMs = lastOnsetMs,
         )
         drawRoundRect(
             brush = glowBrush,

@@ -446,12 +446,23 @@ private fun NewMiniPlayer(
 
                             if (glowBrush != null) {
                                 // API 33+: AGSL shader glow + crisp core ring.
+                                val nowMs = System.currentTimeMillis()
+                                val timeSec = nowMs / 1000f
+                                val onsetVal = CoverBassPulse.onsetEnv
+                                val sinceOnset = if (CoverBassPulse.lastOnsetMs > 0L) {
+                                    (nowMs - CoverBassPulse.lastOnsetMs).toFloat()
+                                } else {
+                                    -1f
+                                }
                                 with(BorderGlowShader) {
                                     drawGlowRing(
                                         glowBrush = glowBrush,
                                         ringColor = ringColor,
                                         bass = bass,
                                         alpha = a,
+                                        time = timeSec,
+                                        onset = onsetVal,
+                                        lastOnsetMs = sinceOnset,
                                     )
                                 }
                             } else {
