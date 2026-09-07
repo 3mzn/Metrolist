@@ -73,7 +73,7 @@ object BorderGlowShader {
             float hotspotMask = exp(-dist * dist / 200.0);
             float hotspot = hotspotLobe * hotspotMask * (0.5 + b * 0.5);
             // Strong modulation — hotspot is 4-5x brighter than surrounding glow
-            baseGlow *= 1.0 + hotspot * 4.5;
+            baseGlow *= 1.0 + hotspot * 9.0;
 
             // --- Kick shockwave (modulates base glow) ---
             float shockwave = 0.0;
