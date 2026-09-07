@@ -45,15 +45,19 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.painterResource
@@ -91,6 +95,9 @@ import com.metrolist.music.ui.component.CastButton
 import com.metrolist.music.utils.rememberEnumPreference
 import com.metrolist.music.utils.rememberPreference
 import kotlinx.coroutines.delay
+
+/** Cover art center in root coordinates, updated by ThumbnailItem. */
+val LocalCoverArtCenter = staticCompositionLocalOf { Offset.Zero }
 
 /**
  * Pre-calculated thumbnail dimensions to avoid repeated calculations during recomposition.
@@ -207,6 +214,7 @@ fun Thumbnail(
     isPlayerExpanded: () -> Boolean = { true },
     isLandscape: Boolean = false,
     isListenTogetherGuest: Boolean = false,
+    onCoverArtCenterChanged: (Offset) -> Unit = {},
 ) {
     val playerConnection = LocalPlayerConnection.current ?: return
     val context = LocalContext.current
@@ -299,6 +307,9 @@ fun Thumbnail(
     // Seek effect state
     var showSeekEffect by remember { mutableStateOf(false) }
     var seekDirection by remember { mutableStateOf("") }
+
+    // Cover art center position for particle system
+    var coverArtCenter by remember { mutableStateOf(Offset.Zero) }
 
     Box(
         modifier = modifier
@@ -408,7 +419,11 @@ fun Thumbnail(
                                 isLandscape = isLandscape,
                                 isListenTogetherGuest = isListenTogetherGuest,
                                 currentMediaId = mediaMetadata?.id,
-                                currentMediaThumbnail = mediaMetadata?.thumbnailUrl
+                                currentMediaThumbnail = mediaMetadata?.thumbnailUrl,
+                                onCoverArtCenter = {
+                                    coverArtCenter = it
+                                    onCoverArtCenterChanged(it)
+                                },
                             )
                         }
                     }
@@ -506,6 +521,7 @@ private fun ThumbnailItem(
     isListenTogetherGuest: Boolean = false,
     currentMediaId: String? = null,
     currentMediaThumbnail: String? = null,
+    onCoverArtCenter: (Offset) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val incrementalSeekSkipEnabled by rememberPreference(SeekExtraSeconds, defaultValue = false)
@@ -584,6 +600,11 @@ private fun ThumbnailItem(
             modifier = Modifier
                 .size(dimensions.thumbnailSize)
                 .clip(RoundedCornerShape(dimensions.cornerRadius))
+                .onGloballyPositioned { coords ->
+                    val pos = coords.positionInRoot()
+                    val sz = coords.size
+                    onCoverArtCenter(Offset(pos.x + sz.width / 2f, pos.y + sz.height / 2f))
+                }
                 .graphicsLayer {
                     // Overflow allowed: scale applies outside the clip, so the
                     // cover grows past its frame without re-laying out siblings.

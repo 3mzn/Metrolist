@@ -81,6 +81,7 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
@@ -923,6 +924,10 @@ fun BottomSheetPlayer(
 
     val backgroundAlpha = state.progress.coerceIn(0f, 1f)
 
+    // Cover art center for particle system — updated by Thumbnail via callback
+    var coverArtCenter by remember { mutableStateOf(Offset.Zero) }
+
+    CompositionLocalProvider(LocalCoverArtCenter provides coverArtCenter) {
     BottomSheet(
         state = state,
         modifier = modifier,
@@ -1007,6 +1012,14 @@ fun BottomSheetPlayer(
                     else -> {
                         PlayerBackgroundStyle.DEFAULT
                     }
+                }
+
+                // Bass-reactive particles — full screen behind everything
+                if (useNewPlayerDesign) {
+                    PlayerParticles(
+                        modifier = Modifier.fillMaxSize(),
+                        baseColor = TextBackgroundColor,
+                    )
                 }
             }
         },
@@ -1987,6 +2000,7 @@ fun BottomSheetPlayer(
                                     isPlayerExpanded = isExpandedProvider,
                                     isLandscape = true,
                                     isListenTogetherGuest = isListenTogetherGuest,
+                                    onCoverArtCenterChanged = { coverArtCenter = it },
                                 )
                             }
                         }
@@ -2049,6 +2063,7 @@ fun BottomSheetPlayer(
                                     modifier = Modifier.nestedScroll(state.preUpPostDownNestedScrollConnection),
                                     isPlayerExpanded = isExpandedProvider,
                                     isListenTogetherGuest = isListenTogetherGuest,
+                                    onCoverArtCenterChanged = { coverArtCenter = it },
                                 )
                             }
                         }
@@ -2090,6 +2105,7 @@ fun BottomSheetPlayer(
             )
         }
     }
+    } // CompositionLocalProvider
 }
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)

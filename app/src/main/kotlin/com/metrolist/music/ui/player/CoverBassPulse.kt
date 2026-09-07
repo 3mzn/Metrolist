@@ -9,6 +9,7 @@ import android.media.audiofx.Visualizer
 import android.os.SystemClock
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.setValue
 import com.metrolist.music.constants.CoverPulseIntensity
 import timber.log.Timber
@@ -49,6 +50,10 @@ object CoverBassPulse {
     var sustainLevel by mutableFloatStateOf(0f)
         private set
     var onsetEnv by mutableFloatStateOf(0f)
+        private set
+
+    /** Monotonically increasing count of kick onsets. */
+    var onsetCount by mutableLongStateOf(0L)
         private set
 
     private var visualizer: Visualizer? = null
@@ -93,6 +98,7 @@ object CoverBassPulse {
         sustainLevel = 0f
         kickEnv = 0f
         onsetEnv = 0f
+        onsetCount = 0L
         onsetArmed = true
         wasStalled = false
         kickTarget = 0f
@@ -232,6 +238,7 @@ object CoverBassPulse {
             if (kickTarget > 0.55f) {
                 if (onsetArmed) {
                     onsetEnv = 1f
+                    onsetCount++
                     onsetArmed = false
                 }
             } else if (kickTarget < 0.2f) {
