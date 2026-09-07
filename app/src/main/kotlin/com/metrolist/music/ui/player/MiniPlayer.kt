@@ -96,6 +96,7 @@ import com.metrolist.music.constants.SwipeThumbnailKey
 import com.metrolist.music.constants.BorderGlowIntensity
 import com.metrolist.music.constants.MiniPlayerBorderGlowIntensityKey
 import com.metrolist.music.constants.MiniPlayerBorderGlowKey
+import com.metrolist.music.constants.MiniPlayerBorderHotspotKey
 import com.metrolist.music.constants.ThumbnailCornerRadius
 import com.metrolist.music.constants.UseNewMiniPlayerDesignKey
 import com.metrolist.music.db.entities.ArtistEntity
@@ -255,6 +256,8 @@ private fun NewMiniPlayer(
     val glowBrush = remember {
         if (BorderGlowShader.isSupported()) BorderGlowShader.createBrush() else null
     }
+    // Hotspot multiplier: 1x (subtle) to 30x (intense), default 10x.
+    val hotspotMult by rememberPreference(MiniPlayerBorderHotspotKey, 10f)
 
     // Swipe animation state
     val offsetXAnimatable = remember { Animatable(0f) }
@@ -465,6 +468,7 @@ private fun NewMiniPlayer(
                                         time = timeSec,
                                         onset = onsetVal,
                                         lastOnsetMs = sinceOnset,
+                                        hotspotMult = hotspotMult,
                                     )
                                 }
                             } else {

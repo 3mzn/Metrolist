@@ -38,6 +38,7 @@ object BorderGlowShader {
         uniform float   time;
         uniform float   onset;
         uniform float   lastOnsetMs;
+        uniform float   hotspotMult;
 
         float sdRoundedRect(vec2 p, vec2 b, float r) {
             vec2 q = abs(p) - b + r;
@@ -53,13 +54,13 @@ object BorderGlowShader {
 
             float b = smoothstep(0.08, 0.55, bass);
 
-            // --- Core glow (tight) ---
+            // --- Core glow (tight, 1.5x brighter) ---
             float coreFalloff = 2.5 - b * 1.0;
-            float core = exp(-dist / coreFalloff) * b;
+            float core = exp(-dist / coreFalloff) * b * 1.5;
 
-            // --- Bloom (wide) ---
-            float bloomFalloff = 6.0 - b * 3.0;
-            float bloom = exp(-dist / bloomFalloff) * b * 0.4;
+            // --- Bloom (wide, 2x distance) ---
+            float bloomFalloff = 12.0 - b * 6.0;
+            float bloom = exp(-dist / bloomFalloff) * b * 0.6;
 
             float baseGlow = core + bloom;
 
@@ -72,8 +73,8 @@ object BorderGlowShader {
             // Wide mask — hotspot visible across the full pill area
             float hotspotMask = exp(-dist * dist / 200.0);
             float hotspot = hotspotLobe * hotspotMask * (0.5 + b * 0.5);
-            // Strong modulation — hotspot is 4-5x brighter than surrounding glow
-            baseGlow *= 1.0 + hotspot * 9.0;
+            // Strong modulation — hotspot is hotspotMult x brighter than surrounding glow
+            baseGlow *= 1.0 + hotspot * hotspotMult;
 
             // --- Kick shockwave (modulates base glow) ---
             float shockwave = 0.0;
@@ -122,6 +123,7 @@ object BorderGlowShader {
             time: Float,
             onset: Float,
             lastOnsetMs: Float,
+            hotspotMult: Float,
         ) {
             val s = shader ?: return
             s.setFloatUniform("resolution", drawScope.size.width, drawScope.size.height)
@@ -141,6 +143,7 @@ object BorderGlowShader {
             s.setFloatUniform("time", time)
             s.setFloatUniform("onset", onset)
             s.setFloatUniform("lastOnsetMs", lastOnsetMs)
+            s.setFloatUniform("hotspotMult", hotspotMult)
         }
     }
 
@@ -161,6 +164,7 @@ object BorderGlowShader {
         time: Float,
         onset: Float,
         lastOnsetMs: Float,
+        hotspotMult: Float,
     ) {
         val pad = 2.dp.toPx()          // match the stroke centerline
         val cr = 32.dp.toPx() - pad    // corner radius at the stroke center
@@ -179,6 +183,7 @@ object BorderGlowShader {
             time = time,
             onset = onset,
             lastOnsetMs = lastOnsetMs,
+            hotspotMult = hotspotMult,
         )
         drawRoundRect(
             brush = glowBrush,

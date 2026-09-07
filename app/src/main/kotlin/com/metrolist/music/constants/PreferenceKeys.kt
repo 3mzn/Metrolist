@@ -70,6 +70,7 @@ enum class CoverPulseIntensity {
 val UseNewMiniPlayerDesignKey = booleanPreferencesKey("useNewMiniPlayerDesign")
 val MiniPlayerBorderGlowKey = booleanPreferencesKey("miniPlayerBorderGlow")
 val MiniPlayerBorderGlowIntensityKey = stringPreferencesKey("miniPlayerBorderGlowIntensity")
+val MiniPlayerBorderHotspotKey = floatPreferencesKey("miniPlayerBorderHotspot")
 
 enum class BorderGlowIntensity {
     LOW,

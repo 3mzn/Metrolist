@@ -90,6 +90,7 @@ import com.metrolist.music.constants.MiniPlayerBackgroundStyleKey
 import com.metrolist.music.constants.BorderGlowIntensity
 import com.metrolist.music.constants.MiniPlayerBorderGlowIntensityKey
 import com.metrolist.music.constants.MiniPlayerBorderGlowKey
+import com.metrolist.music.constants.MiniPlayerBorderHotspotKey
 import com.metrolist.music.constants.CoverPulseIntensity
 import com.metrolist.music.constants.PlayerCoverPulseIntensityKey
 import com.metrolist.music.constants.PlayerCoverPulseKey
@@ -207,6 +208,9 @@ fun AppearanceSettings(
             defaultValue = BorderGlowIntensity.MEDIUM,
         )
     var showBorderGlowIntensityDialog by rememberSaveable { mutableStateOf(false) }
+    val (hotspotMult, onHotspotMultChange) =
+        rememberPreference(MiniPlayerBorderHotspotKey, 10f)
+    var showHotspotDialog by rememberSaveable { mutableStateOf(false) }
     val (hidePlayerThumbnail, onHidePlayerThumbnailChange) =
         rememberPreference(
             HidePlayerThumbnailKey,
@@ -704,6 +708,62 @@ fun AppearanceSettings(
                     onValueChange = { tempBorderGlow = it },
                     valueRange = 0f..2f,
                     steps = 1,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
+    }
+
+    // Hotspot intensity slider dialog (1x–30x, default 10x).
+    if (showHotspotDialog) {
+        var tempHotspot by remember { mutableFloatStateOf(hotspotMult) }
+
+        DefaultDialog(
+            onDismiss = {
+                tempHotspot = hotspotMult
+                showHotspotDialog = false
+            },
+            buttons = {
+                Spacer(modifier = Modifier.weight(1f))
+
+                TextButton(
+                    onClick = {
+                        tempHotspot = hotspotMult
+                        showHotspotDialog = false
+                    },
+                ) {
+                    Text(stringResource(android.R.string.cancel))
+                }
+                TextButton(
+                    onClick = {
+                        onHotspotMultChange(tempHotspot)
+                        showHotspotDialog = false
+                    },
+                ) {
+                    Text(stringResource(android.R.string.ok))
+                }
+            },
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier.padding(16.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.mini_player_border_hotspot),
+                    style = MaterialTheme.typography.headlineSmall,
+                    modifier = Modifier.padding(bottom = 8.dp),
+                )
+
+                Text(
+                    text = "${tempHotspot.roundToInt()}x",
+                    style = MaterialTheme.typography.bodyLarge,
+                    modifier = Modifier.padding(bottom = 16.dp),
+                )
+
+                Slider(
+                    value = tempHotspot,
+                    onValueChange = { tempHotspot = it },
+                    valueRange = 1f..30f,
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
@@ -1362,6 +1422,14 @@ fun AppearanceSettings(
                                 )
                             },
                             onClick = { showBorderGlowIntensityDialog = true },
+                        ),
+                    )
+                    add(
+                        Material3SettingsItem(
+                            icon = painterResource(R.drawable.sliders),
+                            title = { Text(stringResource(R.string.mini_player_border_hotspot)) },
+                            description = { Text("${hotspotMult.roundToInt()}x") },
+                            onClick = { showHotspotDialog = true },
                         ),
                     )
                 },
