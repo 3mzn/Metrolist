@@ -139,6 +139,7 @@ import coil3.compose.AsyncImage
 import coil3.imageLoader
 import coil3.request.ImageRequest
 import coil3.request.allowHardware
+import coil3.request.crossfade
 import coil3.toBitmap
 import com.metrolist.music.LocalDatabase
 import com.metrolist.music.LocalDownloadUtil
@@ -404,6 +405,13 @@ fun BottomSheetPlayer(
         CoverBassPulse.reset()
     }
 
+    // Prefetch album art for upcoming and recently played tracks
+    LaunchedEffect(mediaMetadata?.id) {
+        mediaMetadata?.id?.let {
+            QueueImagePrefetcher.onTrackChanged(playerConnection, context)
+        }
+    }
+
     LaunchedEffect(
         isPlaying,
         isMuted,
@@ -496,6 +504,15 @@ fun BottomSheetPlayer(
     }
     val gradientColorsCache = remember { mutableMapOf<String, List<Color>>() }
 
+    // Track-change color wash — smooth palette color crossfade
+    var washTargetColor by remember { mutableStateOf(Color.Transparent) }
+    val animatedWashColor by animateColorAsState(
+        targetValue = washTargetColor,
+        animationSpec = tween(durationMillis = 2500, easing = LinearEasing),
+        label = "washColor",
+    )
+    val washColorCache = remember { mutableMapOf<String, Color>() }
+
     if (!canSkipNext && automix.isNotEmpty()) {
         playerConnection.service.addToQueueAutomix(automix[0], 0)
     }
@@ -503,50 +520,80 @@ fun BottomSheetPlayer(
     val defaultGradientColors = listOf(MaterialTheme.colorScheme.surface, MaterialTheme.colorScheme.surfaceVariant)
     val fallbackColor = MaterialTheme.colorScheme.surface.toArgb()
 
+    // Extract palette for gradient background AND color wash (all modes)
     LaunchedEffect(mediaMetadata?.id, playerBackground) {
-        if (playerBackground == PlayerBackgroundStyle.GRADIENT) {
-            val currentMetadata = mediaMetadata
-            if (currentMetadata != null && currentMetadata.thumbnailUrl != null) {
+        val currentMetadata = mediaMetadata
+        if (currentMetadata != null && currentMetadata.thumbnailUrl != null) {
+            // INSTANT: set wash color from cache — animateColorAsState handles the smooth transition
+            val cachedWash = washColorCache[currentMetadata.id]
+            if (cachedWash != null) {
+                washTargetColor = cachedWash
+            }
+
+            // Use cache for gradient mode
+            if (playerBackground == PlayerBackgroundStyle.GRADIENT) {
                 val cachedColors = gradientColorsCache[currentMetadata.id]
                 if (cachedColors != null) {
                     gradientColors = cachedColors
+                    if (cachedWash == null) {
+                        washTargetColor = cachedColors.firstOrNull() ?: Color(fallbackColor)
+                    }
                     return@LaunchedEffect
                 }
-                withContext(Dispatchers.IO) {
-                    val request =
-                        ImageRequest
-                            .Builder(context)
-                            .data(currentMetadata.thumbnailUrl)
-                            .size(100, 100)
-                            .allowHardware(false)
-                            .memoryCacheKey("gradient_${currentMetadata.id}")
-                            .build()
+            }
 
-                    val result = runCatching { context.imageLoader.execute(request) }.getOrNull()
-                    if (result != null) {
-                        val bitmap = result.image?.toBitmap()
-                        if (bitmap != null) {
-                            val palette =
-                                withContext(Dispatchers.Default) {
-                                    Palette
-                                        .from(bitmap)
-                                        .maximumColorCount(8)
-                                        .resizeBitmapArea(100 * 100)
-                                        .generate()
-                                }
-                            val extractedColors =
-                                PlayerColorExtractor.extractGradientColors(
-                                    palette = palette,
-                                    fallbackColor = fallbackColor,
-                                )
+            // Async extraction — populates cache for future instant use
+            withContext(Dispatchers.IO) {
+                val request =
+                    ImageRequest
+                        .Builder(context)
+                        .data(currentMetadata.thumbnailUrl)
+                        .size(100, 100)
+                        .allowHardware(false)
+                        .memoryCacheKey("gradient_${currentMetadata.id}")
+                        .build()
+
+                val result = runCatching { context.imageLoader.execute(request) }.getOrNull()
+                if (result != null) {
+                    val bitmap = result.image?.toBitmap()
+                    if (bitmap != null) {
+                        val palette =
+                            withContext(Dispatchers.Default) {
+                                Palette
+                                    .from(bitmap)
+                                    .maximumColorCount(8)
+                                    .resizeBitmapArea(100 * 100)
+                                    .generate()
+                            }
+                        val extractedColors =
+                            PlayerColorExtractor.extractGradientColors(
+                                palette = palette,
+                                fallbackColor = fallbackColor,
+                            )
+
+                        if (playerBackground == PlayerBackgroundStyle.GRADIENT) {
                             gradientColorsCache[currentMetadata.id] = extractedColors
                             withContext(Dispatchers.Main) { gradientColors = extractedColors }
+                        }
+
+                        val primaryColor = extractedColors.firstOrNull()
+                            ?: Color(fallbackColor)
+                        washColorCache[currentMetadata.id] = primaryColor
+                        if (playerBackground != PlayerBackgroundStyle.GRADIENT) {
+                            gradientColorsCache[currentMetadata.id] = extractedColors
+                        }
+                        if (mediaMetadata?.id == currentMetadata.id) {
+                            withContext(Dispatchers.Main) {
+                                washTargetColor = primaryColor
+                            }
                         }
                     }
                 }
             }
         } else {
-            gradientColors = emptyList()
+            if (playerBackground == PlayerBackgroundStyle.GRADIENT) {
+                gradientColors = emptyList()
+            }
         }
     }
 
@@ -940,37 +987,33 @@ fun BottomSheetPlayer(
             ) {
                 when (playerBackground) {
                     PlayerBackgroundStyle.BLUR -> {
-                        AnimatedContent(
-                            targetState = mediaMetadata?.thumbnailUrl,
-                            transitionSpec = {
-                                fadeIn(tween(800)).togetherWith(fadeOut(tween(800)))
-                            },
-                            label = "blurBackground",
-                        ) { thumbnailUrl ->
-                            if (thumbnailUrl != null) {
-                                Box(modifier = Modifier.alpha(backgroundAlpha)) {
-                                    AsyncImage(
-                                        model =
-                                            ImageRequest
-                                                .Builder(context)
-                                                .data(thumbnailUrl)
-                                                .size(100, 100)
-                                                .allowHardware(false)
-                                                .build(),
-                                        contentDescription = null,
-                                        contentScale = ContentScale.Crop,
-                                        modifier =
-                                            Modifier
-                                                .fillMaxSize()
-                                                .blur(if (useDarkTheme) 150.dp else 100.dp),
-                                    )
-                                    Box(
-                                        modifier =
-                                            Modifier
-                                                .fillMaxSize()
-                                                .background(Color.Black.copy(alpha = 0.3f)),
-                                    )
-                                }
+                        // Single AsyncImage with Coil crossfade — no AnimatedContent snap.
+                        // Coil keeps the old image visible while loading the new one, then
+                        // crossfades between them. No gap, no flash.
+                        if (mediaMetadata?.thumbnailUrl != null) {
+                            Box(modifier = Modifier.alpha(backgroundAlpha)) {
+                                AsyncImage(
+                                    model =
+                                        ImageRequest
+                                            .Builder(context)
+                                            .data(mediaMetadata?.thumbnailUrl)
+                                            .size(100, 100)
+                                            .allowHardware(false)
+                                            .crossfade(800)
+                                            .build(),
+                                    contentDescription = null,
+                                    contentScale = ContentScale.Crop,
+                                    modifier =
+                                        Modifier
+                                            .fillMaxSize()
+                                            .blur(if (useDarkTheme) 150.dp else 100.dp),
+                                )
+                                Box(
+                                    modifier =
+                                        Modifier
+                                            .fillMaxSize()
+                                            .background(Color.Black.copy(alpha = 0.3f)),
+                                )
                             }
                         }
                     }
@@ -1013,6 +1056,13 @@ fun BottomSheetPlayer(
                         PlayerBackgroundStyle.DEFAULT
                     }
                 }
+
+                // Track-change color wash — always rendered so animation stays alive across recompositions
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(animatedWashColor.copy(alpha = 0.4f)),
+                )
 
                 // Bass-reactive particles — full screen behind everything
                 if (useNewPlayerDesign) {
