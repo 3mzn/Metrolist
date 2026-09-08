@@ -2575,7 +2575,9 @@ class MusicService :
 
         lastPlaybackSpeed = -1.0f // force update song
 
-        setupAudioNormalization()
+        // Skip normalization setup during crossfade — the new player's normalization
+        // will be applied in cleanupCrossfade() after the volume ramp completes.
+        if (!isCrossfading) setupAudioNormalization()
 
         scrobbleManager?.onSongStop()
         if (player.playWhenReady && player.playbackState == Player.STATE_READY) {
@@ -4951,21 +4953,10 @@ class MusicService :
         fadingPlayer?.removeListener(this)
         sleepTimer?.let { timer -> fadingPlayer?.removeListener(timer) }
 
-        player.addListener(
-            object : Player.Listener {
-                override fun onIsPlayingChanged(isPlaying: Boolean) {
-                    if (isCrossfading && fadingPlayer != null) {
-                        if (isPlaying) {
-                            fadingPlayer?.play()
-                        } else {
-                            fadingPlayer?.pause()
-                        }
-                    } else {
-                        player.removeListener(this)
-                    }
-                }
-            },
-        )
+        // The fading player keeps its own listeners (audio focus, becoming noisy, etc.)
+        // and plays independently. We do NOT sync play/pause from the new player to the
+        // fading player — if the new player buffers briefly, it would pause the outgoing
+        // audio mid-crossfade, causing a hard cut instead of a smooth fade.
 
         nextPlayer.removeListener(secondaryPlayerListener)
         nextPlayer.addListener(this)
@@ -4987,14 +4978,25 @@ class MusicService :
 
         val previousAudioSessionId = fadingPlayer?.audioSessionId ?: C.AUDIO_SESSION_ID_UNSET
 
-        openAudioEffectSession()
+        // Audio effect session deferred to cleanupCrossfade() — opening it mid-crossfade
+        // causes external equalizer/DSP apps to reconfigure, producing audible glitches.
 
         crossfadeJob =
             scope.launch {
+                // Wait for the secondary player to have enough buffered audio before
+                // starting playback. Without this, the crossfade starts with silence
+                // or stuttering because prepare() is async and min buffer is only 750ms.
+                val targetPlayer = player
+                repeat(50) { // up to 5 seconds
+                    if (!isActive) return@launch
+                    if (targetPlayer.bufferedPosition - targetPlayer.currentPosition >= 500) return@repeat
+                    delay(100)
+                }
+
                 val speed = fadingPlayer?.playbackParameters?.speed?.coerceAtLeast(0.01f) ?: 1f
-                val duration = (crossfadeDuration / speed).toLong()
+                val durationMs = (crossfadeDuration / speed)
                 val steps = 20
-                val stepTime = duration / steps
+                val stepTime = (durationMs / steps).toLong().coerceAtLeast(1)
                 val startVolume =
                     try {
                         fadingPlayer?.volume ?: 1f
@@ -5004,8 +5006,10 @@ class MusicService :
 
                 for (i in 0..steps) {
                     if (!isActive) break
+                    // Wait for the new player to actually be producing audio
+                    // — don't start fading in until it's playing
                     while (!player.isPlaying && isActive) {
-                        delay(100)
+                        delay(50)
                     }
 
                     val progress = i / steps.toFloat()
@@ -5025,7 +5029,7 @@ class MusicService :
                 try {
                     fadingPlayer?.volume = 0f
                     player.volume = startVolume
-                } catch (e: Exception) {
+                } catch (_: Exception) {
                 }
 
                 cleanupCrossfade(fadingPlayerSessionId = previousAudioSessionId)
@@ -5034,6 +5038,9 @@ class MusicService :
 
     private fun cleanupCrossfade(fadingPlayerSessionId: Int = C.AUDIO_SESSION_ID_UNSET) {
         fadingPlayer?.let { previousPlayer ->
+            // Let the AudioTrack drain for a moment before stopping — releasing
+            // while the pipeline is still active causes an audible click/glitch.
+            runBlocking { delay(50) }
             previousPlayer.stop()
             previousPlayer.clearMediaItems()
             releaseExoPlayer(previousPlayer)
@@ -5044,7 +5051,10 @@ class MusicService :
         applyEffectiveVolume()
         sleepTimer?.notifySongTransition()
 
+        // Apply normalization and open audio effect session NOW that crossfade is done.
+        // These were deferred from performCrossfadeSwap() to avoid mid-fade glitches.
         applyCachedAudioNormalizationNow()
+        openAudioEffectSession()
 
         if (fadingPlayerSessionId != C.AUDIO_SESSION_ID_UNSET && fadingPlayerSessionId > 0) {
             closeAudioEffectSession(sessionIdOverride = fadingPlayerSessionId, clearNormalizationCache = true)
