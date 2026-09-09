@@ -429,6 +429,10 @@ class MusicService :
         private set
     private var secondaryPlayer: ExoPlayer? = null
     private var fadingPlayer: ExoPlayer? = null
+    // Volatile: read from ExoPlayer's internal playback thread by the silence
+    // detector callback, written on the main thread. No compound actions span
+    // threads, so visibility is the only requirement.
+    @Volatile
     private var isCrossfading = false
     private var crossfadeJob: Job? = null
     private var isRunning = false
@@ -3730,6 +3734,9 @@ class MusicService :
 
     private fun handleLongSilenceDetected() {
         if (!instantSilenceSkipEnabled.value) return
+        // Never during a crossfade: both players' detectors are live, and the fading
+        // track's trailing silence would trigger 15s seek jumps on the incoming track.
+        if (isCrossfading) return
         if (silenceSkipJob?.isActive == true) return
 
         silenceSkipJob =
@@ -3741,6 +3748,10 @@ class MusicService :
     }
 
     private suspend fun performInstantSilenceSkip() {
+        // A skip job launched just before a fade started lands here mid-fade —
+        // same reason as the handleLongSilenceDetected() guard. Detectors keep
+        // running, so a genuinely silent incoming track still skips after the fade.
+        if (isCrossfading) return
         val duration = player.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: return
         if (duration <= INSTANT_SILENCE_SKIP_STEP_MS) return
 
@@ -4307,6 +4318,16 @@ class MusicService :
                 delay(QUEUE_SAVE_DEBOUNCE_MS)
                 // Still on Dispatchers.Main here: player getters must stay on the
                 // application thread. Only the file writes drop to IO.
+                // Never capture mid-crossfade: serializing a big queue on the main
+                // looper delays the fade's volume messages (each player.volume write
+                // is an async player message), making the ramp land late in audible
+                // steps, and janks the whole UI. The next timer tick or transition
+                // re-triggers if the cap below ever hits.
+                var fadeWaited = 0
+                while (isCrossfading && isActive && fadeWaited < 20000) {
+                    delay(500)
+                    fadeWaited += 500
+                }
                 val snapshot = captureQueueSnapshot() ?: return@launch
                 withContext(Dispatchers.IO) {
                     writeQueueSnapshot(snapshot)
@@ -5242,16 +5263,16 @@ class MusicService :
         crossfadeJob =
             scope.launch {
                 try {
-                    // Wait for the incoming player to have enough buffered audio before
-                    // starting the ramp. prepare() is async and min buffer is only 750ms —
-                    // without this the fade runs over silence/stutter.
+                    // Wait for a healthy buffer before starting the ramp — a thin
+                    // buffer re-stalls mid-fade and sounds like a skipping record.
+                    // prepare() is async and min buffer is only 750ms.
                     val targetPlayer = player
                     var waits = 0
                     var buffered = false
-                    while (isActive && !buffered && waits < 50) { // up to 5 seconds
+                    while (isActive && !buffered && waits < 30) { // up to 3 seconds
                         buffered =
                             try {
-                                targetPlayer.bufferedPosition - targetPlayer.currentPosition >= 500
+                                targetPlayer.bufferedPosition - targetPlayer.currentPosition >= 1200
                             } catch (_: Exception) {
                                 // Incoming player died mid-wait; finally-block still
                                 // cleans up so isCrossfading can't wedge.
@@ -5263,11 +5284,39 @@ class MusicService :
                         }
                     }
 
-                    val speed = fadingPlayer?.playbackParameters?.speed?.coerceAtLeast(0.01f) ?: 1f
-                    val durationMs = (crossfadeDuration / speed)
+                    val speed =
+                        try {
+                            fadingPlayer?.playbackParameters?.speed?.coerceAtLeast(0.01f)
+                        } catch (_: Exception) {
+                            null
+                        } ?: 1f
+                    val fullRampMs = (crossfadeDuration / speed)
+                    // Fit the ramp to the outgoing track's ACTUAL remaining audio so the
+                    // fade-out lands at ~0 exactly when it ends. A late-starting fixed
+                    // ramp would slice an audible tail mid-fade on slow networks.
+                    val remainingMs =
+                        try {
+                            val fadingDuration = fadingPlayer?.duration ?: C.TIME_UNSET
+                            val fadingPosition = fadingPlayer?.currentPosition ?: 0L
+                            if (fadingDuration == C.TIME_UNSET) {
+                                -1L
+                            } else {
+                                (fadingDuration - fadingPosition).coerceAtLeast(0L)
+                            }
+                        } catch (_: Exception) {
+                            -1L
+                        }
+                    val rampMs =
+                        if (remainingMs < 0) {
+                            fullRampMs
+                        } else {
+                            // Lower bound clamped against fullRampMs itself so absurd
+                            // speeds can never invert the coerce range and throw.
+                            (remainingMs / speed).coerceIn(1f, fullRampMs.coerceAtLeast(1f))
+                        }
                     // ~50ms volume steps for a smooth ramp without zipper noise.
-                    val steps = (durationMs / 50f).toInt().coerceIn(20, 200)
-                    val stepTime = (durationMs / steps).toLong().coerceAtLeast(1)
+                    val steps = (rampMs / 50f).toInt().coerceIn(2, 200)
+                    val stepTime = (rampMs / steps).toLong().coerceAtLeast(1)
                     val startVolume =
                         try {
                             fadingPlayer?.volume ?: 1f
@@ -5279,7 +5328,7 @@ class MusicService :
                     // fading in — bounded so a stalled incoming track can't wedge
                     // isCrossfading=true forever and block all future crossfades.
                     var waitedMs = 0
-                    while (isActive && waitedMs < 4000) {
+                    while (isActive && waitedMs < 2500) {
                         val playing =
                             try {
                                 player.isPlaying
