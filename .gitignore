@@ -117,3 +117,6 @@ app/src/main/cpp/coverart/
 .cortexkit
 
 SPEC_9_*.md
+
+# Firebase service account credentials (never commit)
+*-firebase-adminsdk-*.json

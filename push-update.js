@@ -139,8 +139,8 @@ async function getAccessToken(creds) {
   return access_token;
 }
 
-async function sendFcmPush(accessToken, versionName, versionCode) {
-  const url = "https://fcm.googleapis.com/v1/projects/metrolist-app/messages:send";
+async function sendFcmPush(accessToken, versionName, versionCode, projectId, apkUrl, apkSha256) {
+  const url = `https://fcm.googleapis.com/v1/projects/${projectId}/messages:send`;
   const message = {
     message: {
       topic: FCM_TOPIC,
@@ -148,6 +148,9 @@ async function sendFcmPush(accessToken, versionName, versionCode) {
         type: "app_update",
         latestVersionCode: String(versionCode),
         latestVersionName: versionName,
+        apkUrl,
+        apkSha256,
+        releaseNotesUrl: "",
       },
       android: {
         priority: "high",
@@ -232,7 +235,7 @@ async function main() {
   console.log("Sending FCM push...");
   const firebaseCreds = getFirebaseCredentials();
   const accessToken = await getAccessToken(firebaseCreds);
-  await sendFcmPush(accessToken, versionName, versionCode);
+  await sendFcmPush(accessToken, versionName, versionCode, firebaseCreds.project_id, apkUrl, sha256);
 
   console.log("\n" + "─".repeat(50));
   console.log("✓ Release pushed successfully!");

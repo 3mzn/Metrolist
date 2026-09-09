@@ -258,6 +258,9 @@ import java.io.ObjectInputStream
 import java.io.ObjectOutputStream
 import java.time.LocalDateTime
 import javax.inject.Inject
+import kotlin.math.PI
+import kotlin.math.cos
+import kotlin.math.sin
 import kotlin.random.Random
 import java.util.Collections
 
@@ -527,6 +530,16 @@ class MusicService :
     private var cachedShufflePlaylistFirst = false
     @Volatile
     private var cachedAutoLoadMore = true
+    // Player-construction prefs: read by createExoPlayer() on the main thread during
+    // crossfade start, where runBlocking on DataStore would stall audio callbacks.
+    @Volatile
+    private var cachedAudioOffload = false
+    @Volatile
+    private var cachedSkipSilence = false
+    @Volatile
+    private var cachedSkipSilenceInstant = false
+    @Volatile
+    private var cachedAudioTrackPlaybackParams = true
 
     // URL cache for stream URLs - class-level so it can be invalidated on errors
     private val songUrlCache = StreamUrlCache()
@@ -1203,6 +1216,18 @@ class MusicService :
         scope.launch {
             dataStore.data.map { it[AutoLoadMoreKey] ?: true }.distinctUntilChanged().collect { cachedAutoLoadMore = it }
         }
+        scope.launch {
+            dataStore.data.map { it[AudioOffload] ?: false }.distinctUntilChanged().collect { cachedAudioOffload = it }
+        }
+        scope.launch {
+            dataStore.data.map { it[SkipSilenceKey] ?: false }.distinctUntilChanged().collect { cachedSkipSilence = it }
+        }
+        scope.launch {
+            dataStore.data.map { it[SkipSilenceInstantKey] ?: false }.distinctUntilChanged().collect { cachedSkipSilenceInstant = it }
+        }
+        scope.launch {
+            dataStore.data.map { it[AudioTrackPlaybackParamsKey] ?: true }.distinctUntilChanged().collect { cachedAudioTrackPlaybackParams = it }
+        }
         // Keep YTPlayerUtils in sync with the stream source toggles (Settings â†’ Stream sources).
         // Map to the derived set + distinctUntilChanged so an unrelated preference write doesn't
         // rebuild the set and rewrite the @Volatile field on every DataStore emission.
@@ -1346,19 +1371,16 @@ class MusicService :
 
         val silenceProcessor = SilenceDetectorAudioProcessor { handleLongSilenceDetected() }
 
-        // Set initial state â€” use pre-read prefs when available, otherwise fall back to DataStore
+        // Set initial state — use pre-read prefs when available, otherwise the cached
+        // values (never runBlocking here: this runs on the main thread at crossfade start).
         val useAudioTrackPlaybackParams = if (prefs != null) {
             val skipSilence = prefs[SkipSilenceKey] ?: false
             val instantSkip = prefs[SkipSilenceInstantKey] ?: false
             silenceProcessor.instantModeEnabled = skipSilence && instantSkip
             prefs[AudioTrackPlaybackParamsKey] ?: true
         } else {
-            runBlocking {
-                val skipSilence = dataStore.get(SkipSilenceKey, false)
-                val instantSkip = dataStore.get(SkipSilenceInstantKey, false)
-                silenceProcessor.instantModeEnabled = skipSilence && instantSkip
-                dataStore.get(AudioTrackPlaybackParamsKey, true)
-            }
+            silenceProcessor.instantModeEnabled = cachedSkipSilence && cachedSkipSilenceInstant
+            cachedAudioTrackPlaybackParams
         }
 
         val player =
@@ -1400,13 +1422,10 @@ class MusicService :
             player.setOffloadEnabled(if (crossfade) false else offload)
             player.skipSilenceEnabled = prefs[SkipSilenceKey] ?: false
         } else {
+            // crossfadeEnabled is the live cached value (kept in sync by its collector).
             player.apply {
-                runBlocking {
-                    val offload = dataStore.get(AudioOffload, false)
-                    val crossfade = dataStore.get(CrossfadeEnabledKey, false)
-                    setOffloadEnabled(if (crossfade) false else offload)
-                    skipSilenceEnabled = dataStore.get(SkipSilenceKey, false)
-                }
+                setOffloadEnabled(if (crossfadeEnabled) false else cachedAudioOffload)
+                skipSilenceEnabled = cachedSkipSilence
             }
         }
         player.addAnalyticsListener(PlaybackStatsListener(false, this@MusicService))
@@ -2731,6 +2750,15 @@ class MusicService :
     private fun updateInitialBufferRecovery(
         @Player.State playbackState: Int,
     ) {
+        // Never arm stall recovery mid-crossfade: the manual onMediaItemTransition at
+        // swap time would otherwise let it fire refreshStreamAndRetry() (cache clear +
+        // stream refresh) on the incoming track mid-fade. cleanupCrossfade() re-arms
+        // afterwards if the new track is still buffering.
+        if (isCrossfading) {
+            initialBufferRecoveryJob?.cancel()
+            initialBufferRecoveryJob = null
+            return
+        }
         val mediaId = player.currentMediaItem?.mediaId
         val shouldWatch =
             playbackState == Player.STATE_BUFFERING &&
@@ -4841,9 +4869,12 @@ class MusicService :
     private fun scheduleCrossfade() {
         crossfadeMessage?.cancel()
         crossfadeMessage = null
-        
-        val mediaCrossfadeDuration = crossfadeDuration.toLong()
 
+        // Never schedule while a crossfade is already running — the new player's
+        // STATE_READY would otherwise queue a nested crossfade on the incoming track.
+        if (isCrossfading) return
+
+        val mediaCrossfadeDuration = crossfadeDuration.toLong()
         if (!crossfadeEnabled || crossfadeDuration <= 0f || player.duration == C.TIME_UNSET || player.duration <= mediaCrossfadeDuration) return
         if (crossfadeGapless && isNextItemGapless()) return
         if (!player.hasNextMediaItem() && player.repeatMode != REPEAT_MODE_ONE) return
@@ -4877,12 +4908,11 @@ class MusicService :
     private fun startCrossfade() {
         if (isCrossfading) return
 
-
-
-        // Preserve player state before creating the secondary player
-        // Use runBlocking to ensure we get the correct state from DataStore
-        val savedRepeatMode = runBlocking { dataStore.get(RepeatModeKey, REPEAT_MODE_OFF) }
-        val savedShuffleEnabled = runBlocking { dataStore.get(ShuffleModeKey, false) }
+        // Read repeat/shuffle from the live player — it is authoritative and avoids
+        // runBlocking on DataStore, which freezes the main looper (and ExoPlayer's
+        // audio rendering callbacks) at the exact moment the crossfade starts.
+        val savedRepeatMode = player.repeatMode
+        val savedShuffleEnabled = player.shuffleModeEnabled
 
         // For repeat-one, crossfade back into the same track
         val targetIndex =
@@ -4926,15 +4956,20 @@ class MusicService :
 
         performCrossfadeSwap()
 
+        // Rebuild the shuffle order on the new player with the incoming track first.
+        // NOTE: we must NOT copy player.shuffleOrder over: the new player's item list
+        // was copied in old-timeline order, so the old order object would double-permute
+        // it and scramble upcoming tracks (and future crossfade targets). A fresh order
+        // is metadata-only (no audio impact) and scheduleCrossfade() is guarded by
+        // isCrossfading anyway.
         if (savedShuffleEnabled) {
-            val shufflePlaylistFirst = dataStore.get(ShufflePlaylistFirstKey, false)
-            applyShuffleOrder(player.currentMediaItemIndex, player.mediaItemCount, shufflePlaylistFirst)
+            applyShuffleOrder(player.currentMediaItemIndex, player.mediaItemCount, cachedShufflePlaylistFirst)
         }
     }
 
     private fun performCrossfadeSwap() {
-        isCrossfading = true
         val nextPlayer = secondaryPlayer ?: return
+        isCrossfading = true
         val currentPlayer = player
 
         fadingPlayer = currentPlayer
@@ -4983,67 +5018,109 @@ class MusicService :
 
         crossfadeJob =
             scope.launch {
-                // Wait for the secondary player to have enough buffered audio before
-                // starting playback. Without this, the crossfade starts with silence
-                // or stuttering because prepare() is async and min buffer is only 750ms.
-                val targetPlayer = player
-                repeat(50) { // up to 5 seconds
-                    if (!isActive) return@launch
-                    if (targetPlayer.bufferedPosition - targetPlayer.currentPosition >= 500) return@repeat
-                    delay(100)
-                }
-
-                val speed = fadingPlayer?.playbackParameters?.speed?.coerceAtLeast(0.01f) ?: 1f
-                val durationMs = (crossfadeDuration / speed)
-                val steps = 20
-                val stepTime = (durationMs / steps).toLong().coerceAtLeast(1)
-                val startVolume =
-                    try {
-                        fadingPlayer?.volume ?: 1f
-                    } catch (e: Exception) {
-                        1f
-                    }
-
-                for (i in 0..steps) {
-                    if (!isActive) break
-                    // Wait for the new player to actually be producing audio
-                    // — don't start fading in until it's playing
-                    while (!player.isPlaying && isActive) {
-                        delay(50)
-                    }
-
-                    val progress = i / steps.toFloat()
-                    val fadeIn = 1.0f - (1.0f - progress) * (1.0f - progress)
-                    val fadeOut = (1.0f - progress) * (1.0f - progress)
-
-                    try {
-                        player.volume = startVolume * fadeIn
-                        fadingPlayer?.volume = startVolume * fadeOut
-                    } catch (e: Exception) {
-                        break
-                    }
-
-                    delay(stepTime)
-                }
-
                 try {
-                    fadingPlayer?.volume = 0f
-                    player.volume = startVolume
-                } catch (_: Exception) {
-                }
+                    // Wait for the incoming player to have enough buffered audio before
+                    // starting the ramp. prepare() is async and min buffer is only 750ms —
+                    // without this the fade runs over silence/stutter.
+                    val targetPlayer = player
+                    var waits = 0
+                    var buffered = false
+                    while (isActive && !buffered && waits < 50) { // up to 5 seconds
+                        buffered =
+                            try {
+                                targetPlayer.bufferedPosition - targetPlayer.currentPosition >= 500
+                            } catch (_: Exception) {
+                                // Incoming player died mid-wait; finally-block still
+                                // cleans up so isCrossfading can't wedge.
+                                return@launch
+                            }
+                        if (!buffered) {
+                            delay(100)
+                            waits++
+                        }
+                    }
 
-                cleanupCrossfade(fadingPlayerSessionId = previousAudioSessionId)
+                    val speed = fadingPlayer?.playbackParameters?.speed?.coerceAtLeast(0.01f) ?: 1f
+                    val durationMs = (crossfadeDuration / speed)
+                    // ~50ms volume steps for a smooth ramp without zipper noise.
+                    val steps = (durationMs / 50f).toInt().coerceIn(20, 200)
+                    val stepTime = (durationMs / steps).toLong().coerceAtLeast(1)
+                    val startVolume =
+                        try {
+                            fadingPlayer?.volume ?: 1f
+                        } catch (e: Exception) {
+                            1f
+                        }
+
+                    // Wait for the new player to actually be producing audio before
+                    // fading in — bounded so a stalled incoming track can't wedge
+                    // isCrossfading=true forever and block all future crossfades.
+                    var waitedMs = 0
+                    while (isActive && waitedMs < 4000) {
+                        val playing =
+                            try {
+                                player.isPlaying
+                            } catch (_: Exception) {
+                                return@launch
+                            }
+                        if (playing) break
+                        delay(50)
+                        waitedMs += 50
+                    }
+
+                    for (i in 0..steps) {
+                        if (!isActive) break
+
+                        val progress = i / steps.toFloat()
+                        // Equal-power crossfade: the old quadratic curves dip ~3dB
+                        // mid-fade, which sounds like a dropout/glitch.
+                        val fadeIn = sin(progress * PI.toFloat() / 2f)
+                        val fadeOut = cos(progress * PI.toFloat() / 2f)
+
+                        try {
+                            player.volume = startVolume * fadeIn
+                            fadingPlayer?.volume = startVolume * fadeOut
+                        } catch (e: Exception) {
+                            break
+                        }
+
+                        delay(stepTime)
+                    }
+
+                    try {
+                        fadingPlayer?.volume = 0f
+                        player.volume = startVolume
+                    } catch (_: Exception) {
+                    }
+
+                    // Let the outgoing AudioTrack drain before stopping — suspends the
+                    // coroutine instead of runBlocking the main thread (which stalls
+                    // ExoPlayer's audio callbacks and clicks at the fade boundary).
+                    delay(50)
+                } finally {
+                    // Guaranteed: any exception, stall-abort, or cancellation still
+                    // releases the fading player and clears isCrossfading.
+                    try {
+                        cleanupCrossfade(fadingPlayerSessionId = previousAudioSessionId)
+                    } catch (_: Exception) {
+                    }
+                }
             }
     }
 
     private fun cleanupCrossfade(fadingPlayerSessionId: Int = C.AUDIO_SESSION_ID_UNSET) {
         fadingPlayer?.let { previousPlayer ->
-            // Let the AudioTrack drain for a moment before stopping — releasing
-            // while the pipeline is still active causes an audible click/glitch.
-            runBlocking { delay(50) }
-            previousPlayer.stop()
-            previousPlayer.clearMediaItems()
-            releaseExoPlayer(previousPlayer)
+            try {
+                previousPlayer.stop()
+                previousPlayer.clearMediaItems()
+                releaseExoPlayer(previousPlayer)
+            } catch (_: Exception) {
+                // Already released (e.g. service teardown racing the fade) — safe to ignore.
+                try {
+                    releaseExoPlayer(previousPlayer)
+                } catch (_: Exception) {
+                }
+            }
         }
         fadingPlayer = null
         crossfadeJob = null
@@ -5059,6 +5136,21 @@ class MusicService :
         if (fadingPlayerSessionId != C.AUDIO_SESSION_ID_UNSET && fadingPlayerSessionId > 0) {
             closeAudioEffectSession(sessionIdOverride = fadingPlayerSessionId, clearNormalizationCache = true)
         }
+
+        // Load the incoming track's own loudness row — the manual transition at swap
+        // time skipped setupAudioNormalization(), so without this the new track would
+        // keep playing with the previous track's gain indefinitely. Runs AFTER the
+        // close above because closing bumps the loudness generation and would cancel it.
+        setupAudioNormalization()
+
+        // Re-arm stall recovery if the incoming track is still buffering — it was
+        // suppressed during the fade (see updateInitialBufferRecovery).
+        updateInitialBufferRecovery(player.playbackState)
+        // Schedule the NEXT crossfade. The new player's BUFFERING->READY during the
+        // fade used to do this accidentally; the isCrossfading guard in
+        // scheduleCrossfade() now suppresses that path, so without this call only
+        // the first crossfade after app start would ever fire.
+        scheduleCrossfade()
     }
 
     private fun releaseExoPlayer(player: ExoPlayer) {
