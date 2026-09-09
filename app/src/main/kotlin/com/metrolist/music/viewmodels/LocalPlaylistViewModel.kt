@@ -19,6 +19,8 @@ import com.metrolist.music.db.MusicDatabase
 import com.metrolist.music.db.entities.PlaylistSong
 import com.metrolist.music.extensions.reversed
 import com.metrolist.music.extensions.toEnum
+import com.metrolist.music.utils.ArtworkWarmProgress
+import com.metrolist.music.utils.PlaylistArtWarmer
 import com.metrolist.music.utils.dataStore
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -46,6 +48,7 @@ constructor(
     savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
     val playlistId = savedStateHandle.get<String>("playlistId")!!
+    private val appContext: Context = context
     val playlist =
         database
             .playlist(playlistId)
@@ -96,6 +99,18 @@ constructor(
                 PlaylistSongSortType.PLAY_TIME -> filteredSongs.sortedBy { it.song.song.totalPlayTime }
             }.reversed(sortDescending && sortType != PlaylistSongSortType.CUSTOM)
         }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
+    private val artWarmer = PlaylistArtWarmer(database, playlistId)
+    val artworkWarmProgress: StateFlow<ArtworkWarmProgress?> = artWarmer.progress
+
+    fun startArtworkWarm() {
+        artWarmer.start(viewModelScope, appContext)
+    }
+
+    override fun onCleared() {
+        artWarmer.cancel()
+        super.onCleared()
+    }
 
     init {
         viewModelScope.launch {

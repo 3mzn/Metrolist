@@ -1359,6 +1359,9 @@ interface DatabaseDao {
     @Query("UPDATE song SET playbackPosition = :position WHERE id = :songId")
     fun updatePlaybackPosition(songId: String, position: Long?)
 
+    @Query("UPDATE song SET thumbnailUrl = :url WHERE id = :songId")
+    fun updateThumbnailUrl(songId: String, url: String)
+
     @Query("SELECT playbackPosition FROM song WHERE id = :songId")
     fun getPlaybackPosition(songId: String): Long?
 

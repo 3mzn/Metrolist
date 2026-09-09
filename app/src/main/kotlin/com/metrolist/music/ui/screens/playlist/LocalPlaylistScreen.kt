@@ -42,6 +42,7 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -178,6 +179,12 @@ fun LocalPlaylistScreen(
     val playlist by viewModel.playlist.collectAsStateWithLifecycle()
     val songs by viewModel.playlistSongs.collectAsStateWithLifecycle()
     val onlinePlaylist by viewModel.onlinePlaylist.collectAsStateWithLifecycle()
+    val warmProgress by viewModel.artworkWarmProgress.collectAsStateWithLifecycle()
+
+    // Warm artwork for every song so covers load instantly and survive offline.
+    LaunchedEffect(viewModel.playlistId) {
+        viewModel.startArtworkWarm()
+    }
     val mutableSongs = remember { mutableStateListOf<PlaylistSong>() }
     val playlistLength =
         remember(songs) {
@@ -582,6 +589,32 @@ fun LocalPlaylistScreen(
                                 }
                             }
                         }
+                    }
+                }
+            }
+
+            val progress = warmProgress
+            if (progress != null && progress.total > 0) {
+                item(key = "artwork_warm_progress") {
+                    Column(
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 4.dp)
+                                .animateItem(),
+                    ) {
+                        Text(
+                            text = stringResource(R.string.caching_artwork, progress.done, progress.total),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        LinearProgressIndicator(
+                            progress = { progress.done / progress.total.toFloat() },
+                            modifier =
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 4.dp),
+                        )
                     }
                 }
             }
