@@ -540,9 +540,22 @@ class MusicService :
     private var cachedSkipSilenceInstant = false
     @Volatile
     private var cachedAudioTrackPlaybackParams = true
+    // Resolver hot-path pref: read per resolve per chunk on the loader thread.
+    @Volatile
+    private var cachedSongCacheEnabled = true
+    // contentLength memo for the resolver's cache-completeness probe, keyed by
+    // songUrlCache generation so any invalidate() auto-misses. Nulls are never
+    // memoized (falls back to the Room read and self-heals after a fetch).
+    private val contentLengthMemo = HashMap<String, Pair<Long, Long>>()
 
     // URL cache for stream URLs - class-level so it can be invalidated on errors
     private val songUrlCache = StreamUrlCache()
+
+    // Next-track stream prefetch job. Warms songUrlCache for upcoming items on
+    // Dispatchers.IO only — sequential, low-bandwidth (player-API JSON, no audio
+    // bytes), and never touches player state, so it cannot disturb the playing song.
+    // Cancelled and restarted on every track change; only the latest run survives.
+    private var streamWarmJob: Job? = null
 
     // Tracks mediaIds for which a recoverSong() coroutine is currently in flight.
     //
@@ -579,7 +592,7 @@ class MusicService :
     )
 
     // Flag to bypass cache when quality changes - forces fresh stream fetch
-    private val bypassCacheForQualityChange = mutableSetOf<String>()
+    private val bypassCacheForQualityChange = Collections.synchronizedSet(mutableSetOf<String>())
 
     private var currentMediaIdRetryCount = mutableMapOf<String, Int>()
     private val MAX_RETRY_PER_SONG = 3
@@ -1228,6 +1241,9 @@ class MusicService :
         scope.launch {
             dataStore.data.map { it[AudioTrackPlaybackParamsKey] ?: true }.distinctUntilChanged().collect { cachedAudioTrackPlaybackParams = it }
         }
+        scope.launch {
+            dataStore.data.map { it[EnableSongCacheKey] ?: true }.distinctUntilChanged().collect { cachedSongCacheEnabled = it }
+        }
         // Keep YTPlayerUtils in sync with the stream source toggles (Settings â†’ Stream sources).
         // Map to the derived set + distinctUntilChanged so an unrelated preference write doesn't
         // rebuild the set and rewrite the @Volatile field on every DataStore emission.
@@ -1800,6 +1816,167 @@ class MusicService :
                 recoveringSongs.remove(mediaId)
             }
         }
+    }
+
+    /**
+     * Fast path for the resolver's cache-completeness probe. Falls back to null
+     * (caller does the Room read) on any miss, expiry, or invalidation.
+     */
+    private fun contentLengthMemoized(mediaId: String): Long? {
+        val generation = songUrlCache.generation(mediaId)
+        synchronized(contentLengthMemo) {
+            val (memoGen, length) = contentLengthMemo[mediaId] ?: return null
+            if (memoGen != generation) {
+                contentLengthMemo.remove(mediaId)
+                return null
+            }
+            return length
+        }
+    }
+
+    private fun memoizeContentLength(
+        mediaId: String,
+        generation: Long,
+        contentLength: Long,
+    ) {
+        synchronized(contentLengthMemo) {
+            if (contentLengthMemo.size > 2000) contentLengthMemo.clear()
+            contentLengthMemo[mediaId] = generation to contentLength
+        }
+    }
+
+    /**
+     * Prefetch stream URLs for up to [STREAM_WARM_COUNT] upcoming timeline items so
+     * a skip (or auto-advance) finds a warm [songUrlCache] entry and starts audio
+     * without the InnerTube player-API round trip.
+     *
+     * Zero-interference rules (this must never lag the playing song):
+     * - Returns immediately while the current song is still buffering, so a song
+     *   fighting for its own first byte never competes with prefetch traffic.
+     * - Runs strictly on Dispatchers.IO, strictly sequential (no parallel burst).
+     * - Reads player state only on the calling (main) thread before launching.
+     * - Never writes player state, volumes, UI flows, or tracking caches.
+     * - Skips silently when offline.
+     */
+    private fun warmUpcomingStreams() {
+        if (player.playbackState == Player.STATE_BUFFERING) return
+        if (!isNetworkConnected.value) return
+        val count = player.mediaItemCount
+        val current = player.currentMediaItemIndex
+        if (count == 0 || current == C.INDEX_UNSET) return
+
+        val wrap = player.repeatMode == REPEAT_MODE_ALL
+        val ids =
+            (1..STREAM_WARM_COUNT)
+                .mapNotNull { offset ->
+                    val idx = current + offset
+                    val resolved =
+                        when {
+                            idx < count -> idx
+                            wrap -> idx % count
+                            else -> null
+                        }
+                    resolved?.let {
+                        try {
+                            player.getMediaItemAt(it).mediaId
+                        } catch (_: Exception) {
+                            null
+                        }
+                    }
+                }.distinct()
+        if (ids.isEmpty()) return
+
+        streamWarmJob?.cancel()
+        streamWarmJob =
+            scope.launch(Dispatchers.IO) {
+                for (mediaId in ids) {
+                    if (!isActive) return@launch
+                    try {
+                        fetchAndCacheStreamUrl(mediaId)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Timber.tag(TAG).w(e, "Stream warm failed for $mediaId")
+                    }
+                }
+            }
+    }
+
+    /**
+     * Resolve one song's stream URL into [songUrlCache] (+ its [FormatEntity] row),
+     * mirroring the resolver's fetch sequence in createDataSourceFactory().
+     *
+     * Deliberately NOT copied from the resolver: currentStreamClient (UI indicator
+     * for the playing song), playbackUrlCache (tracking URL for the playing song),
+     * and recoverSongDeduped (metadata recovery runs on actual playback anyway).
+     * Returns false when there is nothing to warm or warming was skipped.
+     */
+    private suspend fun fetchAndCacheStreamUrl(mediaId: String): Boolean {
+        if (!isNetworkConnected.value) return false
+        if (songUrlCache[mediaId] != null) return true
+        if (bypassCacheForQualityChange.contains(mediaId)) return false
+
+        val full = database.song(mediaId).first()
+        if (full?.song?.isLocal == true) return false
+
+        // Fully cached audio needs no URL — the resolver serves it from disk.
+        val knownLength = full?.format?.contentLength
+        if (knownLength != null &&
+            (downloadCache.isCached(mediaId, 0, knownLength) ||
+                (cachedSongCacheEnabled && playerCache.isCached(mediaId, 0, knownLength)))
+        ) {
+            return true
+        }
+
+        val generation = songUrlCache.generation(mediaId)
+        val playbackData =
+            YTPlayerUtils.playerResponseForPlayback(
+                mediaId,
+                audioQuality = audioQuality,
+                connectivityManager = connectivityManager,
+                contentHints =
+                    ContentHints(
+                        isExplicit = full?.song?.explicit,
+                        isUploaded = full?.song?.isUploaded,
+                    ),
+            ).getOrNull() ?: return false
+
+        val format = playbackData.format
+        val loudnessDb = playbackData.audioConfig?.loudnessDb
+        val perceptualLoudnessDb = playbackData.audioConfig?.perceptualLoudnessDb
+        format.contentLength?.let { contentLength ->
+            database.query {
+                upsert(
+                    FormatEntity(
+                        id = mediaId,
+                        itag = format.itag,
+                        mimeType = format.mimeType.substringBefore(";"),
+                        codecs =
+                            format.mimeType
+                                .substringAfter("codecs=", missingDelimiterValue = "")
+                                .substringBefore(";")
+                                .trim()
+                                .removeSurrounding("\""),
+                        bitrate = format.bitrate,
+                        sampleRate = format.audioSampleRate,
+                        contentLength = contentLength,
+                        loudnessDb = loudnessDb,
+                        perceptualLoudnessDb = perceptualLoudnessDb,
+                        playbackUrl = playbackData.playbackTracking?.videostatsPlaybackUrl?.baseUrl,
+                    ),
+                )
+            }
+            memoizeContentLength(mediaId, generation, contentLength)
+        }
+
+        return songUrlCache.put(
+            mediaId = mediaId,
+            url = playbackData.streamUrl,
+            requestHeaders = playbackData.streamHeaders,
+            clientName = playbackData.streamClient,
+            expiresInSeconds = playbackData.streamExpiresInSeconds,
+            expectedGeneration = generation,
+        )
     }
 
     /**
@@ -2645,6 +2822,10 @@ class MusicService :
         if (cachedPersistentQueue) {
             saveQueueToDisk()
         }
+
+        // Warm stream URLs for upcoming tracks (background IO only — never blocks
+        // playback or the transition work above).
+        warmUpcomingStreams()
     }
 
     override fun onPlaybackStateChanged(
@@ -3830,10 +4011,10 @@ class MusicService :
             val shouldBypassCache = bypassCacheForQualityChange.contains(mediaId)
 
             if (!shouldBypassCache) {
-                val usePlayerCache = dataStore.get(EnableSongCacheKey, true)
+                val usePlayerCache = cachedSongCacheEnabled
 
                 val contentLength =
-                    runBlocking(Dispatchers.IO) {
+                    contentLengthMemoized(mediaId) ?: runBlocking(Dispatchers.IO) {
                         database.song(mediaId).first()?.format?.contentLength
                     }
                 val requiredLength =
@@ -3948,6 +4129,7 @@ class MusicService :
                             ),
                         )
                     }
+                    memoizeContentLength(mediaId, cacheGeneration, contentLength)
                 } ?: Timber.tag(TAG).w("Skipping format persistence without content length for $mediaId")
                 recoverSongDeduped(mediaId, nonNullPlayback)
 
@@ -4106,44 +4288,84 @@ class MusicService :
         }
     }
 
-    private fun saveQueueToDisk() {
-        if (player.mediaItemCount == 0) {
-            Timber.tag(TAG).d("Skipping queue save - no media items")
+    // Debounced queue persistence: player callbacks and timer loops funnel here at a
+    // high rate (every transition, every 10-15s while playing). Only the latest
+    // snapshot is ever written; teardown uses immediate=true for today's exact
+    // synchronous behavior.
+    private var saveQueueJob: Job? = null
+
+    private fun saveQueueToDisk(immediate: Boolean = false) {
+        if (immediate) {
+            saveQueueJob?.cancel()
+            saveQueueJob = null
+            captureQueueSnapshot()?.let(::writeQueueSnapshot)
             return
         }
+        saveQueueJob?.cancel()
+        saveQueueJob =
+            scope.launch {
+                delay(QUEUE_SAVE_DEBOUNCE_MS)
+                // Still on Dispatchers.Main here: player getters must stay on the
+                // application thread. Only the file writes drop to IO.
+                val snapshot = captureQueueSnapshot() ?: return@launch
+                withContext(Dispatchers.IO) {
+                    writeQueueSnapshot(snapshot)
+                }
+            }
+    }
 
+    private data class QueueSnapshot(
+        val queue: PersistQueue,
+        val automix: PersistQueue,
+        val playerState: PersistPlayerState,
+    )
+
+    private fun captureQueueSnapshot(): QueueSnapshot? {
+        if (player.mediaItemCount == 0) {
+            Timber.tag(TAG).d("Skipping queue save - no media items")
+            return null
+        }
+
+        return try {
+            QueueSnapshot(
+                queue =
+                    currentQueue.toPersistQueue(
+                        title = queueTitle,
+                        items = player.mediaItems.mapNotNull { it.metadata },
+                        mediaItemIndex = player.currentMediaItemIndex,
+                        position = player.currentPosition,
+                    ),
+                automix =
+                    PersistQueue(
+                        title = "automix",
+                        items = automixItems.value.mapNotNull { it.metadata },
+                        mediaItemIndex = 0,
+                        position = 0,
+                    ),
+                playerState =
+                    PersistPlayerState(
+                        playWhenReady = player.playWhenReady,
+                        repeatMode = player.repeatMode,
+                        shuffleModeEnabled = player.shuffleModeEnabled,
+                        volume = playerVolume.value,
+                        currentPosition = player.currentPosition,
+                        currentMediaItemIndex = player.currentMediaItemIndex,
+                        playbackState = player.playbackState,
+                    ),
+            )
+        } catch (e: Exception) {
+            Timber.tag(TAG).e(e, "Error capturing queue snapshot")
+            reportException(e)
+            null
+        }
+    }
+
+    private fun writeQueueSnapshot(snapshot: QueueSnapshot) {
         try {
-            val persistQueue =
-                currentQueue.toPersistQueue(
-                    title = queueTitle,
-                    items = player.mediaItems.mapNotNull { it.metadata },
-                    mediaItemIndex = player.currentMediaItemIndex,
-                    position = player.currentPosition,
-                )
-
-            val persistAutomix =
-                PersistQueue(
-                    title = "automix",
-                    items = automixItems.value.mapNotNull { it.metadata },
-                    mediaItemIndex = 0,
-                    position = 0,
-                )
-
-            val persistPlayerState =
-                PersistPlayerState(
-                    playWhenReady = player.playWhenReady,
-                    repeatMode = player.repeatMode,
-                    shuffleModeEnabled = player.shuffleModeEnabled,
-                    volume = playerVolume.value,
-                    currentPosition = player.currentPosition,
-                    currentMediaItemIndex = player.currentMediaItemIndex,
-                    playbackState = player.playbackState,
-                )
-
             runCatching {
                 filesDir.resolve(PERSISTENT_QUEUE_FILE).outputStream().use { fos ->
                     ObjectOutputStream(fos).use { oos ->
-                        oos.writeObject(persistQueue)
+                        oos.writeObject(snapshot.queue)
                     }
                 }
                 Timber.tag(TAG).d("Queue saved successfully")
@@ -4155,7 +4377,7 @@ class MusicService :
             runCatching {
                 filesDir.resolve(PERSISTENT_AUTOMIX_FILE).outputStream().use { fos ->
                     ObjectOutputStream(fos).use { oos ->
-                        oos.writeObject(persistAutomix)
+                        oos.writeObject(snapshot.automix)
                     }
                 }
                 Timber.tag(TAG).d("Automix saved successfully")
@@ -4167,7 +4389,7 @@ class MusicService :
             runCatching {
                 filesDir.resolve(PERSISTENT_PLAYER_STATE_FILE).outputStream().use { fos ->
                     ObjectOutputStream(fos).use { oos ->
-                        oos.writeObject(persistPlayerState)
+                        oos.writeObject(snapshot.playerState)
                     }
                 }
                 Timber.tag(TAG).d("Player state saved successfully")
@@ -4299,7 +4521,8 @@ class MusicService :
         audioManager.unregisterAudioDeviceCallback(audioDeviceCallback)
         castConnectionHandler?.release()
         if (dataStore.get(PersistentQueueKey, true)) {
-            saveQueueToDisk()
+            // Synchronous flush: the debounced path would die with the scope below.
+            saveQueueToDisk(immediate = true)
         }
         screenOffHandler.removeCallbacks(screenOffTimeout)
         screenOffHandler.removeCallbacks(pauseTimeout)
@@ -5151,6 +5374,9 @@ class MusicService :
         // scheduleCrossfade() now suppresses that path, so without this call only
         // the first crossfade after app start would ever fire.
         scheduleCrossfade()
+        // Warm upcoming stream URLs now that the fade is done (the manual transition
+        // at swap time fired while isCrossfading, before this track was current).
+        warmUpcomingStreams()
     }
 
     private fun releaseExoPlayer(player: ExoPlayer) {
@@ -5187,6 +5413,10 @@ class MusicService :
 
         private const val INITIAL_BUFFER_RECOVERY_DELAY_MS = 15_000L
         private const val INITIAL_BUFFER_RECOVERY_POSITION_MS = 5_000L
+        // Upcoming-stream prefetch depth for warmUpcomingStreams().
+        private const val STREAM_WARM_COUNT = 3
+        // Debounce for saveQueueToDisk(): snapshots collapse, teardown flushes sync.
+        private const val QUEUE_SAVE_DEBOUNCE_MS = 2_000L
         private const val MAX_GAIN_MB = 300 // Maximum gain in millibels (3 dB)
         private const val MIN_GAIN_MB = -1500 // Minimum gain in millibels (-15 dB)
 
