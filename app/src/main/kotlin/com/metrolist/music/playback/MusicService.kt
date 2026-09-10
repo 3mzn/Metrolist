@@ -323,6 +323,12 @@ class MusicService :
     private var crossfadeDuration = 5000f
     private var crossfadeGapless = true
     private var crossfadeMessage: PlayerMessage? = null
+    private var prePrepareMessage: PlayerMessage? = null
+    private var preWarmedPlayer: ExoPlayer? = null
+    private var preWarmSourceId: String? = null
+    private var preWarmTargetId: String? = null
+    private var preWarmItemCount: Int = -1
+    private val preWarmHeadStartMs = 10_000L
 
     private val secondaryPlayerListener =
         object : Player.Listener {
@@ -1382,7 +1388,10 @@ class MusicService :
         }
     }
 
-    private fun createExoPlayer(prefs: Preferences? = null): ExoPlayer {
+    private fun createExoPlayer(
+        prefs: Preferences? = null,
+        publishToFlow: Boolean = true,
+    ): ExoPlayer {
         val normalizationProcessor = VolumeNormalizationAudioProcessor().also {
             it.enabled = cachedNormalizationEnabled
             cachedNormalizationGainMb?.let { gain -> it.setTargetGain(gain) }
@@ -1450,8 +1459,12 @@ class MusicService :
         }
         player.addAnalyticsListener(PlaybackStatsListener(false, this@MusicService))
 
-        // Cleanup handled manually in onDestroy/release
-        _playerFlow.value = player
+        // Cleanup handled manually in onDestroy/release. Pre-warmed players stay
+        // hidden: publishing one would hijack PlayerConnection's attached player
+        // (and the UI) for the whole head-start window.
+        if (publishToFlow) {
+            _playerFlow.value = player
+        }
         return player
     }
 
@@ -2738,6 +2751,12 @@ class MusicService :
             }
         }
         lastTransitionedMediaId = mediaItem?.mediaId
+        // A real track change invalidates any pre-warmed incoming player. The
+        // swap-time manual call always finds it already consumed, so this is a
+        // no-op there.
+        if (preWarmedPlayer != null && mediaItem?.mediaId != preWarmSourceId) {
+            releasePreWarmed()
+        }
         initialBufferRecoveryJob?.cancel()
         initialBufferRecoveryJob = null
         initialBufferRecoveryAttemptedMediaId = null
@@ -2785,7 +2804,10 @@ class MusicService :
         if (!isCrossfading) setupAudioNormalization()
 
         scrobbleManager?.onSongStop()
-        if (player.playWhenReady && player.playbackState == Player.STATE_READY) {
+        // Deferred mid-fade (swap-time call): a Last.fm POST shares the throttled
+        // screen-off radio with the incoming track's refill. cleanupCrossfade()
+        // fires it post-fade.
+        if (!isCrossfading && player.playWhenReady && player.playbackState == Player.STATE_READY) {
             scrobbleManager?.onSongStart(player.currentMetadata, duration = player.duration)
         }
 
@@ -4564,6 +4586,9 @@ class MusicService :
         mediaSession?.release()
         crossfadeMessage?.cancel()
         crossfadeMessage = null
+        prePrepareMessage?.cancel()
+        prePrepareMessage = null
+        releasePreWarmed()
         crossfadeJob?.cancel()
         crossfadeJob = null
         secondaryPlayer?.let { pendingPlayer ->
@@ -4932,6 +4957,10 @@ class MusicService :
         widgetUpdateInFlight = true
 
         scope.launch {
+            // Pause widget/heartbeat work mid-fade: every byte of screen-off radio
+            // belongs to the incoming track's media refill. The 200ms ticker
+            // retries right after the fade; nothing is lost.
+            if (isCrossfading) return@launch
             try {
                 while (true) {
                     val (playing, isLikedRequested) = pendingWidgetUpdate ?: break
@@ -5111,6 +5140,7 @@ class MusicService :
         reason: Int,
     ) {
         if (reason == Player.DISCONTINUITY_REASON_SEEK) {
+            releasePreWarmed()
             scheduleCrossfade()
         }
     }
@@ -5118,6 +5148,8 @@ class MusicService :
     private fun scheduleCrossfade() {
         crossfadeMessage?.cancel()
         crossfadeMessage = null
+        prePrepareMessage?.cancel()
+        prePrepareMessage = null
 
         // Never schedule while a crossfade is already running — the new player's
         // STATE_READY would otherwise queue a nested crossfade on the incoming track.
@@ -5133,6 +5165,29 @@ class MusicService :
         if (mediaTimeRemaining <= 0) return
 
         val targetMediaId = player.currentMediaItem?.mediaId
+
+        // Pre-warm the incoming track well before the trigger: a paused prepared
+        // player buffers silently (no wake lock, no audio), so by trigger time its
+        // buffer is full even on a throttled screen-off radio. Invalidated on
+        // seek/track change; startCrossfade() revalidates before reuse.
+        val preWarmTargetIndex =
+            if (player.repeatMode == REPEAT_MODE_ONE) player.currentMediaItemIndex
+            else player.nextMediaItemIndex
+        if (preWarmTargetIndex != C.INDEX_UNSET) {
+            val prePrepareTime = player.duration - mediaCrossfadeDuration - preWarmHeadStartMs
+            if (prePrepareTime > player.currentPosition + 1000) {
+                prePrepareMessage =
+                    player.createMessage { _, _ ->
+                        if (!isCrossfading && player.isPlaying && player.currentMediaItem?.mediaId == targetMediaId) {
+                            prePrepareSecondary(preWarmTargetIndex)
+                        }
+                    }.apply {
+                        setLooper(Looper.getMainLooper())
+                        setPosition(prePrepareTime)
+                        send()
+                    }
+            }
+        }
 
         crossfadeMessage = player.createMessage { _, _ ->
             val timer = sleepTimer
@@ -5154,6 +5209,94 @@ class MusicService :
         return current.albumTitle != null && current.albumTitle == next.albumTitle
     }
 
+    private val preWarmErrorListener =
+        object : Player.Listener {
+            override fun onPlayerError(error: PlaybackException) {
+                Timber.tag(TAG).e(error, "Pre-warmed player failed; trigger will use the normal path")
+                releasePreWarmed()
+            }
+        }
+
+    private fun prePrepareSecondary(targetIndex: Int) {
+        releasePreWarmed()
+        if (targetIndex == C.INDEX_UNSET || targetIndex >= player.mediaItemCount) return
+        val targetId =
+            try {
+                player.getMediaItemAt(targetIndex).mediaId
+            } catch (_: Exception) {
+                return
+            }
+        // Too close to the trigger to matter — startCrossfade()'s normal path handles it.
+        if (player.duration - player.currentPosition < crossfadeDuration + 2000) return
+        try {
+            val warmPlayer = createExoPlayer(publishToFlow = false)
+            val items = mutableListOf<MediaItem>()
+            for (i in 0 until player.mediaItemCount) {
+                items.add(player.getMediaItemAt(i))
+            }
+            warmPlayer.setMediaItems(items)
+            warmPlayer.seekTo(targetIndex, 0)
+            warmPlayer.volume = 0f
+            warmPlayer.repeatMode = player.repeatMode
+            warmPlayer.shuffleModeEnabled = player.shuffleModeEnabled
+            warmPlayer.playbackParameters = player.playbackParameters
+            warmPlayer.addListener(preWarmErrorListener)
+            warmPlayer.prepare()
+            warmPlayer.playWhenReady = false
+            preWarmedPlayer = warmPlayer
+            preWarmSourceId = player.currentMediaItem?.mediaId
+            preWarmTargetId = targetId
+            preWarmItemCount = player.mediaItemCount
+        } catch (e: Exception) {
+            Timber.tag(TAG).e(e, "Pre-warm setup failed; trigger will use the normal path")
+            releasePreWarmed()
+        }
+    }
+
+    private fun takePreWarmedIfValid(targetIndex: Int): ExoPlayer? {
+        val warm = preWarmedPlayer ?: return null
+        val targetId =
+            try {
+                player.getMediaItemAt(targetIndex).mediaId
+            } catch (_: Exception) {
+                return null
+            }
+        if (preWarmSourceId != player.currentMediaItem?.mediaId) return null
+        if (preWarmItemCount != player.mediaItemCount) return null
+        if (preWarmTargetId != targetId) return null
+        if (targetIndex >= warm.mediaItemCount) return null
+        try {
+            if (warm.getMediaItemAt(targetIndex).mediaId != targetId) return null
+        } catch (_: Exception) {
+            return null
+        }
+        preWarmedPlayer = null
+        preWarmSourceId = null
+        preWarmTargetId = null
+        preWarmItemCount = -1
+        return warm
+    }
+
+    private fun releasePreWarmed() {
+        preWarmedPlayer?.let { warm ->
+            try {
+                warm.removeListener(preWarmErrorListener)
+                warm.stop()
+                warm.clearMediaItems()
+                releaseExoPlayer(warm)
+            } catch (_: Exception) {
+                try {
+                    releaseExoPlayer(warm)
+                } catch (_: Exception) {
+                }
+            }
+        }
+        preWarmedPlayer = null
+        preWarmSourceId = null
+        preWarmTargetId = null
+        preWarmItemCount = -1
+    }
+
     private fun startCrossfade() {
         if (isCrossfading) return
 
@@ -5172,19 +5315,30 @@ class MusicService :
             }
         if (targetIndex == C.INDEX_UNSET) return
 
-        secondaryPlayer = createExoPlayer()
-        val secPlayer = secondaryPlayer!!
-        secPlayer.addListener(secondaryPlayerListener)
-
+        // Reuse the pre-warmed player when the timeline hasn't changed since it
+        // was prepared — its buffer is already full, so the fade never waits on
+        // a throttled screen-off radio. Otherwise build one fresh (old path).
         val itemCount = player.mediaItemCount
         val items = mutableListOf<MediaItem>()
         for (i in 0 until itemCount) {
             items.add(player.getMediaItemAt(i))
         }
 
-        secPlayer.setMediaItems(items)
-        secPlayer.seekTo(targetIndex, 0)
-        secPlayer.volume = 0f
+        val preWarmed = takePreWarmedIfValid(targetIndex)
+        if (preWarmed != null) {
+            secondaryPlayer = preWarmed
+        } else {
+            releasePreWarmed()
+            val fresh = createExoPlayer()
+            fresh.setMediaItems(items)
+            fresh.seekTo(targetIndex, 0)
+            fresh.volume = 0f
+            secondaryPlayer = fresh
+        }
+        val secPlayer = secondaryPlayer!!
+        secPlayer.removeListener(preWarmErrorListener)
+        secPlayer.removeListener(secondaryPlayerListener)
+        secPlayer.addListener(secondaryPlayerListener)
 
         secPlayer.setPlaybackParameters(player.playbackParameters)
 
@@ -5453,6 +5607,13 @@ class MusicService :
         isCrossfading = false
         applyEffectiveVolume()
         sleepTimer?.notifySongTransition()
+
+        // Post-fade catch-up for work deferred out of the fade window (radio
+        // dedication): scrobble start, widget/heartbeat refresh, stream warming.
+        if (player.playWhenReady && player.playbackState == Player.STATE_READY) {
+            scrobbleManager?.onSongStart(player.currentMetadata, duration = player.duration)
+        }
+        updateWidgetUI(player.isPlaying)
 
         // Apply normalization and open audio effect session NOW that crossfade is done.
         // These were deferred from performCrossfadeSwap() to avoid mid-fade glitches.
