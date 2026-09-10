@@ -60,6 +60,15 @@ internal fun <T> upcomingQueueItems(
     currentIndex: Int,
 ): List<T> = if (currentIndex in queue.indices) queue.drop(currentIndex + 1) else emptyList()
 
+// Heartbeats double as PLAY actions, so ordinary drift during active playback
+// must not interrupt it — only hard-sync a ready player past this tolerance.
+private const val ACTIVE_PLAYBACK_SYNC_TOLERANCE_MS = 2_000L
+
+internal fun shouldSeekDuringActivePlayback(
+    positionDifferenceMs: Long,
+    playbackReady: Boolean,
+): Boolean = playbackReady && positionDifferenceMs > ACTIVE_PLAYBACK_SYNC_TOLERANCE_MS
+
 /**
  * Manager that bridges the Listen Together WebSocket client with the music player.
  * Handles syncing playback actions between connected users.
@@ -1078,20 +1087,18 @@ class ListenTogetherManager
                         val posDiff = kotlin.math.abs(player.currentPosition - adjustedPos)
                         val alreadyPlaying = player.playWhenReady
                         if (alreadyPlaying) {
-                            if (posDiff >= HARD_SYNC_THRESHOLD_MS) {
+                            // PLAY is also the host heartbeat, so ordinary drift must not interrupt playback.
+                            if (shouldSeekDuringActivePlayback(posDiff, player.playbackState == Player.STATE_READY)) {
+                                cancelDriftCorrection()
                                 Timber.tag(TAG).d("Guest: hard sync ${player.currentPosition} -> $adjustedPos (diff ${posDiff}ms)")
                                 connection.seekTo(adjustedPos)
                             }
                         } else {
+                            cancelDriftCorrection()
                             if (posDiff > SOFT_SYNC_THRESHOLD_MS) {
                                 connection.seekTo(adjustedPos)
                             }
                             connection.play()
-                        }
-                        if (posDiff > SOFT_SYNC_THRESHOLD_MS && posDiff < HARD_SYNC_THRESHOLD_MS) {
-                            startDriftCorrection(connection, playTarget, basePos, action.serverTime)
-                        } else {
-                            cancelDriftCorrection()
                         }
                         lastSyncActionTime = now
                     }
@@ -2045,7 +2052,7 @@ class ListenTogetherManager
             heartbeatJob =
                 scope.launch {
                     while (heartbeatJob?.isActive == true && isInRoom && isHost) {
-                        delay(4000L)
+                        delay(8000L)
                         playerConnection?.player?.let { player ->
                             if (player.playWhenReady && player.playbackState == Player.STATE_READY) {
                                 val pos = player.currentPosition
@@ -2060,7 +2067,7 @@ class ListenTogetherManager
                         }
                     }
                 }
-            Timber.tag(TAG).d("Host heartbeat started (4s interval)")
+            Timber.tag(TAG).d("Host heartbeat started (8s interval)")
         }
 
         private fun stopHeartbeat() {

@@ -648,6 +648,9 @@ class PlayerConnection(
     }
 
     override fun onRepeatModeChanged(mode: Int) {
+        // Ignore stale callbacks from the retired fading player after a
+        // crossfade swap — only the live player's mode is authoritative.
+        if (mode != player.repeatMode) return
         repeatMode.value = mode
         updateCanSkipPreviousAndNext()
     }

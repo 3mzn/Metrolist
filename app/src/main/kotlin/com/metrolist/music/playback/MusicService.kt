@@ -1864,6 +1864,11 @@ class MusicService :
      */
     private fun warmUpcomingStreams() {
         if (player.playbackState == Player.STATE_BUFFERING) return
+        // Never steal bandwidth mid-fade: the swap-time transition re-fires this
+        // while isCrossfading, and its InnerTube resolves would contend with the
+        // incoming player's media buffering. Screen-off throttling makes that
+        // contention audible; cleanupCrossfade() re-fires this post-fade.
+        if (isCrossfading) return
         if (!isNetworkConnected.value) return
         val count = player.mediaItemCount
         val current = player.currentMediaItemIndex
@@ -5265,11 +5270,17 @@ class MusicService :
                 try {
                     // Wait for a healthy buffer before starting the ramp — a thin
                     // buffer re-stalls mid-fade and sounds like a skipping record.
-                    // prepare() is async and min buffer is only 750ms.
+                    // prepare() is async and min buffer is only 750ms. The cap is
+                    // generous on purpose: with the screen off the OS may throttle
+                    // network/CPU, so the incoming track can fill slowly — and the
+                    // wait is free because the outgoing track keeps playing at full
+                    // volume until the ramp starts. Bail once the outgoing track is
+                    // nearly done; the ramp-fit below then degrades to a quick
+                    // clean cut instead of fading over a starving buffer.
                     val targetPlayer = player
                     var waits = 0
                     var buffered = false
-                    while (isActive && !buffered && waits < 30) { // up to 3 seconds
+                    while (isActive && !buffered && waits < 80) { // up to 8 seconds
                         buffered =
                             try {
                                 targetPlayer.bufferedPosition - targetPlayer.currentPosition >= 1200
@@ -5279,6 +5290,18 @@ class MusicService :
                                 return@launch
                             }
                         if (!buffered) {
+                            val fadingRemaining =
+                                try {
+                                    val fadingDuration = fadingPlayer?.duration ?: C.TIME_UNSET
+                                    if (fadingDuration == C.TIME_UNSET) {
+                                        Long.MAX_VALUE
+                                    } else {
+                                        fadingDuration - (fadingPlayer?.currentPosition ?: 0L)
+                                    }
+                                } catch (_: Exception) {
+                                    Long.MAX_VALUE
+                                }
+                            if (fadingRemaining < 800) break
                             delay(100)
                             waits++
                         }
@@ -5340,10 +5363,40 @@ class MusicService :
                         waitedMs += 50
                     }
 
-                    for (i in 0..steps) {
-                        if (!isActive) break
+                    // Stall-aware ramp: if the incoming player starves mid-fade
+                    // (screen-off network throttle), hold the ramp instead of fading
+                    // up over stutter — stalls then happen at low volume. The hold
+                    // budget is global so the ramp can't stretch forever; once the
+                    // outgoing track is nearly done we push through to a clean cut.
+                    var step = 0
+                    var holdBudgetMs = 3000
+                    while (isActive && step <= steps) {
+                        val incomingStalled =
+                            try {
+                                !player.isPlaying
+                            } catch (_: Exception) {
+                                false
+                            }
+                        if (incomingStalled && holdBudgetMs > 0) {
+                            val fadingRemainingMs =
+                                try {
+                                    val fadingDuration = fadingPlayer?.duration ?: C.TIME_UNSET
+                                    if (fadingDuration == C.TIME_UNSET) {
+                                        Long.MAX_VALUE
+                                    } else {
+                                        (fadingDuration - (fadingPlayer?.currentPosition ?: 0L)).coerceAtLeast(0L)
+                                    }
+                                } catch (_: Exception) {
+                                    Long.MAX_VALUE
+                                }
+                            if (fadingRemainingMs > 1200) {
+                                delay(100)
+                                holdBudgetMs -= 100
+                                continue
+                            }
+                        }
 
-                        val progress = i / steps.toFloat()
+                        val progress = step / steps.toFloat()
                         // Equal-power crossfade: the old quadratic curves dip ~3dB
                         // mid-fade, which sounds like a dropout/glitch.
                         val fadeIn = sin(progress * PI.toFloat() / 2f)
@@ -5356,6 +5409,7 @@ class MusicService :
                             break
                         }
 
+                        step++
                         delay(stepTime)
                     }
 
