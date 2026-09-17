@@ -55,6 +55,7 @@ import com.metrolist.music.LocalPlayerAwareWindowInsets
 import com.metrolist.music.LocalPlayerConnection
 import com.metrolist.music.R
 import com.metrolist.music.constants.EnableSongCacheKey
+import com.metrolist.music.constants.DownloadLyricsWithDownloadsKey
 import com.metrolist.music.constants.MaxImageCacheSizeKey
 import com.metrolist.music.constants.MaxSongCacheSizeKey
 import com.metrolist.music.db.entities.PlaylistEntity
@@ -105,6 +106,17 @@ fun StorageSettings(
         key = EnableSongCacheKey,
         defaultValue = true
     )
+    val (downloadLyrics, onDownloadLyricsChange) = rememberPreference(
+        key = DownloadLyricsWithDownloadsKey,
+        defaultValue = true
+    )
+    val missingLyricsCount by remember { database.downloadedSongsMissingLyricsCount() }
+        .collectAsStateWithLifecycle(initialValue = 0)
+    val notFoundLyricsCount by remember {
+        database.downloadedSongsLyricsNotFoundCount(
+            com.metrolist.music.db.entities.LyricsEntity.LYRICS_NOT_FOUND,
+        )
+    }.collectAsStateWithLifecycle(initialValue = 0)
 
     var clearDownloads by remember { mutableStateOf(false) }
     var clearCacheDialog by remember { mutableStateOf(false) }
@@ -370,6 +382,52 @@ fun StorageSettings(
                         },
                     ),
                     Material3SettingsItem(
+                        icon = painterResource(R.drawable.lyrics),
+                        title = { Text(stringResource(R.string.download_lyrics_with_downloads)) },
+                        description = {
+                            Column {
+                                Text(text = stringResource(R.string.download_lyrics_with_downloads_desc))
+                                if (missingLyricsCount > 0) {
+                                    Text(
+                                        text = stringResource(R.string.download_lyrics_pending, missingLyricsCount),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                                if (notFoundLyricsCount > 0) {
+                                    Text(
+                                        text = stringResource(R.string.download_lyrics_not_found, notFoundLyricsCount),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                                if (missingLyricsCount == 0 && notFoundLyricsCount == 0) {
+                                    Text(
+                                        text = stringResource(R.string.download_lyrics_ready),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                        },
+                        trailingContent = {
+                            Switch(
+                                checked = downloadLyrics,
+                                onCheckedChange = onDownloadLyricsChange,
+                                thumbContent = {
+                                    Icon(
+                                        painter = painterResource(
+                                            id = if (downloadLyrics) R.drawable.check else R.drawable.close
+                                        ),
+                                        contentDescription = null,
+                                        modifier = Modifier.size(SwitchDefaults.IconSize)
+                                    )
+                                }
+                            )
+                        },
+                        onClick = { onDownloadLyricsChange(!downloadLyrics) },
+                    ),
+                    Material3SettingsItem(
                         icon = painterResource(R.drawable.clear_all),
                         title = { Text(stringResource(R.string.clear_to_listen)) },
                         description = {
@@ -387,8 +445,7 @@ fun StorageSettings(
                     ),
                     Material3SettingsItem(
                         icon = painterResource(R.drawable.palette),
-                        title = { Text(stringResource(R.string.widget_ui_debug_test_title)) },
-                        description = {
+                        title = { Text(stringResource(R.string.widget_ui_debug_test_title)) },                        description = {
                             Text(text = stringResource(R.string.widget_ui_debug_test_subtitle))
                         },
                         trailingContent = {

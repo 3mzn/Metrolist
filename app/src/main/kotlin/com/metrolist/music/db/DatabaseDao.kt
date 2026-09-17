@@ -827,6 +827,24 @@ interface DatabaseDao {
     @Query("SELECT * FROM lyrics WHERE id = :id")
     fun lyrics(id: String?): Flow<LyricsEntity?>
 
+    @Query("DELETE FROM lyrics WHERE id = :songId")
+    fun deleteLyricsById(songId: String)
+
+    /**
+     * Downloaded, non-episode songs with no lyrics row (neither lyrics nor the
+     * not-found marker). Drives the Storage settings status line for lyrics warming.
+     */
+    @Query("SELECT COUNT(*) FROM song WHERE dateDownload IS NOT NULL AND (isEpisode = 0 OR isEpisode IS NULL) AND NOT EXISTS (SELECT 1 FROM lyrics WHERE lyrics.id = song.id)")
+    fun downloadedSongsMissingLyricsCount(): Flow<Int>
+
+    /**
+     * Downloaded songs whose lyrics row is the not-found marker: providers were queried
+     * (with retries) and genuinely have no lyrics. Distinct from [downloadedSongsMissingLyricsCount],
+     * which counts rows still waiting for a fetch.
+     */
+    @Query("SELECT COUNT(*) FROM song WHERE dateDownload IS NOT NULL AND (isEpisode = 0 OR isEpisode IS NULL) AND EXISTS (SELECT 1 FROM lyrics WHERE lyrics.id = song.id AND lyrics.lyrics = :notFound)")
+    fun downloadedSongsLyricsNotFoundCount(notFound: String): Flow<Int>
+
     @Transaction
     @SuppressWarnings(RoomWarnings.QUERY_MISMATCH)
     @Query("SELECT *, (SELECT COUNT(1) FROM song_artist_map JOIN song ON song_artist_map.songId = song.id WHERE artistId = artist.id AND song.inLibrary IS NOT NULL) AS songCount FROM artist WHERE songCount > 0 ORDER BY rowId")
