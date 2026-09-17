@@ -1,3 +1,8 @@
+---v13.9.9
+- Save lyrics with downloads: lyrics are automatically fetched and kept offline for every downloaded song
+- One-time backfill for existing downloads plus automatic retry with backoff
+- Removing a download removes its saved lyrics; Storage settings shows a live missing-lyrics count
+
 ---v13.6.3
 
 This is a hotfix release to fix borked lyrics and media controller. We apologize for the inconvenience.  
