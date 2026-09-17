@@ -6,7 +6,7 @@ Two users only: **eman** (sender) & **aswini** (receiver). All personalization u
 Build order: 13 → 3 → 5 → 6 → 4 → 7 → 8
 (#6 hard-depends on #5; #4 soft-depends on #5 for presence-based skip conditions)
 
-Progress: 13 ✅ · 3 ✅ · 5+6 ✅ (shipped as one Partner widget feature) · W-SCALE ✅ (shipped at 65% floor) · 4 ✅ (gentle nudge shipped + tested) · 7 ✅ (listen together invites — one-tap `invites/{recipientUid}`, 30 min expiry) · 8 🧪 (implemented; first two-device pass found 4 follow-ups) · next: finish **8** → **9 VIZ**
+Progress: 13 ✅ · 3 ✅ · 5+6 ✅ (shipped as one Partner widget feature) · W-SCALE ✅ (shipped at 65% floor) · 4 ✅ (gentle nudge shipped + tested) · 7 ✅ (listen together invites — one-tap `invites/{recipientUid}`, 30 min expiry) · 8 🧪 (implemented; first two-device pass found 4 follow-ups) · next: finish **8** → **9 VIZ** · 11 parked (general, not couple-oriented)
 
 ---
 
@@ -144,6 +144,17 @@ changed to device-local after testing; cross-device cover sync is no longer requ
 - **Sync strategy (simple version):** Firestore doc per shared playlist holding ordered song-ID list + metadata. Both phones listen to their shared playlists' docs; incoming changes merge into the local Room copy, outgoing adds/deletes write to Firestore first then apply locally on ack. Last-writer-wins per song operation is fine at two users.
 - **UI:** shared playlists appear in the normal playlists grid with a 👥/"Us" glyph; long-press menu hides destructive options ("delete" requires confirmation naming both of us).
 - **Conflict reality check:** different songs added within the same minute just merge (array union). Same-song simultaneous edits basically never happen — do NOT over-engineer CRDTs.
+
+---
+
+## 11. 8D orbit effect (general, parked)
+
+Real-time "sound moving around your head" effect for headphone listening. Mechanically an automated panpot (left = cos θ, right = sin θ, ~8–10s orbit) — no head tracking, no HRTFs. Total playback energy is preserved (cos²+sin²=1), so normalization stays valid and it slots into the existing DSP chain after the EQ.
+
+- **Toggle, never default.** Settings switch (default OFF, the only sticky control) + per-session toggle in the player menu. Proposed: menu toggle resets to the settings default every launch.
+- **Auto-bypass (non-negotiable):** phone speaker (mono sum makes it pure volume pumping), episodes/podcasts, mono recordings, Listen Together guests (orbit would fight sync timing).
+- **Smarts (open: full package v1 vs fixed-first):** adaptive depth from measured stereo correlation, bass exemption below ~200 Hz, suitability gate that refuses unsuitable tracks. Fixed orbit + bypasses alone is the cheap fallback.
+- **Honest ceiling:** ~70% of produced YouTube 8D on suitable tracks; per-track reverb/EQ artistry is not automatable. Self-tuning inside the DSP stage (no DB/schema changes) is the intended implementation.
 
 ---
 
