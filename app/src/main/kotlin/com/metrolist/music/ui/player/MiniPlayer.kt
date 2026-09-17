@@ -124,6 +124,8 @@ import androidx.palette.graphics.Palette
 import coil3.imageLoader
 import coil3.request.ImageRequest
 import coil3.request.allowHardware
+import coil3.request.CachePolicy
+import coil3.request.crossfade
 import coil3.toBitmap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -630,6 +632,8 @@ private fun NewMiniPlayerPlayButton(
     val isListenTogetherGuest = listenTogetherManager?.let { it.isInRoom && !it.isHost } ?: false
     val isMuted by playerConnection.isMuted.collectAsStateWithLifecycle()
 
+    val context = LocalContext.current
+
     val trackColor = outlineColor.copy(alpha = 0.2f)
     val strokeWidth = 3.dp
 
@@ -677,6 +681,7 @@ private fun NewMiniPlayerPlayButton(
                 Modifier
                     .size(40.dp)
                     .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.surfaceVariant, CircleShape)
                     .border(1.dp, outlineColor.copy(alpha = 0.3f), CircleShape)
                     .clickable {
                         if (isListenTogetherGuest) {
@@ -694,14 +699,29 @@ private fun NewMiniPlayerPlayButton(
                     },
         ) {
             mediaMetadata?.let { metadata ->
-                val thumbnailUrl =
-                    remember(metadata.thumbnailUrl) {
-                        metadata.thumbnailUrl?.resize(120, 120)
+                // Cover-art fix: this used to request a unique resize(120,120) URL variant
+                // that no other surface warms (PlaylistArtWarmer warms 544, the queue
+                // prefetcher and main player use the raw URL). Coil caches per URL+size, so
+                // that variant was always a cold network fetch and rendered blank whenever it
+                // was slow or failed. Request the same raw URL everything else warms, fall
+                // back to the 544 variant on error, and keep explicit cache policies.
+                val rawUrl = metadata.thumbnailUrl
+                var useFallback by remember(metadata.id) { mutableStateOf(false) }
+                val artRequest =
+                    remember(rawUrl, useFallback) {
+                        ImageRequest.Builder(context)
+                            .data(if (useFallback) rawUrl?.resize(544, 544) else rawUrl)
+                            .memoryCachePolicy(CachePolicy.ENABLED)
+                            .diskCachePolicy(CachePolicy.ENABLED)
+                            .networkCachePolicy(CachePolicy.ENABLED)
+                            .crossfade(true)
+                            .build()
                     }
                 AsyncImage(
-                    model = thumbnailUrl,
+                    model = artRequest,
                     contentDescription = null,
                     contentScale = ContentScale.Crop,
+                    onError = { if (!useFallback) useFallback = true },
                     modifier = Modifier.fillMaxSize().clip(CircleShape),
                 )
             }
