@@ -1,5 +1,7 @@
 # SPEC_SHARED_RECEIVE_SPEED — parallelize shared-playlist receive
 
+> Status: **COMPLETE — shipped in 13.10.1.** All phases implemented, audited, device-tested.
+
 ## 0. Context for an agent with no prior history
 
 This repo (`C:\musicapp\metrolist`) is a private two-person fork (eman + aswini) of the
@@ -85,3 +87,23 @@ The Firestore doc itself arrives in milliseconds — all delay is local fan-out.
 - Playlist screen stays smooth during bulk receive (no thousand-recomposition stutter).
 - Re-run SPEC_8 checklist spot items (add/remove/rename/delete) — sync semantics
   untouched. KILL the app mid-receive once: restart must converge idempotently.
+
+## 5. Follow-up: per-song PoToken mint was the real ceiling (fixed in 13.10.0-TEST+)
+
+After phases 1–3 shipped, device testing showed 100 songs in 33–50s (2–5 songs/sec,
+inconsistent) — well below what 6-wide parallelism should deliver.
+
+Root cause: every `playerResponseForMetadata` call minted a fresh per-video PoToken via
+`PoTokenGenerator.getWebClientPoToken(videoId, sessionId)`. All 6 lanes serialized through
+the single shared PoToken WebView (one `evaluateJavascript` thread + Main dispatcher), and
+worse, the per-video token was DISCARDED — metadata requests only ever send
+`playerRequestPoToken`, which is the session-level streaming pot, identical for every song.
+Each song paid a serialized WebView round-trip for nothing.
+
+Fix (`64c63f503`): new `PoTokenGenerator.getSessionPoToken(sessionId)` returns the cached
+session pot without per-video minting; `YTPlayerUtils.playerResponseForMetadata` uses it.
+The per-video entry point was refactored into a shared guarded wrapper + extracted
+`ensureSessionGenerator` with byte-identical timeout/cleanup/retry behavior — the playback
+path cannot tell the difference. Wire behavior is unchanged (same token string sent).
+
+Measured: 93 songs in 4s (~23/s); 493 songs in 43s (~11.5/s). Rolled into 13.10.1.
