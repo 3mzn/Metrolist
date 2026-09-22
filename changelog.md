@@ -1,3 +1,7 @@
+---v13.10.0
+- Shared playlist receive is much faster: songs fetch 6 at a time and save in batches, so a 400-song share lands in minutes and the screen stays smooth
+- Sharing a second playlist while the first is still arriving works safely, offline pauses instead of failing, and killing the app mid-receive recovers on restart
+
 ---v13.9.10
 - Cover art now recovers on all player surfaces: big cover, background blur, and queue art retry against a fallback artwork variant instead of staying blank
 - Miniplayer ring and gradient wash no longer stick on white when artwork loads slowly
