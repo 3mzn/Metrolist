@@ -543,13 +543,16 @@ object YTPlayerUtils {
         Timber.tag(logTag).d("Fetching metadata player response for videoId: $videoId using MAIN_CLIENT: ${MAIN_CLIENT.clientName}")
         val signatureTimestamp = getSignatureTimestampOrNull(videoId)
         val sessionId = YouTube.visitorData
-        var poToken: PoTokenResult? = null
+        // Session-level token only: metadata calls send playerRequestPoToken (the session
+        // streaming pot) and never use the per-video token, so skip minting one per song —
+        // per-video minting serializes every fetch through the single PoToken WebView.
+        var poToken: String? = null
         if (MAIN_CLIENT.useWebPoTokens && sessionId != null) {
             try {
-                poToken = poTokenGenerator.getWebClientPoToken(videoId, sessionId)
+                poToken = poTokenGenerator.getSessionPoToken(sessionId)
             } catch (_: Exception) { }
         }
-        return YouTube.player(videoId, playlistId, WEB_REMIX, signatureTimestamp.timestamp, poToken?.playerRequestPoToken)
+        return YouTube.player(videoId, playlistId, WEB_REMIX, signatureTimestamp.timestamp, poToken)
             .onSuccess { Timber.tag(logTag).d("Successfully fetched metadata player response") }
             .onFailure { Timber.tag(logTag).e(it, "Failed to fetch metadata player response") }
     }
