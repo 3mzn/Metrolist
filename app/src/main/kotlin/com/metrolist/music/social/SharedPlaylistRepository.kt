@@ -688,15 +688,57 @@ class SharedPlaylistRepository @Inject constructor(
             }
         }
 
-        // Adds run AFTER the stripe is released: each song's metadata fetch must never happen
-        // while holding the lock (addSongLocally re-acquires the stripe per song for its
-        // check+insert, and takes a global fetch permit for the whole fetch+insert).
-        // Fan out across songs; the repository-wide fetchSemaphore inside addSongLocally
-        // bounds the WHOLE app to 6 concurrent fetch+inserts across all playlists.
+        // Adds run AFTER the stripe is released: fetches must never happen while holding the
+        // lock. Fan out across songs; the repository-wide fetchSemaphore bounds the whole app
+        // to 6 concurrent fetch+inserts across all playlists. Finished fetches land in a
+        // completion-order buffer and flush into Room in chunks of FLUSH_CHUNK — arrival speed
+        // is parallelism, display smoothness is batching.
         coroutineScope {
+            val pending = mutableListOf<ReceivedSong>()
+            val pendingMutex = Mutex()
+
             toAdd.map { songId ->
-                async { addSongLocally(playlistId, songId) }
+                async {
+                    fetchSemaphore.withPermit {
+                        if (database.checkInPlaylist(playlistId, songId) > 0) return@withPermit
+
+                        val existing = database.getSongByIdBlocking(songId)
+                        val metadata = if (existing == null) {
+                            // Offline short-circuit: skip doomed fetches instead of burning all
+                            // six slots on failures. The song stays absent; the next reconcile
+                            // retries it.
+                            if (!networkConnectivity.isCurrentlyConnected()) {
+                                Timber.tag(TAG).d("Offline — deferring metadata fetch for $songId")
+                                return@withPermit
+                            }
+                            val fetched = fetchSongMetadata(songId)
+                            if (fetched == null) {
+                                Timber.tag(TAG).w("Skipping song $songId — metadata fetch failed")
+                                return@withPermit
+                            }
+                            fetched
+                        } else null
+
+                        pendingMutex.withLock {
+                            pending += ReceivedSong(songId, metadata)
+                            if (pending.size >= FLUSH_CHUNK) {
+                                val chunk = ArrayList(pending.subList(0, FLUSH_CHUNK))
+                                pending.subList(0, FLUSH_CHUNK).clear()
+                                flushReceiveChunk(playlistId, chunk)
+                            }
+                        }
+                    }
+                }
             }.awaitAll()
+
+            // Flush the remainder; awaitAll guarantees no fetch is still in flight.
+            pendingMutex.withLock {
+                if (pending.isNotEmpty()) {
+                    val chunk = ArrayList(pending)
+                    pending.clear()
+                    flushReceiveChunk(playlistId, chunk)
+                }
+            }
         }
     }
 
@@ -773,54 +815,42 @@ class SharedPlaylistRepository @Inject constructor(
     // ── Helpers ─────────────────────────────────────────────────────────────────────────────────
 
     /**
-     * Add a song to the local Room playlist. If the song isn't in the local `song` table yet,
-     * fetch its metadata from YouTube first. Skips silently on fetch failure.
-     *
-     * Concurrency: one global [fetchSemaphore] permit covers the whole fetch+insert (released
-     * automatically on throw), and the DB check+insert runs under this playlist's stripe so two
-     * overlapping reconciles can't both pass the guard and insert duplicate map rows. The fetch
-     * itself happens OUTSIDE the stripe — duplicate network fetches on the rare overlap are
-     * accepted; the in-transaction re-check makes the second insert a no-op.
+     * One buffered receive result: a song id plus its fetched metadata (null when the song
+     * row already exists locally and only the playlist map row is needed).
      */
-    private suspend fun addSongLocally(playlistId: String, songId: String) =
-        fetchSemaphore.withPermit {
-            if (database.checkInPlaylist(playlistId, songId) > 0) return@withPermit
+    private data class ReceivedSong(val songId: String, val metadata: MediaMetadata?)
 
-            val existing = database.getSongByIdBlocking(songId)
-            val metadata = if (existing == null) {
-                // Offline short-circuit: skip doomed fetches instead of burning all six
-                // slots on failures. The song stays absent; the next reconcile retries it.
-                if (!networkConnectivity.isCurrentlyConnected()) {
-                    Timber.tag(TAG).d("Offline — deferring metadata fetch for $songId")
-                    return@withPermit
-                }
-                val fetched = fetchSongMetadata(songId)
-                if (fetched == null) {
-                    Timber.tag(TAG).w("Skipping song $songId — metadata fetch failed")
-                    return@withPermit
-                }
-                fetched
-            } else null
-
-            stripeFor(playlistId).withLock {
-                database.withTransaction {
-                    if (metadata != null && getSongByIdBlocking(songId) == null) {
-                        insert(metadata)
+    /**
+     * Flush one completion-order chunk of received songs in a single transaction under the
+     * playlist's stripe. Keeps the [PlaylistSongMap] FK fix (song row first, re-checked
+     * inside the transaction) and assigns positions from the live max inside the transaction
+     * so a batch can never leave gaps or collide. A failed chunk rolls back as a unit — at
+     * most FLUSH_CHUNK songs are lost, and the next reconcile's diff rediscovers them.
+     * Never called with the stripe already held (lock order: buffer → stripe).
+     */
+    private suspend fun flushReceiveChunk(playlistId: String, chunk: List<ReceivedSong>) {
+        stripeFor(playlistId).withLock {
+            database.withTransaction {
+                var currentMax = playlistSongMaps(playlistId, 0).maxOfOrNull { it.position } ?: -1
+                chunk.forEach { item ->
+                    if (item.metadata != null && getSongByIdBlocking(item.songId) == null) {
+                        insert(item.metadata)
                     }
-                    if (checkInPlaylist(playlistId, songId) == 0) {
-                        val currentMax = playlistSongMaps(playlistId, 0).maxOfOrNull { it.position } ?: -1
+                    if (checkInPlaylist(playlistId, item.songId) == 0) {
+                        currentMax += 1
                         insert(
                             PlaylistSongMap(
-                                songId = songId,
+                                songId = item.songId,
                                 playlistId = playlistId,
-                                position = currentMax + 1,
+                                position = currentMax,
                             ),
                         )
-                        updatePlaylistLastUpdated(playlistId)
                     }
                 }
+                updatePlaylistLastUpdated(playlistId)
             }
         }
+    }
 
     /**
      * Fetch song metadata from YouTube via the player endpoint. Returns null on failure.
@@ -855,6 +885,9 @@ class SharedPlaylistRepository @Inject constructor(
     companion object {
         private const val TAG = "SharedPlaylistRepository"
         private const val FIRESTORE_BATCH_LIMIT = 450
+
+        /** Songs per Room transaction during a bulk receive (A5). */
+        private const val FLUSH_CHUNK = 50
 
         internal fun remoteAdditions(
             previousCloudSongs: Set<String>?,
