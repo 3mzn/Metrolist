@@ -1,3 +1,8 @@
+---v13.9.10
+- Cover art now recovers on all player surfaces: big cover, background blur, and queue art retry against a fallback artwork variant instead of staying blank
+- Miniplayer ring and gradient wash no longer stick on white when artwork loads slowly
+- Partner widget debug mode works fully offline: heartbeat no longer clobbers the local preview
+
 ---v13.9.9
 - Save lyrics with downloads: lyrics are automatically fetched and kept offline for every downloaded song
 - One-time backfill for existing downloads plus automatic retry with backoff
