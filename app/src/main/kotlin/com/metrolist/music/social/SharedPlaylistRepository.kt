@@ -18,6 +18,7 @@ import com.metrolist.music.db.MusicDatabase
 import com.metrolist.music.db.entities.PlaylistEntity
 import com.metrolist.music.db.entities.PlaylistSongMap
 import com.metrolist.music.models.MediaMetadata
+import com.metrolist.music.utils.NetworkConnectivityObserver
 import com.metrolist.music.utils.YTPlayerUtils
 import com.metrolist.music.utils.dataStore
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -25,7 +26,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -74,6 +78,7 @@ class SharedPlaylistRepository @Inject constructor(
     private val auth: FirebaseAuth,
     private val partnerResolver: PartnerResolver,
     private val database: MusicDatabase,
+    private val networkConnectivity: NetworkConnectivityObserver,
     @ApplicationContext private val context: Context,
 ) {
     private val sharedPlaylistsCollection get() = firestore.collection("sharedPlaylists")
@@ -686,7 +691,13 @@ class SharedPlaylistRepository @Inject constructor(
         // Adds run AFTER the stripe is released: each song's metadata fetch must never happen
         // while holding the lock (addSongLocally re-acquires the stripe per song for its
         // check+insert, and takes a global fetch permit for the whole fetch+insert).
-        toAdd.forEach { songId -> addSongLocally(playlistId, songId) }
+        // Fan out across songs; the repository-wide fetchSemaphore inside addSongLocally
+        // bounds the WHOLE app to 6 concurrent fetch+inserts across all playlists.
+        coroutineScope {
+            toAdd.map { songId ->
+                async { addSongLocally(playlistId, songId) }
+            }.awaitAll()
+        }
     }
 
     /**
@@ -777,6 +788,12 @@ class SharedPlaylistRepository @Inject constructor(
 
             val existing = database.getSongByIdBlocking(songId)
             val metadata = if (existing == null) {
+                // Offline short-circuit: skip doomed fetches instead of burning all six
+                // slots on failures. The song stays absent; the next reconcile retries it.
+                if (!networkConnectivity.isCurrentlyConnected()) {
+                    Timber.tag(TAG).d("Offline — deferring metadata fetch for $songId")
+                    return@withPermit
+                }
                 val fetched = fetchSongMetadata(songId)
                 if (fetched == null) {
                     Timber.tag(TAG).w("Skipping song $songId — metadata fetch failed")
