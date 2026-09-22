@@ -1,3 +1,7 @@
+---v13.10.0-TEST
+- TEST BUILD: metadata fetches reuse the session PoToken instead of minting one per song — shared-playlist receive should be much faster and steadier
+- Please report receive speed (songs/sec) and any playback or fetch failures
+
 ---v13.10.0
 - Shared playlist receive is much faster: songs fetch 6 at a time and save in batches, so a 400-song share lands in minutes and the screen stays smooth
 - Sharing a second playlist while the first is still arriving works safely, offline pauses instead of failing, and killing the app mid-receive recovers on restart
