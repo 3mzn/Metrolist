@@ -43,6 +43,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import timber.log.Timber
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -93,8 +94,14 @@ class PartnerWidgetManager @Inject constructor(
     fun updateFromStatus(status: PartnerTrackStatus?, partnerName: String? = null) {
         scope.launch {
             try {
+                Timber.tag(TAG).d(
+                    "updateFromStatus live=%s song=%s",
+                    status?.isLive() == true,
+                    status?.title,
+                )
                 push(status, partnerName ?: readCachedPartnerName())
             } catch (e: Exception) {
+                Timber.tag(TAG).e(e, "update failed")
                 android.util.Log.e("PartnerWidget", "update failed", e)
             }
         }
@@ -105,7 +112,10 @@ class PartnerWidgetManager @Inject constructor(
         val ids = appWidgetManager.getAppWidgetIds(
             ComponentName(context, PartnerWidgetReceiver::class.java),
         )
-        if (ids.isEmpty()) return
+        if (ids.isEmpty()) {
+            Timber.tag(TAG).d("push skipped: no widget placed")
+            return
+        }
 
         val live = status != null && status.isLive()
         val cover = loadCoverSquare(status?.coverUrl)
@@ -586,5 +596,7 @@ class PartnerWidgetManager @Inject constructor(
 
         private const val REQUEST_CODE_OPEN = 6201
         private const val REQUEST_CODE_PLAY = 6202
+
+        private const val TAG = "PartnerWidget"
     }
 }

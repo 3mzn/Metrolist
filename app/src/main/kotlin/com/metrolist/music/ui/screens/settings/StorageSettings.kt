@@ -453,13 +453,19 @@ fun StorageSettings(
                                 checked = widgetUiDebugTest,
                                 onCheckedChange = { enabled ->
                                     widgetUiDebugTest = enabled
-                                    // Toggling off: restore the partner-broadcast view instantly.
+                                    // Toggling off: drop the debug art from the cache (it
+                                    // would otherwise repaint as the partner's view), then
+                                    // re-resolve the real partner state with one shot.
                                     if (!enabled) {
                                         coroutineScope.launch {
-                                            EntryPointAccessors.fromApplication(
-                                                context.applicationContext,
-                                                SocialRepositoryEntryPoint::class.java,
-                                            ).partnerWidgetManager().renderFromCache()
+                                            val entryPoint =
+                                                EntryPointAccessors.fromApplication(
+                                                    context.applicationContext,
+                                                    SocialRepositoryEntryPoint::class.java,
+                                                )
+                                            entryPoint.partnerWidgetManager().writeCachedStatus(null, null)
+                                            entryPoint.partnerWidgetManager().renderFromCache()
+                                            entryPoint.partnerHeartbeatMonitor().refreshNow()
                                         }
                                     }
                                 },

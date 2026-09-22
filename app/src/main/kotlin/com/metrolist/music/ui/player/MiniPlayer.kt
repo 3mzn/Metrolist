@@ -292,6 +292,18 @@ private fun NewMiniPlayer(
                     .build()
                 val result = runCatching { context.imageLoader.execute(request) }.getOrNull()
                 val bitmap = result?.image?.toBitmap()
+                    ?: run {
+                        // Same fallback as the art loaders: when the raw URL fails
+                        // (the failing-songs case), retry once against the warmed 544
+                        // variant before surrendering the ring to white.
+                        val retry =
+                            ImageRequest.Builder(context)
+                                .data(url.resize(544, 544))
+                                .size(100, 100)
+                                .allowHardware(false)
+                                .build()
+                        runCatching { context.imageLoader.execute(retry) }.getOrNull()?.image?.toBitmap()
+                    }
                 if (bitmap != null) {
                     val palette = withContext(Dispatchers.Default) {
                         Palette.from(bitmap)
@@ -1080,6 +1092,7 @@ private fun LegacyMiniMediaInfo(
 ) {
     val error by LocalPlayerConnection.current?.error?.collectAsState() ?: remember { mutableStateOf(null) }
     val cropAlbumArt by rememberPreference(CropAlbumArtKey, false)
+    val context = LocalContext.current
 
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -1099,12 +1112,23 @@ private fun LegacyMiniMediaInfo(
                         .background(MaterialTheme.colorScheme.surfaceVariant),
             )
 
-            val thumbnailUrl =
-                remember(mediaMetadata.thumbnailUrl) {
-                    mediaMetadata.thumbnailUrl?.resize(144, 144)
+            // Queue art uses the same raw + 544 fallback as the miniplayer pill:
+            // the old resize(144,144) variant was a cache key nothing warmed.
+            val rawQueueUrl = mediaMetadata.thumbnailUrl
+            var queueFallback by remember(rawQueueUrl) { mutableStateOf(false) }
+            val queueRequest =
+                remember(rawQueueUrl, queueFallback) {
+                    ImageRequest.Builder(context)
+                        .data(if (queueFallback) rawQueueUrl?.resize(544, 544) else rawQueueUrl)
+                        .memoryCachePolicy(CachePolicy.ENABLED)
+                        .diskCachePolicy(CachePolicy.ENABLED)
+                        .networkCachePolicy(CachePolicy.ENABLED)
+                        .crossfade(true)
+                        .build()
                 }
             AsyncImage(
-                model = thumbnailUrl,
+                model = queueRequest,
+                onError = { if (!queueFallback) queueFallback = true },
                 contentDescription = null,
                 contentScale = if (cropAlbumArt) ContentScale.Crop else ContentScale.Fit,
                 modifier =

@@ -23,6 +23,7 @@ import com.metrolist.music.social.PartnerIdentity
 import com.metrolist.music.social.PartnerResolver
 import com.metrolist.music.social.SocialRepository
 import com.metrolist.music.social.SongSharingRepository
+import com.metrolist.music.social.PartnerHeartbeatMonitor
 import com.metrolist.music.social.UserProfile
 import com.metrolist.music.widget.PartnerWidgetManager
 import dagger.hilt.EntryPoint
@@ -41,6 +42,7 @@ interface SocialRepositoryEntryPoint {
     fun songSharingRepository(): SongSharingRepository
     fun partnerResolver(): PartnerResolver
     fun partnerWidgetManager(): PartnerWidgetManager
+    fun partnerHeartbeatMonitor(): PartnerHeartbeatMonitor
 }
 
 /** Convenience accessor for composables outside the Hilt graph that need partner identity. */

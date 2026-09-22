@@ -5032,10 +5032,27 @@ class MusicService :
 
                     // Widget UI debug test: render THIS device's own playback into the local
                     // Partner widget so its UI can be inspected without partner activity.
+                    // Fully local (no Firebase in this path): the heartbeat monitor
+                    // suppresses its idle pushes while the toggle is on, and the status
+                    // is written to the widget cache so periodic re-renders stay live.
                     val widgetDebugTest = runBlocking(Dispatchers.IO) {
                         dataStore.data.first()[PartnerWidgetManager.WIDGET_UI_DEBUG_TEST_KEY] ?: false
                     }
                     if (widgetDebugTest && song != null && !song.isLocal) {
+                        val debugName = partnerResolver.identity.value.myName ?: "me"
+                        Timber.tag(TAG).d("Debug widget push: ${song.title}")
+                        heartbeatScope.launch {
+                            partnerWidgetManager.writeCachedStatus(
+                                com.metrolist.music.widget.PartnerTrackStatus(
+                                    songId = song.id,
+                                    title = song.title,
+                                    artist = artistName,
+                                    coverUrl = song.thumbnailUrl,
+                                    updatedAt = System.currentTimeMillis(),
+                                ),
+                                debugName,
+                            )
+                        }
                         partnerWidgetManager.updateFromStatus(
                             com.metrolist.music.widget.PartnerTrackStatus(
                                 songId = song.id,
@@ -5044,7 +5061,7 @@ class MusicService :
                                 coverUrl = song.thumbnailUrl,
                                 updatedAt = System.currentTimeMillis(),
                             ),
-                            partnerName = partnerResolver.identity.value.myName ?: "me",
+                            partnerName = debugName,
                         )
                     }
                 }

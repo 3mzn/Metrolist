@@ -137,10 +137,12 @@ import androidx.palette.graphics.Palette
 import com.metrolist.music.LocalNavController
 import coil3.compose.AsyncImage
 import coil3.imageLoader
+import coil3.request.CachePolicy
 import coil3.request.ImageRequest
 import coil3.request.allowHardware
 import coil3.request.crossfade
 import coil3.toBitmap
+import com.metrolist.music.ui.utils.resize
 import com.metrolist.music.LocalDatabase
 import com.metrolist.music.LocalDownloadUtil
 import com.metrolist.music.LocalListenTogetherManager
@@ -554,9 +556,21 @@ fun BottomSheetPlayer(
                         .build()
 
                 val result = runCatching { context.imageLoader.execute(request) }.getOrNull()
-                if (result != null) {
-                    val bitmap = result.image?.toBitmap()
-                    if (bitmap != null) {
+                // Same raw + 544 fallback as every other art loader: a failed raw
+                // fetch must not leave the wash/gradient on fallback colors.
+                val bitmap = result?.image?.toBitmap()
+                    ?: run {
+                        val retry =
+                            ImageRequest
+                                .Builder(context)
+                                .data(currentMetadata.thumbnailUrl?.resize(544, 544))
+                                .size(100, 100)
+                                .allowHardware(false)
+                                .memoryCacheKey("gradient_${currentMetadata.id}")
+                                .build()
+                        runCatching { context.imageLoader.execute(retry) }.getOrNull()?.image?.toBitmap()
+                    }
+                if (bitmap != null) {
                         val palette =
                             withContext(Dispatchers.Default) {
                                 Palette
@@ -588,7 +602,6 @@ fun BottomSheetPlayer(
                             }
                         }
                     }
-                }
             }
         } else {
             if (playerBackground == PlayerBackgroundStyle.GRADIENT) {
@@ -991,16 +1004,25 @@ fun BottomSheetPlayer(
                         // Coil keeps the old image visible while loading the new one, then
                         // crossfades between them. No gap, no flash.
                         if (mediaMetadata?.thumbnailUrl != null) {
+                            // Cover-art fix (mirrors MiniPlayer/Thumbnail): raw URL first
+                            // (warmed by prefetchers), 544 fallback on error. The blur
+                            // request used to be a single attempt that stayed blank.
+                            val blurRawUrl = mediaMetadata?.thumbnailUrl
+                            var blurFallback by remember(blurRawUrl) { mutableStateOf(false) }
+                            val blurRequest =
+                                remember(blurRawUrl, blurFallback) {
+                                    ImageRequest
+                                        .Builder(context)
+                                        .data(if (blurFallback) blurRawUrl?.resize(544, 544) else blurRawUrl)
+                                        .size(100, 100)
+                                        .allowHardware(false)
+                                        .crossfade(800)
+                                        .build()
+                                }
                             Box(modifier = Modifier.alpha(backgroundAlpha)) {
                                 AsyncImage(
-                                    model =
-                                        ImageRequest
-                                            .Builder(context)
-                                            .data(mediaMetadata?.thumbnailUrl)
-                                            .size(100, 100)
-                                            .allowHardware(false)
-                                            .crossfade(800)
-                                            .build(),
+                                    model = blurRequest,
+                                    onError = { if (!blurFallback) blurFallback = true },
                                     contentDescription = null,
                                     contentScale = ContentScale.Crop,
                                     modifier =

@@ -74,6 +74,7 @@ import androidx.media3.common.Player
 import coil3.compose.AsyncImage
 import coil3.request.CachePolicy
 import coil3.request.ImageRequest
+import com.metrolist.music.ui.utils.resize
 import com.metrolist.music.LocalListenTogetherManager
 import com.metrolist.music.LocalPlayerConnection
 import com.metrolist.music.R
@@ -668,8 +669,23 @@ private fun HiddenThumbnailPlaceholder(
 private fun ThumbnailImage(
     artworkUri: String?,
     cropArtwork: Boolean,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
 ) {
+    // Cover-art fix (mirrors MiniPlayer): request the raw URL every other surface
+    // warms instead of a unique size variant Coil never cached, fall back to the
+    // warmed 544 variant on error. Single-attempt loads stayed blank on any
+    // slow/failed fetch with no recovery.
+    val context = LocalContext.current
+    var useFallback by remember(artworkUri) { mutableStateOf(false) }
+    val request =
+        remember(artworkUri, useFallback) {
+            ImageRequest.Builder(context)
+                .data(if (useFallback) artworkUri?.resize(544, 544) else artworkUri)
+                .memoryCachePolicy(CachePolicy.ENABLED)
+                .diskCachePolicy(CachePolicy.ENABLED)
+                .networkCachePolicy(CachePolicy.ENABLED)
+                .build()
+        }
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -680,14 +696,10 @@ private fun ThumbnailImage(
             .background(MaterialTheme.colorScheme.surfaceVariant)
     ) {
         AsyncImage(
-            model = ImageRequest.Builder(LocalContext.current)
-                .data(artworkUri)
-                .memoryCachePolicy(CachePolicy.ENABLED)
-                .diskCachePolicy(CachePolicy.ENABLED)
-                .networkCachePolicy(CachePolicy.ENABLED)
-                .build(),
+            model = request,
             contentDescription = null,
             contentScale = if (cropArtwork) ContentScale.Crop else ContentScale.Fit,
+            onError = { if (!useFallback) useFallback = true },
             modifier = Modifier.fillMaxSize()
         )
     }

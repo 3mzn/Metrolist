@@ -5,15 +5,20 @@
 
 package com.metrolist.music.social
 
+import android.content.Context
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
+import com.metrolist.music.utils.dataStore
 import com.metrolist.music.widget.PartnerTrackStatus
 import com.metrolist.music.widget.PartnerWidgetManager
+import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 import timber.log.Timber
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -34,6 +39,7 @@ class PartnerHeartbeatMonitor @Inject constructor(
     private val firestore: FirebaseFirestore,
     private val partnerResolver: PartnerResolver,
     private val partnerWidgetManager: PartnerWidgetManager,
+    @ApplicationContext private val context: Context,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var statusRegistration: com.google.firebase.firestore.ListenerRegistration? = null
@@ -86,27 +92,33 @@ class PartnerHeartbeatMonitor @Inject constructor(
                         }
                         val doc = snapshot ?: return@addSnapshotListener
                         val partnerName = partnerResolver.identity.value.partnerName
-                        if (!doc.exists()) {
-                            // Partner stopped broadcasting — drop to the idle placeholder.
-                            scope.launch {
-                                partnerWidgetManager.writeCachedStatus(null, partnerName)
-                            }
-                            partnerWidgetManager.updateFromStatus(null, partnerName)
-                            return@addSnapshotListener
-                        }
-
-                        val status = PartnerTrackStatus(
-                            songId = doc.getString("songId").orEmpty(),
-                            title = doc.getString("title").orEmpty(),
-                            artist = doc.getString("artist").orEmpty(),
-                            coverUrl = doc.getString("coverUrl"),
-                            updatedAt = doc.getLong("updatedAt") ?: 0L,
-                        )
                         // Snapshot callbacks run off-coroutine; suspend calls go through scope.
                         scope.launch {
+                            // Widget UI debug test owns the widget while on: partner
+                            // emissions (live or idle) must not clobber the local debug
+                            // rendering or its cache, which re-renders read back.
+                            if (isDebugWidgetOn()) {
+                                Timber.tag(TAG).d("Debug widget on — skipping partner push")
+                                return@launch
+                            }
+                            if (!doc.exists()) {
+                                // Partner stopped broadcasting — drop to the idle placeholder.
+                                partnerWidgetManager.writeCachedStatus(null, partnerName)
+                                partnerWidgetManager.updateFromStatus(null, partnerName)
+                                return@launch
+                            }
+
+                            val status = PartnerTrackStatus(
+                                songId = doc.getString("songId").orEmpty(),
+                                title = doc.getString("title").orEmpty(),
+                                artist = doc.getString("artist").orEmpty(),
+                                coverUrl = doc.getString("coverUrl"),
+                                updatedAt = doc.getLong("updatedAt") ?: 0L,
+                            )
                             partnerWidgetManager.writeCachedStatus(status, partnerName)
                             partnerWidgetManager.updateFromStatus(status, partnerName)
                         }
+                        return@addSnapshotListener
                     }
         }
     }
@@ -120,6 +132,42 @@ class PartnerHeartbeatMonitor @Inject constructor(
     }
 
     private var _attachedTo: String? = null
+
+    /**
+     * One-shot recheck of the partner's status, outside the listener lifecycle.
+     * Used when the debug toggle flips off: the cache was holding debug art, so
+     * clear-then-render would stick on idle without this. Explicitly ungated —
+     * callers invoke it precisely when debug mode just ended.
+     */
+    fun refreshNow() {
+        scope.launch {
+            val partnerUid = partnerResolver.awaitPartnerUid() ?: return@launch
+            val partnerName = partnerResolver.identity.value.partnerName
+            val doc = runCatching {
+                firestore.collection("status").document(partnerUid).get().await()
+            }.getOrNull()
+            if (doc == null || !doc.exists()) {
+                partnerWidgetManager.writeCachedStatus(null, partnerName)
+                partnerWidgetManager.updateFromStatus(null, partnerName)
+                return@launch
+            }
+            val status = PartnerTrackStatus(
+                songId = doc.getString("songId").orEmpty(),
+                title = doc.getString("title").orEmpty(),
+                artist = doc.getString("artist").orEmpty(),
+                coverUrl = doc.getString("coverUrl"),
+                updatedAt = doc.getLong("updatedAt") ?: 0L,
+            )
+            partnerWidgetManager.writeCachedStatus(status, partnerName)
+            partnerWidgetManager.updateFromStatus(status, partnerName)
+        }
+    }
+
+    /** True while the Storage debug toggle renders local playback into the widget. */
+    private suspend fun isDebugWidgetOn(): Boolean =
+        runCatching {
+            context.dataStore.data.first()[PartnerWidgetManager.WIDGET_UI_DEBUG_TEST_KEY] ?: false
+        }.getOrDefault(false)
 
     companion object {
         private const val TAG = "PartnerHeartbeat"
