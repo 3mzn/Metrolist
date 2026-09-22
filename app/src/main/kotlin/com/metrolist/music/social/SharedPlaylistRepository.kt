@@ -608,6 +608,7 @@ class SharedPlaylistRepository @Inject constructor(
         // Diff + structural changes run under the playlist stripe so a queued overlapping
         // reconcile recomputes against fresh local state instead of a stale emission snapshot.
         var toAdd: List<String> = emptyList()
+        var cloudSongSet: Set<String> = emptySet()
         stripeFor(playlistId).withLock {
             // Converge to the newest snapshot: a later emission may have superseded
             // resolvedCloud while we waited on the stripe. observed is in-memory, so this
@@ -645,9 +646,12 @@ class SharedPlaylistRepository @Inject constructor(
             // Cloud doc exists. Apply diff.
             // D19 revised: thumbnailUrl is device-local; cloud value is ignored (always null after this fix, but old docs may still carry a value).
             if (local == null) {
-                // First time receiving this shared playlist. Create local row.
+                // First time receiving this shared playlist. Create local row. Synchronous
+                // (not database.query{}): flushes run on other threads and an all-known
+                // sub-50 first receive can flush before a fire-and-forget insert lands,
+                // violating playlist_song_map's FK.
                 Timber.tag(TAG).d("First-time receive: creating local row for $playlistId")
-                database.query {
+                database.withTransaction {
                     insert(
                         PlaylistEntity(
                             id = playlistId,
@@ -674,6 +678,7 @@ class SharedPlaylistRepository @Inject constructor(
             val localSongIds = database.playlistSongIds(playlistId).toSet()
             val cloudSongIds = cloud.songs.toSet()
             toAdd = (cloudSongIds - localSongIds).toList()
+            cloudSongSet = cloudSongIds
             val toRemove = localSongIds - cloudSongIds
 
             if (toRemove.isNotEmpty()) {
@@ -699,45 +704,60 @@ class SharedPlaylistRepository @Inject constructor(
 
             toAdd.map { songId ->
                 async {
-                    fetchSemaphore.withPermit {
-                        if (database.checkInPlaylist(playlistId, songId) > 0) return@withPermit
+                    // Never let one song's failure kill the coroutineScope (which would
+                    // cancel sibling fetches and crash the app via the scope's unhandled
+                    // exception). The song stays absent; the next reconcile's diff rediscovers it.
+                    try {
+                        fetchSemaphore.withPermit {
+                            if (database.checkInPlaylist(playlistId, songId) > 0) return@withPermit
 
-                        val existing = database.getSongByIdBlocking(songId)
-                        val metadata = if (existing == null) {
-                            // Offline short-circuit: skip doomed fetches instead of burning all
-                            // six slots on failures. The song stays absent; the next reconcile
-                            // retries it.
-                            if (!networkConnectivity.isCurrentlyConnected()) {
-                                Timber.tag(TAG).d("Offline — deferring metadata fetch for $songId")
-                                return@withPermit
-                            }
-                            val fetched = fetchSongMetadata(songId)
-                            if (fetched == null) {
-                                Timber.tag(TAG).w("Skipping song $songId — metadata fetch failed")
-                                return@withPermit
-                            }
-                            fetched
-                        } else null
+                            val existing = database.getSongByIdBlocking(songId)
+                            val metadata = if (existing == null) {
+                                // Offline short-circuit: skip doomed fetches instead of burning all
+                                // six slots on failures. The song stays absent; the next reconcile
+                                // retries it.
+                                if (!networkConnectivity.isCurrentlyConnected()) {
+                                    Timber.tag(TAG).d("Offline — deferring metadata fetch for $songId")
+                                    return@withPermit
+                                }
+                                val fetched = fetchSongMetadata(songId)
+                                if (fetched == null) {
+                                    Timber.tag(TAG).w("Skipping song $songId — metadata fetch failed")
+                                    return@withPermit
+                                }
+                                fetched
+                            } else null
 
-                        pendingMutex.withLock {
-                            pending += ReceivedSong(songId, metadata)
-                            if (pending.size >= FLUSH_CHUNK) {
-                                val chunk = ArrayList(pending.subList(0, FLUSH_CHUNK))
-                                pending.subList(0, FLUSH_CHUNK).clear()
-                                flushReceiveChunk(playlistId, chunk)
+                            pendingMutex.withLock {
+                                pending += ReceivedSong(songId, metadata)
+                                if (pending.size >= FLUSH_CHUNK) {
+                                    val chunk = ArrayList(pending.subList(0, FLUSH_CHUNK))
+                                    pending.subList(0, FLUSH_CHUNK).clear()
+                                    flushReceiveChunk(playlistId, chunk, cloudSongSet)
+                                }
                             }
                         }
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Timber.tag(TAG).e(e, "Receive failed for $songId — retried next reconcile")
                     }
                 }
             }.awaitAll()
 
             // Flush the remainder; awaitAll guarantees no fetch is still in flight.
-            pendingMutex.withLock {
-                if (pending.isNotEmpty()) {
-                    val chunk = ArrayList(pending)
-                    pending.clear()
-                    flushReceiveChunk(playlistId, chunk)
+            try {
+                pendingMutex.withLock {
+                    if (pending.isNotEmpty()) {
+                        val chunk = ArrayList(pending)
+                        pending.clear()
+                        flushReceiveChunk(playlistId, chunk, cloudSongSet)
+                    }
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Timber.tag(TAG).e(e, "Final receive flush failed for $playlistId — retried next reconcile")
             }
         }
     }
@@ -825,14 +845,28 @@ class SharedPlaylistRepository @Inject constructor(
      * playlist's stripe. Keeps the [PlaylistSongMap] FK fix (song row first, re-checked
      * inside the transaction) and assigns positions from the live max inside the transaction
      * so a batch can never leave gaps or collide. A failed chunk rolls back as a unit — at
-     * most FLUSH_CHUNK songs are lost, and the next reconcile's diff rediscovers them.
-     * Never called with the stripe already held (lock order: buffer → stripe).
+     * most FLUSH_CHUNK songs are lost, callers catch and the next reconcile's diff
+     * rediscovers them. Never called with the stripe already held (lock order: buffer → stripe).
+     *
+     * [fallbackCloudSongs] is the cloud set the diff was computed from. Under the stripe the
+     * live [observed] snapshot is re-read: if the partner removed songs (or the whole doc)
+     * while these fetches were in flight, items no longer in the live set are dropped here —
+     * a deletion child either already updated observed (we skip) or queues on this stripe
+     * (it cleans up after we commit), so phantoms cannot survive either interleaving.
      */
-    private suspend fun flushReceiveChunk(playlistId: String, chunk: List<ReceivedSong>) {
+    private suspend fun flushReceiveChunk(
+        playlistId: String,
+        chunk: List<ReceivedSong>,
+        fallbackCloudSongs: Set<String>,
+    ) {
         stripeFor(playlistId).withLock {
+            val liveSongs = _observed.value.find { it.id == playlistId }
+                ?.songs?.toSet()
+                ?: fallbackCloudSongs
             database.withTransaction {
                 var currentMax = playlistSongMaps(playlistId, 0).maxOfOrNull { it.position } ?: -1
                 chunk.forEach { item ->
+                    if (item.songId !in liveSongs) return@forEach
                     if (item.metadata != null && getSongByIdBlocking(item.songId) == null) {
                         insert(item.metadata)
                     }
