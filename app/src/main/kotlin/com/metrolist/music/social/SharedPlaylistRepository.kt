@@ -38,6 +38,10 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -76,6 +80,26 @@ class SharedPlaylistRepository @Inject constructor(
     private val partnersDeletedCollection get() = firestore.collection("partners_deleted")
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    // ── Receive concurrency (SPEC_SHARED_RECEIVE_SPEED) ─────────────────────────────────────────
+
+    /**
+     * Global metadata-fetch permit pool: 6 slots shared across ALL reconciles, never 6 per
+     * playlist. Held through fetch AND insert; [withPermit] releases automatically on throw.
+     */
+    private val fetchSemaphore = Semaphore(6)
+
+    /**
+     * Striped per-playlist locks (16 fixed mutexes keyed by playlist id hash). A fixed pool
+     * avoids the create/remove race a lock map would have. Guards the diff-and-insert critical
+     * section so overlapping reconciles of the same playlist can't both pass the
+     * check-then-insert guard (playlist_song_map has no unique constraint on (playlistId, songId)).
+     * Never held across network I/O — only Room work.
+     */
+    private val reconcileStripes = Array(16) { Mutex() }
+
+    private fun stripeFor(playlistId: String): Mutex =
+        reconcileStripes[playlistId.hashCode().and(Int.MAX_VALUE) % reconcileStripes.size]
 
     // ── Hot observed state ──────────────────────────────────────────────────────────────────────
 
@@ -554,7 +578,9 @@ class SharedPlaylistRepository @Inject constructor(
         knownCloud: SharedPlaylistCloud? = null,
         cloudStateKnown: Boolean = false,
     ) = withContext(Dispatchers.IO) {
-        val cloud = if (cloudStateKnown) {
+        // Cloud resolution stays OUTSIDE the stripe: it may hit the network on the
+        // reconcileAll / cold-read path.
+        val resolvedCloud = if (cloudStateKnown) {
             knownCloud
         } else {
             try {
@@ -565,82 +591,102 @@ class SharedPlaylistRepository @Inject constructor(
             }
         }
 
-        val local = database.playlistBlocking(playlistId)
-        val partnerUid = local?.playlist?.sharedWith
+        // The tombstone probe may also hit the network — same rule, compute it outside the lock.
+        val initialLocal = database.playlistBlocking(playlistId)
+        val partnerUid = initialLocal?.playlist?.sharedWith
         val partnerDeleted = partnerUid != null && (
             partnerUid in _deletedPartnerUids.value ||
                 runCatching { partnersDeletedCollection.document(partnerUid).get().await().exists() }
                     .getOrDefault(false)
             )
 
-        if (cloud == null) {
-            // Cloud doc gone.
-            if (local != null && local.playlist.sharedWith != null) {
-                if (partnerDeleted) {
-                    // D8 survivor: promote to local-only playlist.
-                    Timber.tag(TAG).d("D8 survivor: promoting $playlistId to local")
-                    database.query {
-                        update(local.playlist.copy(sharedWith = null))
+        // Diff + structural changes run under the playlist stripe so a queued overlapping
+        // reconcile recomputes against fresh local state instead of a stale emission snapshot.
+        var toAdd: List<String> = emptyList()
+        stripeFor(playlistId).withLock {
+            // Converge to the newest snapshot: a later emission may have superseded
+            // resolvedCloud while we waited on the stripe. observed is in-memory, so this
+            // re-check is lock-safe; fall back to the resolved snapshot on a miss.
+            val cloud = if (cloudStateKnown) {
+                _observed.value.find { it.id == playlistId } ?: resolvedCloud
+            } else {
+                resolvedCloud
+            }
+
+            val local = database.playlistBlocking(playlistId)
+
+            if (cloud == null) {
+                // Cloud doc gone.
+                if (local != null && local.playlist.sharedWith != null) {
+                    if (partnerDeleted) {
+                        // D8 survivor: promote to local-only playlist.
+                        Timber.tag(TAG).d("D8 survivor: promoting $playlistId to local")
+                        database.query {
+                            update(local.playlist.copy(sharedWith = null))
+                        }
+                        clearBadgeState(playlistId)
+                    } else {
+                        // D28 symmetric delete: remove local row + songs.
+                        Timber.tag(TAG).d("D28 symmetric delete: removing local $playlistId")
+                        database.query {
+                            delete(local.playlist)
+                        }
+                        clearBadgeState(playlistId)
                     }
-                    clearBadgeState(playlistId)
-                } else {
-                    // D28 symmetric delete: remove local row + songs.
-                    Timber.tag(TAG).d("D28 symmetric delete: removing local $playlistId")
-                    database.query {
-                        delete(local.playlist)
-                    }
-                    clearBadgeState(playlistId)
+                }
+                return@withLock
+            }
+
+            // Cloud doc exists. Apply diff.
+            // D19 revised: thumbnailUrl is device-local; cloud value is ignored (always null after this fix, but old docs may still carry a value).
+            if (local == null) {
+                // First time receiving this shared playlist. Create local row.
+                Timber.tag(TAG).d("First-time receive: creating local row for $playlistId")
+                database.query {
+                    insert(
+                        PlaylistEntity(
+                            id = playlistId,
+                            name = cloud.name,
+                            browseId = null,
+                            isLocal = true,
+                            isEditable = true,
+                            bookmarkedAt = LocalDateTime.now(),
+                            sharedWith = cloud.sharedByUid, // partner's uid from our perspective
+                        ),
+                    )
+                }
+            } else if (local.playlist.name != cloud.name) {
+                database.query {
+                    update(
+                        local.playlist.copy(
+                            name = cloud.name,
+                        ),
+                    )
                 }
             }
-            return@withContext
-        }
 
-        // Cloud doc exists. Apply diff.
-        // D19 revised: thumbnailUrl is device-local; cloud value is ignored (always null after this fix, but old docs may still carry a value).
-        if (local == null) {
-            // First time receiving this shared playlist. Create local row.
-            Timber.tag(TAG).d("First-time receive: creating local row for $playlistId")
-            database.query {
-                insert(
-                    PlaylistEntity(
-                        id = playlistId,
-                        name = cloud.name,
-                        browseId = null,
-                        isLocal = true,
-                        isEditable = true,
-                        bookmarkedAt = LocalDateTime.now(),
-                        sharedWith = cloud.sharedByUid, // partner's uid from our perspective
-                    ),
-                )
-            }
-        } else if (local.playlist.name != cloud.name) {
-            database.query {
-                update(
-                    local.playlist.copy(
-                        name = cloud.name,
-                    ),
-                )
+            // Diff songs: add missing, remove extra. Positions are local-only (D21).
+            val localSongIds = database.playlistSongIds(playlistId).toSet()
+            val cloudSongIds = cloud.songs.toSet()
+            toAdd = (cloudSongIds - localSongIds).toList()
+            val toRemove = localSongIds - cloudSongIds
+
+            if (toRemove.isNotEmpty()) {
+                database.transaction {
+                    toRemove.forEach { songId ->
+                        database.playlistSongsBlocking(playlistId)
+                            .find { it.song.id == songId }
+                            ?.let { database.delete(it.map) }
+                    }
+                    database.updatePlaylistLastUpdated(playlistId)
+                }
             }
         }
 
-        // Diff songs: add missing, remove extra. Positions are local-only (D21).
-        val localSongIds = database.playlistSongIds(playlistId).toSet()
-        val cloudSongIds = cloud.songs.toSet()
-        val toAdd = cloudSongIds - localSongIds
-        val toRemove = localSongIds - cloudSongIds
-
+        // Adds run AFTER the stripe is released: each song's metadata fetch must never happen
+        // while holding the lock (addSongLocally re-acquires the stripe per song for its
+        // check+insert, and takes a global fetch permit for the whole fetch+insert).
         toAdd.forEach { songId -> addSongLocally(playlistId, songId) }
-
-        if (toRemove.isNotEmpty()) {
-            database.transaction {
-                toRemove.forEach { songId ->
-                    database.playlistSongsBlocking(playlistId)
-                        .find { it.song.id == songId }
-                        ?.let { database.delete(it.map) }
-                }
-                database.updatePlaylistLastUpdated(playlistId)
-            }
-        }
     }
 
     /**
@@ -718,37 +764,46 @@ class SharedPlaylistRepository @Inject constructor(
     /**
      * Add a song to the local Room playlist. If the song isn't in the local `song` table yet,
      * fetch its metadata from YouTube first. Skips silently on fetch failure.
+     *
+     * Concurrency: one global [fetchSemaphore] permit covers the whole fetch+insert (released
+     * automatically on throw), and the DB check+insert runs under this playlist's stripe so two
+     * overlapping reconciles can't both pass the guard and insert duplicate map rows. The fetch
+     * itself happens OUTSIDE the stripe — duplicate network fetches on the rare overlap are
+     * accepted; the in-transaction re-check makes the second insert a no-op.
      */
-    private suspend fun addSongLocally(playlistId: String, songId: String) {
-        if (database.checkInPlaylist(playlistId, songId) > 0) return
+    private suspend fun addSongLocally(playlistId: String, songId: String) =
+        fetchSemaphore.withPermit {
+            if (database.checkInPlaylist(playlistId, songId) > 0) return@withPermit
 
-        val existing = database.getSongByIdBlocking(songId)
-        val metadata = if (existing == null) {
-            val fetched = fetchSongMetadata(songId)
-            if (fetched == null) {
-                Timber.tag(TAG).w("Skipping song $songId — metadata fetch failed")
-                return
-            }
-            fetched
-        } else null
+            val existing = database.getSongByIdBlocking(songId)
+            val metadata = if (existing == null) {
+                val fetched = fetchSongMetadata(songId)
+                if (fetched == null) {
+                    Timber.tag(TAG).w("Skipping song $songId — metadata fetch failed")
+                    return@withPermit
+                }
+                fetched
+            } else null
 
-        database.withTransaction {
-            if (metadata != null && getSongByIdBlocking(songId) == null) {
-                insert(metadata)
-            }
-            if (checkInPlaylist(playlistId, songId) == 0) {
-                val currentMax = playlistSongMaps(playlistId, 0).maxOfOrNull { it.position } ?: -1
-                insert(
-                    PlaylistSongMap(
-                        songId = songId,
-                        playlistId = playlistId,
-                        position = currentMax + 1,
-                    ),
-                )
-                updatePlaylistLastUpdated(playlistId)
+            stripeFor(playlistId).withLock {
+                database.withTransaction {
+                    if (metadata != null && getSongByIdBlocking(songId) == null) {
+                        insert(metadata)
+                    }
+                    if (checkInPlaylist(playlistId, songId) == 0) {
+                        val currentMax = playlistSongMaps(playlistId, 0).maxOfOrNull { it.position } ?: -1
+                        insert(
+                            PlaylistSongMap(
+                                songId = songId,
+                                playlistId = playlistId,
+                                position = currentMax + 1,
+                            ),
+                        )
+                        updatePlaylistLastUpdated(playlistId)
+                    }
+                }
             }
         }
-    }
 
     /**
      * Fetch song metadata from YouTube via the player endpoint. Returns null on failure.

@@ -53,17 +53,31 @@ class SharedPlaylistSyncListener @Inject constructor(
                 .collect { current ->
                     val currentIds = current.map { it.id }.toSet()
 
+                    // Capture badge inputs against the CURRENT previousDocs before anything
+                    // below mutates it — badge math must see a stable prior snapshot.
+                    val badgeInputs = current.map { it to previousDocs[it.id] }
+
                     // Detect deletions: ids we saw before that are no longer present.
+                    // Each reconcile runs as a child coroutine so a slow playlist can't stall
+                    // the others; overlapping work for the same playlist serializes on the
+                    // repository's striped lock. Plain collect — never flatMapLatest, which
+                    // would cancel an in-flight reconcile and strand half-applied state.
                     val deletedIds = previousDocs.keys - currentIds
                     deletedIds.forEach { id ->
                         Timber.tag(TAG).d("Cloud doc deleted: $id — reconciling")
-                        repository.reconcileLocal(id, cloudStateKnown = true)
+                        launch { repository.reconcileLocal(id, cloudStateKnown = true) }
                     }
 
-                    // Reconcile every present doc (idempotent; handles adds, renames, song diffs).
-                    current.forEach { cloud ->
-                        repository.recordIncomingAdditions(cloud, previousDocs[cloud.id])
-                        repository.reconcileLocal(cloud.id, knownCloud = cloud, cloudStateKnown = true)
+                    // Badge accounting runs sequentially BEFORE fan-out (stable snapshot).
+                    badgeInputs.forEach { (cloud, previous) ->
+                        repository.recordIncomingAdditions(cloud, previous)
+                    }
+
+                    // Fan out every present doc (idempotent; handles adds, renames, song diffs).
+                    badgeInputs.forEach { (cloud, _) ->
+                        launch {
+                            repository.reconcileLocal(cloud.id, knownCloud = cloud, cloudStateKnown = true)
+                        }
                     }
 
                     previousDocs.clear()
