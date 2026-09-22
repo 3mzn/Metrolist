@@ -695,21 +695,70 @@ class SharedPlaylistRepository @Inject constructor(
 
         // Adds run AFTER the stripe is released: fetches must never happen while holding the
         // lock. Fan out across songs; the repository-wide fetchSemaphore bounds the whole app
-        // to 6 concurrent fetch+inserts across all playlists. Finished fetches land in a
-        // completion-order buffer and flush into Room in chunks of FLUSH_CHUNK — arrival speed
-        // is parallelism, display smoothness is batching.
+        // to 6 concurrent fetch+inserts across all playlists. Finished fetches buffer by
+        // CLOUD INDEX and flush contiguous runs, so positions on this phone match the
+        // sharer's order exactly (toAdd follows cloud order). Arrival speed is parallelism,
+        // display smoothness is batching, order is the buffer.
         coroutineScope {
-            val pending = mutableListOf<ReceivedSong>()
+            val pending = mutableMapOf<Int, ReceivedSong>()
+            val resolved = mutableSetOf<Int>() // indices needing no insert (skipped/failed)
             val pendingMutex = Mutex()
+            var nextFlushIndex = 0
+            // Set when a chunk flush fails: further flushes stop and the tail is skipped, so
+            // committed state stays a clean order-prefix and the next diff rediscovers the
+            // remainder in order. All accesses happen under pendingMutex.
+            var aborted = false
 
-            toAdd.map { songId ->
+            // Caller holds pendingMutex. Flushes full 50s from the contiguous resolved run;
+            // a run reaching the end of toAdd is provably final (every index resolves exactly
+            // once), so the tail flushes at any size. Sub-chunk non-tail runs stay buffered.
+            // A failed chunk aborts the pass (see aborted) instead of crashing or committing
+            // later chunks out of order.
+            suspend fun flushContiguousLocked() {
+                if (aborted) return
+                var runEnd = nextFlushIndex
+                while (runEnd < toAdd.size &&
+                    (pending.containsKey(runEnd) || resolved.contains(runEnd))
+                ) {
+                    runEnd++
+                }
+                while (runEnd - nextFlushIndex >= FLUSH_CHUNK ||
+                    (runEnd == toAdd.size && runEnd > nextFlushIndex)
+                ) {
+                    val take = minOf(FLUSH_CHUNK, runEnd - nextFlushIndex)
+                    val chunk = (nextFlushIndex until nextFlushIndex + take).mapNotNull {
+                        pending.remove(it).also { _ -> resolved.remove(it) }
+                    }
+                    nextFlushIndex += take
+                    if (chunk.isNotEmpty()) {
+                        try {
+                            flushReceiveChunk(playlistId, chunk, cloudSongSet)
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            Timber.tag(TAG).e(e, "Ordered receive chunk failed — aborting pass, remainder retried next reconcile")
+                            aborted = true
+                            return
+                        }
+                    }
+                }
+            }
+
+            toAdd.withIndex().map { (index, songId) ->
                 async {
                     // Never let one song's failure kill the coroutineScope (which would
                     // cancel sibling fetches and crash the app via the scope's unhandled
                     // exception). The song stays absent; the next reconcile's diff rediscovers it.
+                    // Every path below resolves its index or the ordered pointer stalls.
                     try {
                         fetchSemaphore.withPermit {
-                            if (database.checkInPlaylist(playlistId, songId) > 0) return@withPermit
+                            if (database.checkInPlaylist(playlistId, songId) > 0) {
+                                pendingMutex.withLock {
+                                    resolved += index
+                                    flushContiguousLocked()
+                                }
+                                return@withPermit
+                            }
 
                             val existing = database.getSongByIdBlocking(songId)
                             val metadata = if (existing == null) {
@@ -718,40 +767,68 @@ class SharedPlaylistRepository @Inject constructor(
                                 // retries it.
                                 if (!networkConnectivity.isCurrentlyConnected()) {
                                     Timber.tag(TAG).d("Offline — deferring metadata fetch for $songId")
+                                    pendingMutex.withLock {
+                                        resolved += index
+                                        flushContiguousLocked()
+                                    }
                                     return@withPermit
                                 }
-                                val fetched = fetchSongMetadata(songId)
+                                // Bounded fetch: one hung song must not stall the ordered pointer
+                                // (and the whole playlist's display) indefinitely. Timeout is
+                                // treated like any other fetch failure — retried next reconcile.
+                                val fetched = try {
+                                    kotlinx.coroutines.withTimeout(FETCH_TIMEOUT_MS) {
+                                        fetchSongMetadata(songId)
+                                    }
+                                } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+                                    Timber.tag(TAG).w("Fetch timed out for $songId — retried next reconcile")
+                                    pendingMutex.withLock {
+                                        resolved += index
+                                        flushContiguousLocked()
+                                    }
+                                    return@withPermit
+                                }
                                 if (fetched == null) {
                                     Timber.tag(TAG).w("Skipping song $songId — metadata fetch failed")
+                                    pendingMutex.withLock {
+                                        resolved += index
+                                        flushContiguousLocked()
+                                    }
                                     return@withPermit
                                 }
                                 fetched
                             } else null
 
                             pendingMutex.withLock {
-                                pending += ReceivedSong(songId, metadata)
-                                if (pending.size >= FLUSH_CHUNK) {
-                                    val chunk = ArrayList(pending.subList(0, FLUSH_CHUNK))
-                                    pending.subList(0, FLUSH_CHUNK).clear()
-                                    flushReceiveChunk(playlistId, chunk, cloudSongSet)
-                                }
+                                pending[index] = ReceivedSong(songId, metadata)
+                                flushContiguousLocked()
                             }
                         }
                     } catch (e: kotlinx.coroutines.CancellationException) {
                         throw e
                     } catch (e: Exception) {
                         Timber.tag(TAG).e(e, "Receive failed for $songId — retried next reconcile")
+                        pendingMutex.withLock {
+                            resolved += index
+                            flushContiguousLocked()
+                        }
                     }
                 }
             }.awaitAll()
 
-            // Flush the remainder; awaitAll guarantees no fetch is still in flight.
+            // Flush the tail in order; awaitAll guarantees every index resolved, so the
+            // pointer provably reaches toAdd.size here. Skipped entirely if a chunk failed
+            // (aborted): the remainder is redone next pass, preserving order.
             try {
                 pendingMutex.withLock {
-                    if (pending.isNotEmpty()) {
-                        val chunk = ArrayList(pending)
-                        pending.clear()
-                        flushReceiveChunk(playlistId, chunk, cloudSongSet)
+                    if (!aborted) {
+                        val tail = mutableListOf<ReceivedSong>()
+                        while (nextFlushIndex < toAdd.size) {
+                            pending.remove(nextFlushIndex)?.let { tail += it }
+                            resolved.remove(nextFlushIndex)
+                            nextFlushIndex++
+                        }
+                        if (tail.isNotEmpty()) flushReceiveChunk(playlistId, tail, cloudSongSet)
                     }
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
@@ -922,6 +999,9 @@ class SharedPlaylistRepository @Inject constructor(
 
         /** Songs per Room transaction during a bulk receive (A5). */
         private const val FLUSH_CHUNK = 50
+
+        /** Per-song fetch bound: one hung fetch must not stall the ordered pointer. */
+        private const val FETCH_TIMEOUT_MS = 30_000L
 
         internal fun remoteAdditions(
             previousCloudSongs: Set<String>?,
