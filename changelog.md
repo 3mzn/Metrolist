@@ -1,3 +1,7 @@
+---v13.10.2
+- Shared playlists now arrive in the exact order they were shared — both phones show the same sequence
+- Receives also survive hung song fetches (30s cap) instead of stalling the whole playlist
+
 ---v13.10.1
 - Shared playlist receive is much faster and steadier: metadata fetches reuse the session token instead of minting one per song, so big shares land in seconds
 - Overlapping shares work safely, offline pauses instead of failing, and killing the app mid-receive recovers on restart
