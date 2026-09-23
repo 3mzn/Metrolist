@@ -114,13 +114,26 @@ async function pollSource(source: { id: string; spotify_id: string; last_revisio
     await supabase.from("mirror_sources").update({ error: "playlist-read-failed", last_checked_at: new Date().toISOString() }).eq("id", source.id);
     return { added: [] as object[], error: "playlist-read-failed" };
   }
+  if (read.uris.length < read.total) {
+    // Short read (transient partial page): fail closed rather than diffing against a
+    // partial URI set, which would misreport old songs as new and set revision on garbage.
+    await supabase.from("mirror_sources").update({ error: "short-read", last_checked_at: new Date().toISOString() }).eq("id", source.id);
+    return { added: [] as object[], error: "short-read" };
+  }
   if (read.revision && read.revision === source.last_revision) {
     await supabase.from("mirror_sources").update({ last_checked_at: new Date().toISOString(), error: null }).eq("id", source.id);
     return { added: [] as object[], skipped_unchanged: true };
   }
-  const { data: known } = await supabase.from("mirror_tracks").select("spotify_id").eq("source_id", source.id);
+  const { data: known, error: knownErr } = await supabase.from("mirror_tracks").select("spotify_id").eq("source_id", source.id);
+  if (knownErr) {
+    // Never diff against an unknown set: an empty known-set would re-resolve (and
+    // misreport) the entire playlist.
+    await supabase.from("mirror_sources").update({ error: "known-read-failed", last_checked_at: new Date().toISOString() }).eq("id", source.id);
+    return { added: [] as object[], error: "known-read-failed" };
+  }
   const knownSet = new Set((known ?? []).map((r: { spotify_id: string }) => r.spotify_id));
-  const fresh = read.uris.filter((u) => !knownSet.has(u)).slice(0, BACKFILL_CAP);
+  const unknown = read.uris.filter((u) => !knownSet.has(u));
+  const fresh = unknown.slice(0, BACKFILL_CAP);
 
   const added: object[] = [];
   for (const tid of fresh) {
@@ -131,12 +144,16 @@ async function pollSource(source: { id: string; spotify_id: string; last_revisio
     const { error } = await supabase.from("mirror_tracks").upsert(row, { onConflict: "source_id,spotify_id", ignoreDuplicates: true });
     if (!error) added.push(row);
   }
+  // Advance the revision ONLY when every unknown URI got resolved this pass. Otherwise
+  // the next poll would see a matching revision and skip, stranding the remainder
+  // (BACKFILL_CAP cut or resolve failures) forever.
+  const stillUnknown = unknown.length - added.length;
   await supabase.from("mirror_sources").update({
-    last_revision: read.revision || null,
+    last_revision: read.revision && stillUnknown === 0 ? read.revision : source.last_revision,
     last_checked_at: new Date().toISOString(),
     error: null,
   }).eq("id", source.id);
-  return { added, remaining: read.uris.filter((u) => !knownSet.has(u)).length - fresh.length };
+  return { added, remaining: stillUnknown };
 }
 
 // deno-lint-ignore no-explicit-any
@@ -145,6 +162,21 @@ async function handler(req: Request): Promise<Response> {
   if (req.method === "POST") {
     const body = await req.json().catch(() => null);
     if (body && Array.isArray(body.source_ids)) only = body.source_ids;
+    // Probe mode (Phase 3 backfill confirmation): mint + read length only, no
+    // resolve, no store. Returns {total, revision} for a raw Spotify playlist id.
+    if (body && typeof body.probe_spotify_id === "string") {
+      const pid = body.probe_spotify_id as string;
+      if (!/^[A-Za-z0-9]{10,30}$/.test(pid)) {
+        return Response.json({ ok: false, error: "bad-playlist-id" }, { status: 400 });
+      }
+      const token = await mintToken(pid);
+      if (!token) return Response.json({ ok: false, error: "token-mint-failed" });
+      const read = await readUris(pid, token);
+      if (!read || read.uris.length < read.total) {
+        return Response.json({ ok: false, error: "playlist-read-failed" });
+      }
+      return Response.json({ ok: true, total: read.total, revision: read.revision });
+    }
   }
   let q = supabase.from("mirror_sources").select("id,spotify_id,last_revision");
   if (only) q = q.in("id", only);

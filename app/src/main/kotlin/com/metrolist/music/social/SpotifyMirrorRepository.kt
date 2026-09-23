@@ -16,6 +16,7 @@ import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
+import com.metrolist.innertube.models.SongItem
 import com.metrolist.music.BuildConfig
 import com.metrolist.music.db.MusicDatabase
 import com.metrolist.music.db.entities.PlaylistEntity
@@ -45,15 +46,26 @@ import java.time.LocalDateTime
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import org.json.JSONObject
@@ -102,6 +114,12 @@ class SpotifyMirrorRepository @Inject constructor(
         val sources: Map<String, DirectResult> = emptyMap(),
     )
 
+    @Serializable
+    private data class ProbeResponse(
+        val ok: Boolean = false,
+        val total: Int? = null,
+    )
+
     data class MirrorLink(
         val sourceId: String,
         val spotifyUrl: String,
@@ -118,9 +136,24 @@ class SpotifyMirrorRepository @Inject constructor(
     private val aliveScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var aliveJob: Job? = null
 
+    /**
+     * Single-flight gate: worker, alive loop, and pull-to-refresh all funnel through
+     * intake, and only one runs at a time. Without this, overlapping intakes insert
+     * interleaved subsets and scramble playlist order — and redo each other's matches.
+     */
+    private val intakeMutex = Mutex()
+
+    /** Bounded parallelism for YouTube matching (network-bound; inserts stay ordered). */
+    private val matchSemaphore = Semaphore(6)
+
     /** True while a tracked playlist screen is open (Phase 3 drives this). */
     @Volatile
     var screenOpen: Boolean = false
+
+    /** Live link map for UI (menu items, badges). */
+    val linksFlow: StateFlow<Map<String, MirrorLink>> = context.dataStore.data
+        .map { prefs -> parseLinks(prefs[linksKey].orEmpty()) }
+        .stateIn(aliveScope, SharingStarted.Eagerly, emptyMap())
 
     private fun supabaseHeaders(): Map<String, String> =
         mapOf(
@@ -132,6 +165,10 @@ class SpotifyMirrorRepository @Inject constructor(
 
     suspend fun links(): Map<String, MirrorLink> {
         val raw = context.dataStore.data.map { it[linksKey].orEmpty() }.first()
+        return parseLinks(raw)
+    }
+
+    private fun parseLinks(raw: String): Map<String, MirrorLink> {
         if (raw.isBlank()) return emptyMap()
         return runCatching {
             val obj = JSONObject(raw)
@@ -264,7 +301,7 @@ class SpotifyMirrorRepository @Inject constructor(
     }
 
     /** Closed path: consume server-stored pending rows for every linked playlist. */
-    suspend fun intakeAll() {
+    suspend fun intakeAll() = intakeMutex.withLock {
         val allLinks = links()
         if (allLinks.isEmpty()) return
         val pending = pullPending(allLinks.values.map { it.sourceId }.distinct())
@@ -273,57 +310,76 @@ class SpotifyMirrorRepository @Inject constructor(
         }
     }
 
-    /** Alive path: direct-invoke now and consume what comes back (~2–4 s). */
-    suspend fun intakeAllDirect() {
+    /**
+     * Alive path: consume already-pending rows first (incremental — first songs appear
+     * without waiting for a full server resolve), then direct-invoke to trigger fresh
+     * resolution and consume what comes back.
+     */
+    suspend fun intakeAllDirect() = intakeMutex.withLock {
         val allLinks = links()
         if (allLinks.isEmpty()) return
-        val fresh = directInvoke(allLinks.values.map { it.sourceId }.distinct())
+        val sourceIds = allLinks.values.map { it.sourceId }.distinct()
+        val pending = pullPending(sourceIds)
+        allLinks.forEach { (localId, link) ->
+            intakeRows(localId, link.sourceId, pending[link.sourceId].orEmpty())
+        }
+        val fresh = directInvoke(sourceIds)
         allLinks.forEach { (localId, link) ->
             intakeRows(localId, link.sourceId, fresh[link.sourceId].orEmpty())
         }
     }
 
-    private suspend fun intakeRows(localPlaylistId: String, sourceId: String, rows: List<MirrorRow>) {
-        if (rows.isEmpty()) return
+    /**
+     * Consume rows in playlist order and return songs added. Matching runs bounded-parallel;
+     * inserts run strictly sequentially so positions always mirror row order. Guards
+     * (videoId + title+artist) make every path idempotent.
+     */
+    private suspend fun intakeRows(localPlaylistId: String, sourceId: String, rows: List<MirrorRow>): Int {
+        if (rows.isEmpty()) return 0
         val local = database.playlistBlocking(localPlaylistId) ?: run {
             Timber.tag(TAG).w("Mirror target $localPlaylistId gone, skipping ${rows.size} rows")
-            return
+            return 0
         }
+        val matched = matchAll(localPlaylistId, rows)
         var added = 0
-        rows.forEach { row ->
+        matched.forEachIndexed { index, item ->
+            val row = rows[index]
             try {
-                if (consumeOne(localPlaylistId, row)) added++
+                if (item != null && insertMatched(localPlaylistId, item)) added++
             } catch (e: Exception) {
                 Timber.tag(TAG).e(e, "Mirror intake failed for ${row.title}")
             }
-            // Mark done PER ROW, immediately: end-of-batch marking leaves every
-            // inserted-but-unmarked song re-matchable after a kill, and YouTube search
-            // can return a different videoId for the same song across runs (= dupes).
-            if (row.id != null) markDone(listOf(row.id)) else markDoneBySpotify(sourceId, listOf(row.spotify_id))
         }
+        markRowsDone(sourceId, rows)
         if (added > 0) {
             SongNotificationHelper.showMirrorNotification(context, added, local.playlist.name)
         }
         Timber.tag(TAG).d("Mirror intake for $localPlaylistId: $added/${rows.size} added")
+        return added
     }
 
-    /**
-     * Match + insert one row. Returns true only if newly inserted (drives the notify
-     * count). Idempotent: re-pulls skip via the in-transaction checkInPlaylist guard, so
-     * two devices (or a repeated pull) can never duplicate map rows.
-     */
-    private suspend fun consumeOne(localPlaylistId: String, row: MirrorRow): Boolean {
-        // Dedupe on title+artist BEFORE searching: backfill-missing skips present songs
-        // without a network call, and re-pulls never re-match.
-        if (isTitleArtistPresent(localPlaylistId, row.title, row.artist)) return false
-        // D3: title+artist match, first hit wins, no confidence gate.
-        val matched = youtubeMatcher.matchJsonTrackWithRetry(JsonTrack(row.title, row.artist))
-        if (matched == null) {
-            Timber.tag(TAG).w("No YouTube match for ${row.title} — ${row.artist}, skipping")
-            return false
-        }
-        // Dedupe again AFTER matching: search can return a different videoId for the same
-        // song across runs, which would slip past the videoId guard below as a duplicate.
+    /** Match all rows concurrently (bounded); results align by index (null = skip). */
+    private suspend fun matchAll(localPlaylistId: String, rows: List<MirrorRow>): List<SongItem?> = coroutineScope {
+        rows.map { row ->
+            async {
+                matchSemaphore.withPermit {
+                    // Dedupe before searching: present songs skip without a network call.
+                    if (isTitleArtistPresent(localPlaylistId, row.title, row.artist)) return@withPermit null
+                    try {
+                        youtubeMatcher.matchJsonTrackWithRetry(JsonTrack(row.title, row.artist))
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Timber.tag(TAG).w("Match failed for ${row.title} — ${row.artist}")
+                        null
+                    }
+                }
+            }
+        }.awaitAll()
+    }
+
+    /** Insert one matched song if absent (videoId + title+artist guards). True if newly inserted. */
+    private suspend fun insertMatched(localPlaylistId: String, matched: SongItem): Boolean {
         if (isTitleArtistPresent(localPlaylistId, matched.title, matched.artists.firstOrNull()?.name)) return false
         var inserted = false
         database.withTransaction {
@@ -351,6 +407,14 @@ class SpotifyMirrorRepository @Inject constructor(
             .build()
         DownloadService.sendAddDownload(context, ExoDownloadService::class.java, request, false)
         return true
+    }
+
+    /** Batch done-marking after ordered insert (guards make re-pulls safe). */
+    private suspend fun markRowsDone(sourceId: String, rows: List<MirrorRow>) {
+        val doneIds = rows.mapNotNull { it.id }
+        val doneSpotify = rows.filter { it.id == null }.map { it.spotify_id }
+        markDone(doneIds)
+        markDoneBySpotify(sourceId, doneSpotify)
     }
 
     /** True when a song with this title+artist is already in the playlist. */
@@ -383,6 +447,36 @@ class SpotifyMirrorRepository @Inject constructor(
             Timber.tag(TAG).e(e, "markDoneBySpotify failed for ${spotifyIds.size} rows")
         }
     }
+
+    /** Alive path for one playlist (pull-to-refresh): direct-invoke now, consume. Returns songs added. */
+    suspend fun intakeDirectFor(localPlaylistId: String): Int = intakeMutex.withLock {
+        val link = links()[localPlaylistId] ?: return 0
+        val rows = directInvoke(listOf(link.sourceId))[link.sourceId].orEmpty()
+        if (rows.isEmpty()) return 0
+        intakeRows(localPlaylistId, link.sourceId, rows)
+    }
+
+    /** Probe a Spotify link: returns total track count without resolving or storing. */
+    suspend fun probeSpotifyTotal(spotifyUrl: String): Int? {
+        val spotifyId = parseSpotifyId(spotifyUrl) ?: return null
+        return try {
+            val resp: ProbeResponse = http.post(
+                "${BuildConfig.SUPABASE_URL}/functions/v1/poll-spotify",
+            ) {
+                supabaseHeaders().forEach { (k, v) -> header(k, v) }
+                contentType(ContentType.Application.Json)
+                setBody(mapOf("probe_spotify_id" to spotifyId))
+            }.body()
+            if (resp.ok) resp.total else null
+        } catch (e: Exception) {
+            Timber.tag(TAG).e(e, "probeSpotifyTotal failed")
+            null
+        }
+    }
+
+    /** Local song count for the backfill confirmation dialog. */
+    suspend fun localSongCount(localPlaylistId: String): Int =
+        runCatching { database.playlistSongsBlocking(localPlaylistId).size }.getOrDefault(0)
 
     // ── Scheduling + alive timers ─────────────────────────────────────────────────────────
 

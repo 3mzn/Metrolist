@@ -187,6 +187,8 @@ class App :
             initializeSocialFeatures()
             // SPEC_SPOTIFY_MIRROR: 15-min intake pull (KEEP — survives reinstalls of the schedule).
             spotifyMirrorRepository.ensureScheduled()
+            // Alive polling loop (process scope; no-ops with zero links).
+            spotifyMirrorRepository.startAlivePolling()
         }
 
         if (BuildConfig.UPDATER_AVAILABLE) {

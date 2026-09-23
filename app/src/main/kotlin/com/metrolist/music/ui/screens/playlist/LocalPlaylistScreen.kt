@@ -62,6 +62,9 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.material3.pulltorefresh.pullToRefresh
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -113,6 +116,7 @@ import com.metrolist.music.LocalNavController
 import com.metrolist.music.LocalPlayerAwareWindowInsets
 import com.metrolist.music.LocalPlayerConnection
 import com.metrolist.music.LocalSharedPlaylistRepository
+import com.metrolist.music.LocalSpotifyMirrorRepository
 import com.metrolist.music.LocalSyncUtils
 import com.metrolist.music.R
 import com.metrolist.music.constants.DarkModeKey
@@ -264,6 +268,24 @@ fun LocalPlaylistScreen(
     // SPEC_8: shared-playlist wiring.
     val sharedPlaylistRepo = LocalSharedPlaylistRepository.current
     val isShared: Boolean = playlist?.playlist?.isShared == true
+
+    // SPEC_SPOTIFY_MIRROR: tracked-playlist wiring.
+    val mirrorRepo = LocalSpotifyMirrorRepository.current
+    val mirrorLinks by mirrorRepo.linksFlow.collectAsStateWithLifecycle(initialValue = emptyMap())
+    val mirrorTracked: Boolean = playlist?.id?.let { mirrorLinks.containsKey(it) } == true
+
+    // Alive polling runs at 10 s while a tracked screen is open, 30 s otherwise.
+    // Process-scoped in the repository; this only flips the rate flag.
+    DisposableEffect(mirrorTracked) {
+        val was = mirrorRepo.screenOpen
+        if (mirrorTracked) mirrorRepo.screenOpen = true
+        onDispose {
+            if (mirrorTracked) mirrorRepo.screenOpen = was
+        }
+    }
+
+    var isRefreshing by remember { mutableStateOf(false) }
+    val pullRefreshState = rememberPullToRefreshState()
 
     // Clear the "X new" badge while a shared playlist is open. Re-runs as songs arrive so any
     // track that lands while the user is looking is immediately marked seen.
@@ -439,6 +461,12 @@ fun LocalPlaylistScreen(
                     onClick = {
                         showDeletePlaylistDialog = false
                         val playlistId = playlist?.id
+                        if (playlistId != null) {
+                            // SPEC_SPOTIFY_MIRROR D12: deleting the local playlist auto-untracks it.
+                            viewModel.viewModelScope.launch(Dispatchers.IO) {
+                                mirrorRepo.untrack(playlistId)
+                            }
+                        }
                         if (isShared && playlistId != null) {
                             // SPEC_8 D28: cloud delete first; partner listener removes their copy.
                             viewModel.viewModelScope.launch(Dispatchers.IO) {
@@ -521,7 +549,29 @@ fun LocalPlaylistScreen(
     }
 
     Box(
-        modifier = Modifier.fillMaxSize(),
+        modifier =
+            Modifier
+                .fillMaxSize()
+                .then(
+                    if (mirrorTracked) {
+                        Modifier.pullToRefresh(
+                            state = pullRefreshState,
+                            isRefreshing = isRefreshing,
+                            onRefresh = {
+                                val pid = playlist?.id ?: return@pullToRefresh
+                                isRefreshing = true
+                                coroutineScope.launch(Dispatchers.IO) {
+                                    mirrorRepo.intakeDirectFor(pid)
+                                    withContext(Dispatchers.Main) {
+                                        isRefreshing = false
+                                    }
+                                }
+                            },
+                        )
+                    } else {
+                        Modifier
+                    },
+                ),
     ) {
         LazyColumn(
             state = lazyListState,

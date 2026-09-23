@@ -7,7 +7,9 @@ package com.metrolist.music.ui.menu
 
 import android.content.Intent
 import android.content.res.Configuration
+import android.net.ConnectivityManager
 import android.widget.Toast
+import androidx.core.content.getSystemService
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -51,6 +53,7 @@ import com.metrolist.music.LocalDownloadUtil
 import com.metrolist.music.LocalListenTogetherManager
 import com.metrolist.music.LocalPlayerConnection
 import com.metrolist.music.LocalSharedPlaylistRepository
+import com.metrolist.music.LocalSpotifyMirrorRepository
 import com.metrolist.music.R
 import com.metrolist.music.db.entities.Playlist
 import com.metrolist.music.db.entities.PlaylistEntity
@@ -61,6 +64,7 @@ import com.metrolist.music.extensions.toMediaItem
 import com.metrolist.music.playback.ExoDownloadService
 import com.metrolist.music.playback.queues.ListQueue
 import com.metrolist.music.playback.queues.YouTubeQueue
+import com.metrolist.music.social.SpotifyMirrorRepository
 import com.metrolist.music.ui.component.DefaultDialog
 import com.metrolist.music.ui.component.Material3MenuGroup
 import com.metrolist.music.ui.component.Material3MenuItemData
@@ -122,6 +126,135 @@ fun PlaylistMenu(
 
     // SPEC_8 "Us" shared playlists.
     val sharedPlaylistRepo = LocalSharedPlaylistRepository.current
+    // SPEC_SPOTIFY_MIRROR D1: track / untrack affordance for eligible playlists.
+    // Never offered during creation (this menu only exists for existing playlists).
+    val mirrorRepo = LocalSpotifyMirrorRepository.current
+    val mirrorLinks by mirrorRepo.linksFlow.collectAsStateWithLifecycle(initialValue = emptyMap())
+    val mirrorLink = mirrorLinks[playlist.id]
+
+    var showMirrorLinkDialog by remember { mutableStateOf(false) }
+    var showMirrorModeDialog by remember { mutableStateOf(false) }
+    var showMirrorBackfillConfirm by remember { mutableStateOf(false) }
+    var mirrorPendingUrl by remember { mutableStateOf("") }
+    var mirrorBackfillCounts by remember { mutableStateOf<Pair<Int, Int>?>(null) }
+
+    if (showMirrorLinkDialog) {
+        TextFieldDialog(
+            icon = { Icon(painter = painterResource(R.drawable.share), contentDescription = null) },
+            title = { Text(text = stringResource(R.string.mirror_link_dialog_title)) },
+            onDismiss = { showMirrorLinkDialog = false },
+            initialTextFieldValue = TextFieldValue(""),
+            onDone = { url ->
+                val trimmed = url.trim()
+                if (!Regex("""open\.spotify\.com/playlist/[A-Za-z0-9]+""").containsMatchIn(trimmed)) {
+                    Toast.makeText(context, R.string.mirror_invalid_link, Toast.LENGTH_SHORT).show()
+                } else {
+                    mirrorPendingUrl = trimmed
+                    showMirrorModeDialog = true
+                }
+            },
+        )
+    }
+
+    if (showMirrorModeDialog) {
+        DefaultDialog(
+            onDismiss = { showMirrorModeDialog = false },
+            content = {
+                Text(
+                    text = stringResource(R.string.mirror_link_dialog_title),
+                    style = MaterialTheme.typography.bodyLarge,
+                    modifier = Modifier.padding(horizontal = 18.dp),
+                )
+            },
+            buttons = {
+                TextButton(
+                    onClick = {
+                        showMirrorModeDialog = false
+                        val url = mirrorPendingUrl
+                        coroutineScope.launch(Dispatchers.IO) {
+                            // Backfill-missing: confirm with counts + WiFi gate (spec Phase 3).
+                            val total = mirrorRepo.probeSpotifyTotal(url)
+                            if (total == null) {
+                                withContext(Dispatchers.Main) {
+                                    Toast.makeText(context, R.string.mirror_link_failed, Toast.LENGTH_SHORT).show()
+                                }
+                                return@launch
+                            }
+                            val local = mirrorRepo.localSongCount(playlist.id)
+                            withContext(Dispatchers.Main) {
+                                mirrorBackfillCounts = total to local
+                                showMirrorBackfillConfirm = true
+                            }
+                        }
+                    },
+                ) {
+                    Text(text = stringResource(R.string.mirror_mode_backfill))
+                }
+
+                TextButton(
+                    onClick = {
+                        showMirrorModeDialog = false
+                        onDismiss()
+                        val url = mirrorPendingUrl
+                        coroutineScope.launch(Dispatchers.IO) {
+                            // Future-only: link now (toast at once), seed continues in background.
+                            mirrorRepo.linkPlaylist(playlist.id, url, SpotifyMirrorRepository.MODE_FUTURE)
+                        }
+                        Toast.makeText(context, R.string.mirror_linked, Toast.LENGTH_SHORT).show()
+                    },
+                ) {
+                    Text(text = stringResource(R.string.mirror_mode_future))
+                }
+            },
+        )
+    }
+
+    if (showMirrorBackfillConfirm) {
+        val (total, local) = mirrorBackfillCounts ?: (0 to 0)
+        DefaultDialog(
+            onDismiss = { showMirrorBackfillConfirm = false },
+            content = {
+                Text(
+                    text = stringResource(R.string.mirror_backfill_confirm, total, local, (total - local).coerceAtLeast(0)),
+                    style = MaterialTheme.typography.bodyLarge,
+                    modifier = Modifier.padding(horizontal = 18.dp),
+                )
+            },
+            buttons = {
+                TextButton(
+                    onClick = {
+                        showMirrorBackfillConfirm = false
+                    },
+                ) {
+                    Text(text = stringResource(android.R.string.cancel))
+                }
+
+                TextButton(
+                    onClick = {
+                        showMirrorBackfillConfirm = false
+                        onDismiss()
+                        val connectivityManager = context.getSystemService<ConnectivityManager>()
+                        if (connectivityManager?.isActiveNetworkMetered == true) {
+                            Toast.makeText(context, R.string.mirror_backfill_wifi_required, Toast.LENGTH_SHORT).show()
+                            return@TextButton
+                        }
+                        val url = mirrorPendingUrl
+                        coroutineScope.launch(Dispatchers.IO) {
+                            mirrorRepo.linkPlaylist(playlist.id, url, SpotifyMirrorRepository.MODE_BACKFILL)
+                                .onFailure {
+                                    withContext(Dispatchers.Main) {
+                                        Toast.makeText(context, R.string.mirror_link_failed, Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                        }
+                        Toast.makeText(context, R.string.mirror_linked, Toast.LENGTH_SHORT).show()
+                    },
+                ) {
+                    Text(text = stringResource(android.R.string.ok))
+                }
+            },
+        )
+    }
     val isShared: Boolean = playlist.playlist.isShared
     val partnerIdentity by sharedPlaylistRepo.partnerIdentity.collectAsStateWithLifecycle()
     val partnerName = partnerIdentity.partnerName
@@ -269,6 +402,10 @@ fun PlaylistMenu(
                     onClick = {
                         showDeletePlaylistDialog = false
                         onDismiss()
+                        // SPEC_SPOTIFY_MIRROR D12: deleting the local playlist auto-untracks it.
+                        coroutineScope.launch(Dispatchers.IO) {
+                            mirrorRepo.untrack(playlist.id)
+                        }
                         if (isShared) {
                             // SPEC_8 D28: delete the cloud doc first; the local row is removed
                             // by deleteRemote and the partner's copy is removed by their listener.
@@ -588,6 +725,49 @@ fun PlaylistMenu(
                                     },
                                 ),
                             )
+                        }
+                        // SPEC_SPOTIFY_MIRROR D1: track a Spotify playlist from any
+                        // existing playlist (this menu never appears during creation).
+                        if (editable && autoPlaylist != true && !isGuest && !isToListenPlaylist) {
+                            if (mirrorLink == null) {
+                                add(
+                                    Material3MenuItemData(
+                                        title = {
+                                            Text(text = stringResource(R.string.mirror_track_with_spotify))
+                                        },
+                                        icon = {
+                                            Icon(
+                                                painter = painterResource(R.drawable.sync),
+                                                contentDescription = null,
+                                            )
+                                        },
+                                        onClick = {
+                                            showMirrorLinkDialog = true
+                                        },
+                                    ),
+                                )
+                            } else {
+                                add(
+                                    Material3MenuItemData(
+                                        title = {
+                                            Text(text = stringResource(R.string.mirror_untrack_spotify))
+                                        },
+                                        icon = {
+                                            Icon(
+                                                painter = painterResource(R.drawable.sync),
+                                                contentDescription = null,
+                                            )
+                                        },
+                                        onClick = {
+                                            onDismiss()
+                                            coroutineScope.launch(Dispatchers.IO) {
+                                                mirrorRepo.untrack(playlist.id)
+                                            }
+                                            Toast.makeText(context, R.string.mirror_untracked, Toast.LENGTH_SHORT).show()
+                                        },
+                                    ),
+                                )
+                            }
                         }
                         add(
                             Material3MenuItemData(

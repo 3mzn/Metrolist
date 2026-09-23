@@ -83,8 +83,10 @@ Edge Function poll-spotify — DUAL MODE (same deployment):
 phone:
   app closed: WorkManager 15 min + on-start reconcile + FCM-triggered expedited pull
   app alive: invoke direct mode on start, on tracked-playlist open, every 10 s while open / 30 s otherwise (process scope), pull-to-refresh
-  intake (both paths): extracted YoutubeMatcher → insert missing (checkInPlaylist)
-      → enqueue DownloadUtil → mark rows done (`status='done'` update, never delete) → local notification (D6)
+  intake (all paths, single-flight mutex — only one runs at a time): match bounded-parallel
+      (Semaphore(6)) → insert strictly sequential (positions mirror row order) →
+      batch mark-done → local notification (D6). Guards: videoId (in-tx) + title+artist
+      pre/post-match, so overlapping pulls can neither duplicate nor scramble order.
   two devices pulling the same rows is safe by construction: inserts are idempotent
       (checkInPlaylist) and done-marking is idempotent — both phones
       converge, nothing duplicates, consumed rows never re-mirror

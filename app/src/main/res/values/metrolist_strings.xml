@@ -1112,6 +1112,20 @@
     <string name="mirror_notification_body">%1$d songs mirrored from Spotify into %2$s</string>
     <string name="mirror_channel_name">Spotify mirror</string>
     <string name="mirror_channel_description">New songs mirrored from Spotify playlists</string>
+    <string name="mirror_track_with_spotify">Track with Spotify</string>
+    <string name="mirror_untrack_spotify">Untrack Spotify</string>
+    <string name="mirror_link_dialog_title">Track with Spotify</string>
+    <string name="mirror_link_dialog_hint">Paste Spotify playlist link</string>
+    <string name="mirror_invalid_link">That doesn\'t look like a Spotify playlist link</string>
+    <string name="mirror_mode_backfill">Add missing songs</string>
+    <string name="mirror_mode_backfill_desc">Copy songs that are in Spotify but not here yet</string>
+    <string name="mirror_mode_future">Only new songs</string>
+    <string name="mirror_mode_future_desc">Ignore what\'s there now, track future additions</string>
+    <string name="mirror_backfill_confirm">%1$d songs in Spotify, %2$d already here — add %3$d?</string>
+    <string name="mirror_backfill_wifi_required">Backfill needs WiFi — connect and try again</string>
+    <string name="mirror_linked">Tracking Spotify playlist</string>
+    <string name="mirror_untracked">Stopped tracking Spotify playlist</string>
+    <string name="mirror_link_failed">Couldn\'t reach the Spotify playlist — check the link and try again</string>
 
     <!-- Listen Together invites -->
     <string name="lt_invite_notification_title">%1$s wants to listen together</string>
