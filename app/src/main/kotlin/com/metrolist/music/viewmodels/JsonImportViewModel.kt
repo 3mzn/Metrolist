@@ -9,13 +9,12 @@ import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.metrolist.innertube.YouTube
-import com.metrolist.innertube.models.SongItem
 import com.metrolist.music.db.MusicDatabase
 import com.metrolist.music.db.entities.PlaylistEntity
 import com.metrolist.music.models.toMediaMetadata
 import com.metrolist.music.sync.ImportResult
 import com.metrolist.music.sync.JsonTrack
+import com.metrolist.music.utils.YoutubeMatcher
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -44,6 +43,7 @@ import javax.inject.Inject
 @HiltViewModel
 class JsonImportViewModel @Inject constructor(
     private val database: MusicDatabase,
+    private val youtubeMatcher: YoutubeMatcher,
     @ApplicationContext private val context: Context,
 ) : ViewModel() {
 
@@ -200,7 +200,7 @@ class JsonImportViewModel @Inject constructor(
                                 _statusText.value = "Matching [$displayIndex/$totalSongs]: ${track.displayName()}"
 
                                 // Parallel search (retains retry+500ms delay)
-                                val matchedSong = matchJsonTrackWithRetry(track, maxAttempts = 2)
+                                val matchedSong = youtubeMatcher.matchJsonTrackWithRetry(track, maxAttempts = 2)
 
                                 if (matchedSong != null) {
                                     // Serialize DB critical section to prevent duplicate race
@@ -266,43 +266,6 @@ class JsonImportViewModel @Inject constructor(
 
             _statusText.value = "Import complete! ${parts.joinToString(", ")} to \"$playlistName\"."
         }
-    }
-
-    /**
-     * Match a JSON track with YouTube Music with retry logic.
-     */
-    private suspend fun matchJsonTrackWithRetry(track: JsonTrack, maxAttempts: Int = 2): SongItem? {
-        repeat(maxAttempts) { attempt ->
-            try {
-                val result = matchJsonTrack(track)
-                if (result != null) {
-                    return result
-                }
-                // If no result but no error, wait before retry
-                if (attempt < maxAttempts - 1) {
-                    kotlinx.coroutines.delay(500)
-                }
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                throw e // Don't retry on cancellation
-            } catch (e: Exception) {
-                // Network or other error - retry if attempts remain
-                if (attempt == maxAttempts - 1) {
-                    return null
-                }
-                kotlinx.coroutines.delay(500)
-            }
-        }
-        return null
-    }
-
-    /**
-     * Match a JSON track with YouTube Music (single attempt).
-     */
-    private suspend fun matchJsonTrack(track: JsonTrack): SongItem? {
-        val query = track.toSearchQuery()
-        return YouTube.search(query, filter = YouTube.SearchFilter.FILTER_SONG).map { page ->
-            page.items.filterIsInstance<SongItem>().firstOrNull()
-        }.getOrNull()
     }
 
     /**

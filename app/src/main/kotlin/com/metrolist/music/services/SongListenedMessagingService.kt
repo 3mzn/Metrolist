@@ -10,7 +10,12 @@ import com.google.firebase.messaging.RemoteMessage
 import com.metrolist.music.App
 import com.metrolist.music.BuildConfig
 import com.metrolist.music.R
+import androidx.work.Constraints
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
 import com.metrolist.music.social.PartnerResolver
+import com.metrolist.music.social.SpotifyMirrorWorker
 import com.metrolist.music.update.AppUpdateNotifier
 import com.metrolist.music.utils.SongNotificationHelper
 import kotlinx.coroutines.launch
@@ -30,6 +35,7 @@ class SongListenedMessagingService : FirebaseMessagingService() {
 
         const val TYPE_SONG_LISTENED = "song_listened"
         const val TYPE_APP_UPDATE = "app_update"
+        const val TYPE_MIRROR_WAKE = "mirror_wake"
     }
 
     override fun onMessageReceived(message: RemoteMessage) {
@@ -42,6 +48,7 @@ class SongListenedMessagingService : FirebaseMessagingService() {
 
         when (type) {
             TYPE_SONG_LISTENED -> handleSongListenedNotification(data)
+            TYPE_MIRROR_WAKE -> handleMirrorWake()
             TYPE_APP_UPDATE -> {
                 if (!BuildConfig.UPDATER_AVAILABLE) return
                 val app = applicationContext as? App ?: return
@@ -73,6 +80,21 @@ class SongListenedMessagingService : FirebaseMessagingService() {
             friendName,
             songTitle,
         )
+    }
+
+    /**
+     * Mirror wake (SPEC_SPOTIFY_MIRROR D9): the server found new rows. Enqueue an
+     * expedited one-time intake; the periodic worker and on-start reconcile cover a
+     * missed or dropped push, so nothing can strand.
+     */
+    private fun handleMirrorWake() {
+        Timber.d("SongListenedMessaging", "Mirror wake received, enqueuing expedited intake")
+        val request = OneTimeWorkRequestBuilder<SpotifyMirrorWorker>()
+            .setConstraints(
+                Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build(),
+            )
+            .build()
+        WorkManager.getInstance(applicationContext).enqueue(request)
     }
 
     override fun onNewToken(token: String) {

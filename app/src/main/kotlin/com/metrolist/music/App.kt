@@ -109,6 +109,9 @@ class App :
     @Inject
     lateinit var sharedPlaylistSyncListener: Provider<com.metrolist.music.social.SharedPlaylistSyncListener>
 
+    @Inject
+    lateinit var spotifyMirrorRepository: com.metrolist.music.social.SpotifyMirrorRepository
+
     /**
      * False in the ":crash" process that hosts [com.metrolist.music.ui.screens.CrashActivity].
      *
@@ -182,6 +185,8 @@ class App :
         // listener or the WorkManager jobs the notifier schedules.
         if (isMainProcess) {
             initializeSocialFeatures()
+            // SPEC_SPOTIFY_MIRROR: 15-min intake pull (KEEP — survives reinstalls of the schedule).
+            spotifyMirrorRepository.ensureScheduled()
         }
 
         if (BuildConfig.UPDATER_AVAILABLE) {

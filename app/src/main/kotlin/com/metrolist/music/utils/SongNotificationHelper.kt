@@ -38,6 +38,72 @@ object SongNotificationHelper {
      */
     private const val LT_INVITE_NOTIFICATION_ID = 2800
 
+    const val MIRROR_CHANNEL_ID = "spotify_mirror"
+
+    /**
+     * Fixed id: mirror batches replace instead of stacking — the playlist holds the
+     * full history, the shade only needs the latest batch.
+     */
+    private const val MIRROR_NOTIFICATION_ID = 2700
+
+    /**
+     * Spotify mirror batch arrival (SPEC_SPOTIFY_MIRROR D6). Tapping opens the app;
+     * the playlist itself shows what landed.
+     */
+    fun showMirrorNotification(
+        context: Context,
+        count: Int,
+        playlistName: String,
+    ) {
+        createMirrorChannel(context)
+
+        val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+        val intent =
+            Intent(context, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            }
+
+        val pendingIntent =
+            PendingIntent.getActivity(
+                context,
+                3,
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+
+        val notification =
+            NotificationCompat.Builder(context, MIRROR_CHANNEL_ID)
+                .setSmallIcon(R.drawable.music_note)
+                .setContentTitle(context.getString(R.string.mirror_notification_title, playlistName))
+                .setContentText(context.getString(R.string.mirror_notification_body, count, playlistName))
+                .setStyle(NotificationCompat.BigTextStyle().bigText(context.getString(R.string.mirror_notification_body, count, playlistName)))
+                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                .setCategory(NotificationCompat.CATEGORY_RECOMMENDATION)
+                .setAutoCancel(true)
+                .setContentIntent(pendingIntent)
+                .build()
+
+        notificationManager.notify(MIRROR_NOTIFICATION_ID, notification)
+    }
+
+    private fun createMirrorChannel(context: Context) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val name = context.getString(R.string.mirror_channel_name)
+            val descriptionText = context.getString(R.string.mirror_channel_description)
+            val channel = NotificationChannel(
+                MIRROR_CHANNEL_ID,
+                name,
+                NotificationManager.IMPORTANCE_DEFAULT,
+            ).apply {
+                description = descriptionText
+            }
+
+            val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            notificationManager.createNotificationChannel(channel)
+        }
+    }
+
     /**
      * Heads-up channel for LT invites arriving while the app is not in the foreground.
      * Tapping routes straight into the join UI (no in-app banner) — see SPEC_7 D13.
@@ -82,7 +148,7 @@ object SongNotificationHelper {
         notificationManager.notify(LT_INVITE_NOTIFICATION_ID, notification)
     }
     /**
-     * Removes the LT-invite notification from the shade � called when the in-app banner
+     * Removes the LT-invite notification from the shade � called when the in-app banner
      * takes over delivery (app foregrounded) or the invite is consumed, so the two
      * channels never double-deliver the same invite.
      */

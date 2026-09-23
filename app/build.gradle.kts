@@ -130,6 +130,7 @@ android {
         buildConfigField("String", "LASTFM_SECRET", "\"$lastFmSecret\"")
         buildConfigField("String", "ARCHITECTURE", "\"universal\"")
         buildConfigField("String", "SUPABASE_URL", "\"https://teeafutbybbywitdahpr.supabase.co\"")
+        buildConfigField("String", "SUPABASE_ANON_KEY", "\"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRlZWFmdXRieWJieXdpdGRhaHByIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc4NTEwNjksImV4cCI6MjEwMzQyNzA2OX0.zznAigTK9pwlcNnnpGM3K19KPLpECpbKlKdDyeLzHco\"")
         buildConfigField("Long", "DISCORD_APP_ID", "1447278780795064401L")
     }
 

@@ -49,9 +49,9 @@ no DB schema change without sign-off, English strings only in
 
 **Phone prerequisites (build, not schema):** add the Supabase **anon (publishable) key**
 as a `buildConfigField` next to the existing `SUPABASE_URL` (same value for all flavors;
-public by design — RLS below does the protecting), and add the Supabase-KT client
-dependency (`postgrest` + `functions` modules only) for table access and direct
-function invoke.
+public by design — RLS below does the protecting). HTTP uses the **existing Ktor CIO +
+kotlinx.serialization** stack (no new dependency): PostgREST reads/writes and the
+function invoke are plain JSON calls with `apikey`/`Authorization` headers.
 
 ## 1. Locked decisions
 
