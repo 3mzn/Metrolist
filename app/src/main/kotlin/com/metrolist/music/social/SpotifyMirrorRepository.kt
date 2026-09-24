@@ -207,14 +207,22 @@ class SpotifyMirrorRepository @Inject constructor(
             val updated = links().toMutableMap()
             updated[localPlaylistId] = MirrorLink(sourceId, spotifyUrl, mode)
             saveLinks(updated)
+            // Consumption is tracked per-device (consumed set below): a relink must
+            // re-evaluate from scratch, so reset first, then fill per mode.
+            saveConsumed(sourceId, emptySet())
             if (mode == MODE_FUTURE) seedFutureOnly(sourceId)
+            else backfillFromServer(sourceId, localPlaylistId)
             Timber.tag(TAG).d("Linked $localPlaylistId -> $spotifyId ($mode)")
         }
 
     suspend fun untrack(localPlaylistId: String) {
         val updated = links().toMutableMap()
-        updated.remove(localPlaylistId)
+        val removed = updated.remove(localPlaylistId)
         saveLinks(updated)
+        if (removed != null) {
+            // Drop local consumption state; a later re-track re-seeds per its mode.
+            saveConsumed(removed.sourceId, emptySet())
+        }
     }
 
     private fun parseSpotifyId(url: String): String? =
@@ -240,31 +248,82 @@ class SpotifyMirrorRepository @Inject constructor(
             ?: throw IllegalStateException("Source row not visible after insert")
     }
 
-    /** Mark every currently-known URI done so future-only links ignore the past. */
+    /** Mark every currently-known URI consumed-locally so future-only links ignore the past. */
     private suspend fun seedFutureOnly(sourceId: String) {
+        val seen = mutableSetOf<String>()
         repeat(20) {
             val added = directInvoke(listOf(sourceId))[sourceId].orEmpty()
             if (added.isEmpty()) return
-            markDoneBySpotify(sourceId, added.map { it.spotify_id })
+            added.forEach { seen += it.spotify_id }
+        }
+        saveConsumed(sourceId, seen)
+    }
+
+    /** Backfill: pull every known row and insert what's missing locally, in order. */
+    private suspend fun backfillFromServer(sourceId: String, localPlaylistId: String) {
+        val rows = mutableListOf<MirrorRow>()
+        var offset = 0
+        while (true) {
+            val page: List<MirrorRow> = try {
+                http.get(
+                    "${BuildConfig.SUPABASE_URL}/rest/v1/mirror_tracks" +
+                        "?source_id=eq.$sourceId&select=id,source_id,spotify_id,title,artist,duration_ms" +
+                        "&order=created_at&limit=1000&offset=$offset",
+                ) {
+                    supabaseHeaders().forEach { (k, v) -> header(k, v) }
+                    accept(ContentType.Application.Json)
+                }.body()
+            } catch (e: Exception) {
+                Timber.tag(TAG).e(e, "Backfill pull failed")
+                return
+            }
+            rows += page
+            if (page.size < 1000) break
+            offset += page.size
+        }
+        intakeRows(localPlaylistId, sourceId, rows)
+    }
+
+    /**
+     * Per-device consumption state: which Spotify ids THIS phone already handled.
+     * Global done-marking cannot work (two phones share rows — one phone's done would
+     * starve the other), so each device tracks its own set and filters pulls locally.
+     */
+    private fun consumedKey(sourceId: String) = stringPreferencesKey("mirror_consumed_$sourceId")
+
+    private suspend fun consumed(sourceId: String): Set<String> {
+        val raw = context.dataStore.data.map { it[consumedKey(sourceId)].orEmpty() }.first()
+        if (raw.isBlank()) return emptySet()
+        return runCatching {
+            val arr = org.json.JSONArray(raw)
+            buildSet { repeat(arr.length()) { add(arr.getString(it)) } }
+        }.getOrDefault(emptySet())
+    }
+
+    private suspend fun saveConsumed(sourceId: String, ids: Set<String>) {
+        context.dataStore.edit { prefs ->
+            prefs[consumedKey(sourceId)] = org.json.JSONArray().apply { ids.forEach(::put) }.toString()
         }
     }
 
     // ── Intake ────────────────────────────────────────────────────────────────────────────
 
-    private suspend fun pullPending(sourceIds: List<String>): Map<String, List<MirrorRow>> {
+    /** All known rows for these sources (consumption is filtered per-device in intakeRows). */
+    private suspend fun pullAll(sourceIds: List<String>): Map<String, List<MirrorRow>> {
         if (sourceIds.isEmpty()) return emptyMap()
         return try {
             val rows: List<MirrorRow> = http.get(
                 "${BuildConfig.SUPABASE_URL}/rest/v1/mirror_tracks" +
                     "?source_id=in.(${sourceIds.joinToString(",")})" +
-                    "&status=eq.pending&select=id,source_id,spotify_id,title,artist,duration_ms",
+                    "&select=id,source_id,spotify_id,title,artist,duration_ms" +
+                    "&order=created_at&limit=2000",
             ) {
                 supabaseHeaders().forEach { (k, v) -> header(k, v) }
                 accept(ContentType.Application.Json)
             }.body()
             rows.groupBy { it.source_id }
         } catch (e: Exception) {
-            Timber.tag(TAG).e(e, "pullPending failed")
+            Timber.tag(TAG).e(e, "pullAll failed")
             emptyMap()
         }
     }
@@ -287,24 +346,11 @@ class SpotifyMirrorRepository @Inject constructor(
         }
     }
 
-    suspend fun markDone(rowIds: List<String>) {
-        if (rowIds.isEmpty()) return
-        try {
-            http.patch("${BuildConfig.SUPABASE_URL}/rest/v1/mirror_tracks?id=in.(${rowIds.joinToString(",")})") {
-                supabaseHeaders().forEach { (k, v) -> header(k, v) }
-                contentType(ContentType.Application.Json)
-                setBody(mapOf("status" to "done"))
-            }
-        } catch (e: Exception) {
-            Timber.tag(TAG).e(e, "markDone failed for ${rowIds.size} rows")
-        }
-    }
-
     /** Closed path: consume server-stored pending rows for every linked playlist. */
     suspend fun intakeAll() = intakeMutex.withLock {
         val allLinks = links()
         if (allLinks.isEmpty()) return
-        val pending = pullPending(allLinks.values.map { it.sourceId }.distinct())
+        val pending = pullAll(allLinks.values.map { it.sourceId }.distinct())
         allLinks.forEach { (localId, link) ->
             intakeRows(localId, link.sourceId, pending[link.sourceId].orEmpty())
         }
@@ -319,7 +365,7 @@ class SpotifyMirrorRepository @Inject constructor(
         val allLinks = links()
         if (allLinks.isEmpty()) return
         val sourceIds = allLinks.values.map { it.sourceId }.distinct()
-        val pending = pullPending(sourceIds)
+        val pending = pullAll(sourceIds)
         allLinks.forEach { (localId, link) ->
             intakeRows(localId, link.sourceId, pending[link.sourceId].orEmpty())
         }
@@ -332,7 +378,9 @@ class SpotifyMirrorRepository @Inject constructor(
     /**
      * Consume rows in playlist order and return songs added. Matching runs bounded-parallel;
      * inserts run strictly sequentially so positions always mirror row order. Guards
-     * (videoId + title+artist) make every path idempotent.
+     * (videoId + title+artist) make every path idempotent. Consumption is tracked
+     * per-device (consumed set): rows handled here — inserted, skipped, or match-failed —
+     * never come back; rows that throw stay unconsumed for retry.
      */
     private suspend fun intakeRows(localPlaylistId: String, sourceId: String, rows: List<MirrorRow>): Int {
         if (rows.isEmpty()) return 0
@@ -340,17 +388,21 @@ class SpotifyMirrorRepository @Inject constructor(
             Timber.tag(TAG).w("Mirror target $localPlaylistId gone, skipping ${rows.size} rows")
             return 0
         }
-        val matched = matchAll(localPlaylistId, rows)
+        val seen = consumed(sourceId).toMutableSet()
+        val fresh = rows.filter { it.spotify_id !in seen }
+        if (fresh.isEmpty()) return 0
+        val matched = matchAll(localPlaylistId, fresh)
         var added = 0
         matched.forEachIndexed { index, item ->
-            val row = rows[index]
+            val row = fresh[index]
             try {
                 if (item != null && insertMatched(localPlaylistId, item)) added++
+                seen += row.spotify_id
             } catch (e: Exception) {
                 Timber.tag(TAG).e(e, "Mirror intake failed for ${row.title}")
             }
         }
-        markRowsDone(sourceId, rows)
+        saveConsumed(sourceId, seen)
         if (added > 0) {
             SongNotificationHelper.showMirrorNotification(context, added, local.playlist.name)
         }
@@ -409,14 +461,6 @@ class SpotifyMirrorRepository @Inject constructor(
         return true
     }
 
-    /** Batch done-marking after ordered insert (guards make re-pulls safe). */
-    private suspend fun markRowsDone(sourceId: String, rows: List<MirrorRow>) {
-        val doneIds = rows.mapNotNull { it.id }
-        val doneSpotify = rows.filter { it.id == null }.map { it.spotify_id }
-        markDone(doneIds)
-        markDoneBySpotify(sourceId, doneSpotify)
-    }
-
     /** True when a song with this title+artist is already in the playlist. */
     private suspend fun isTitleArtistPresent(playlistId: String, title: String, artist: String?): Boolean {
         if (artist.isNullOrBlank()) return false
@@ -428,23 +472,6 @@ class SpotifyMirrorRepository @Inject constructor(
         } catch (e: Exception) {
             Timber.tag(TAG).e(e, "Title+artist check failed, proceeding to match")
             false
-        }
-    }
-
-    /** Mark rows done by Spotify id (for direct-invoke rows, which carry no row id). */
-    suspend fun markDoneBySpotify(sourceId: String, spotifyIds: List<String>) {
-        if (spotifyIds.isEmpty()) return
-        try {
-            http.patch(
-                "${BuildConfig.SUPABASE_URL}/rest/v1/mirror_tracks" +
-                    "?source_id=eq.$sourceId&spotify_id=in.(${spotifyIds.joinToString(",")})",
-            ) {
-                supabaseHeaders().forEach { (k, v) -> header(k, v) }
-                contentType(ContentType.Application.Json)
-                setBody(mapOf("status" to "done"))
-            }
-        } catch (e: Exception) {
-            Timber.tag(TAG).e(e, "markDoneBySpotify failed for ${spotifyIds.size} rows")
         }
     }
 

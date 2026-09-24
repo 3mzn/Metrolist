@@ -85,8 +85,11 @@ phone:
   app alive: invoke direct mode on start, on tracked-playlist open, every 10 s while open / 30 s otherwise (process scope), pull-to-refresh
   intake (all paths, single-flight mutex — only one runs at a time): match bounded-parallel
       (Semaphore(6)) → insert strictly sequential (positions mirror row order) →
-      batch mark-done → local notification (D6). Guards: videoId (in-tx) + title+artist
-      pre/post-match, so overlapping pulls can neither duplicate nor scramble order.
+      per-device consumed-set update → local notification (D6). Consumption is tracked
+      per phone (DataStore `consumed_{source}` set): global done-marking cannot work
+      (two phones share rows — one phone's done would starve the other). Guards:
+      videoId (in-tx) + title+artist pre/post-match, so overlapping pulls can neither
+      duplicate nor scramble order.
   two devices pulling the same rows is safe by construction: inserts are idempotent
       (checkInPlaylist) and done-marking is idempotent — both phones
       converge, nothing duplicates, consumed rows never re-mirror
