@@ -97,7 +97,7 @@ phone:
 - `mirror_tracks(id uuid pk, source_id fk → mirror_sources, spotify_id text, title text, artist text, duration_ms int, created_at timestamptz, status text default 'pending')` — written by Edge (service_role), read + **marked done (update, never delete)** by phone. Unique `(source_id, spotify_id)` — re-polls never duplicate. Rows are never deleted: the poll diffs against all known URIs, so deleting a consumed row would re-mirror it on the next Spotify-side change.
 - RLS: anon `select` on both; anon `insert` on `mirror_sources`; anon `update` on `mirror_tracks` (mark-done). Anon writes to `mirror_tracks` denied. Honest note: anon update is broad for a 2-user private project (worst case = rows wrongly marked done → re-mirror); tighten with per-source secrets later, not now.
 
-**Phone link storage (DataStore, no schema change):** `localPlaylistId → {source_id, spotify_url, mode}`. Untrack removes the link (+ deletes the source row if no other link references it; songs already added stay — D7).
+**Phone link storage (DataStore, no schema change):** `localPlaylistId → {source_id, spotify_url, mode}`. Untrack removes the local link only; the server source row stays (one Spotify playlist may feed many playlists/phones — the phone cannot know if another link references it; an unreferenced source costs one 2-call revision-skip per minute). Songs already added stay — D7.
 
 ## 3. Phase plan — 4 phases, each shippable, each gated, approval between every one
 
