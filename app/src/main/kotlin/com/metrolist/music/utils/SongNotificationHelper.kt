@@ -47,13 +47,14 @@ object SongNotificationHelper {
     private const val MIRROR_NOTIFICATION_ID = 2700
 
     /**
-     * Spotify mirror batch arrival (SPEC_SPOTIFY_MIRROR D6). Tapping opens the app;
-     * the playlist itself shows what landed.
+     * Spotify mirror batch arrival (SPEC_SPOTIFY_MIRROR D6). Tapping opens the playlist
+     * that received the songs (F17); falls back to the app when it is gone.
      */
     fun showMirrorNotification(
         context: Context,
         count: Int,
         playlistName: String,
+        playlistId: String,
     ) {
         createMirrorChannel(context)
 
@@ -62,6 +63,7 @@ object SongNotificationHelper {
         val intent =
             Intent(context, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                putExtra(MainActivity.EXTRA_MIRROR_PLAYLIST_ID, playlistId)
             }
 
         val pendingIntent =

@@ -146,7 +146,7 @@ fun PlaylistMenu(
             initialTextFieldValue = TextFieldValue(""),
             onDone = { url ->
                 val trimmed = url.trim()
-                if (!Regex("""open\.spotify\.com/playlist/[A-Za-z0-9]+""").containsMatchIn(trimmed)) {
+                if (!SpotifyMirrorRepository.isSpotifyPlaylistUrl(trimmed)) {
                     Toast.makeText(context, R.string.mirror_invalid_link, Toast.LENGTH_SHORT).show()
                 } else {
                     mirrorPendingUrl = trimmed

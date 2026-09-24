@@ -36,7 +36,6 @@ class SpotifyMirrorWorker @AssistedInject constructor(
 
     override suspend fun doWork(): Result {
         return try {
-            repository.debugBootstrapIfNeeded()
             repository.intakeAll()
             Result.success()
         } catch (e: CancellationException) {

@@ -239,6 +239,7 @@ class MainActivity : ComponentActivity() {
 
         /** Set by the LT-invite notification: tap routes into the join UI (SPEC_7 D13). */
         const val EXTRA_LT_INVITE_TAP = "lt_invite_tap"
+        const val EXTRA_MIRROR_PLAYLIST_ID = "mirror_playlist_id"
     }
 
     @Inject
@@ -401,6 +402,7 @@ class MainActivity : ComponentActivity() {
             handleWidgetTargetIntent(intent, navController)
             handleRecognitionIntent(intent, navController)
             handleInviteTapIntent(intent, navController)
+            handleMirrorTapIntent(intent, navController)
             handleDeepLinkIntent(intent, navController)
         } else {
             pendingIntent = intent
@@ -937,12 +939,14 @@ class MainActivity : ComponentActivity() {
                         handleWidgetTargetIntent(pendingIntent!!, navController)
                         handleRecognitionIntent(pendingIntent!!, navController)
                         handleInviteTapIntent(pendingIntent!!, navController)
+                        handleMirrorTapIntent(pendingIntent!!, navController)
                         handleDeepLinkIntent(pendingIntent!!, navController)
                         pendingIntent = null
                     } else {
                         handleWidgetTargetIntent(intent, navController)
                         handleRecognitionIntent(intent, navController)
                         handleInviteTapIntent(intent, navController)
+                        handleMirrorTapIntent(intent, navController)
                         handleDeepLinkIntent(intent, navController)
                     }
                 }
@@ -953,6 +957,7 @@ class MainActivity : ComponentActivity() {
                             handleWidgetTargetIntent(intent, navController)
                             handleRecognitionIntent(intent, navController)
                             handleInviteTapIntent(intent, navController)
+                            handleMirrorTapIntent(intent, navController)
                             handleDeepLinkIntent(intent, navController)
                         }
 
@@ -1561,6 +1566,22 @@ class MainActivity : ComponentActivity() {
         intent.removeExtra(EXTRA_LT_INVITE_TAP)
         navController.navigate(Screens.ListenTogether.route) {
             // Repeated notification taps must not stack LT destinations.
+            launchSingleTop = true
+        }
+    }
+
+    /**
+     * Mirror notification tap (F17): open the playlist that received the songs.
+     * Falls back to plain app open when the extra is missing.
+     */
+    private fun handleMirrorTapIntent(
+        intent: Intent,
+        navController: NavHostController,
+    ) {
+        val playlistId = intent.getStringExtra(EXTRA_MIRROR_PLAYLIST_ID)
+        if (playlistId.isNullOrBlank()) return
+        intent.removeExtra(EXTRA_MIRROR_PLAYLIST_ID)
+        navController.navigate("local_playlist/$playlistId") {
             launchSingleTop = true
         }
     }

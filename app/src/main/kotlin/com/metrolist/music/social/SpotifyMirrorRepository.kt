@@ -6,6 +6,8 @@
 package com.metrolist.music.social
 
 import android.content.Context
+import android.os.PowerManager
+import androidx.core.content.getSystemService
 import androidx.core.net.toUri
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -19,7 +21,6 @@ import androidx.work.WorkManager
 import com.metrolist.innertube.models.SongItem
 import com.metrolist.music.BuildConfig
 import com.metrolist.music.db.MusicDatabase
-import com.metrolist.music.db.entities.PlaylistEntity
 import com.metrolist.music.db.entities.PlaylistSongMap
 import com.metrolist.music.models.toMediaMetadata
 import com.metrolist.music.playback.ExoDownloadService
@@ -43,7 +44,6 @@ import io.ktor.http.ContentType
 import io.ktor.http.contentType
 import io.ktor.http.isSuccess
 import io.ktor.serialization.kotlinx.json.json
-import java.time.LocalDateTime
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -73,19 +73,21 @@ import org.json.JSONObject
 import timber.log.Timber
 
 /**
- * Spotify auto-mirror intake (SPEC_SPOTIFY_MIRROR Phase 2).
+ * Spotify auto-mirror intake (SPEC_SPOTIFY_MIRROR).
  *
  * The server (Edge Function `poll-spotify`) owns all Spotify traffic. This repository:
  *  - stores per-playlist links (`localPlaylistId -> {source_id, spotify_url, mode}`),
- *  - pulls pending rows (closed path) or invokes the function directly and takes the
- *    rows from the response (alive path),
+ *  - pulls all known rows (closed path) or invokes the function directly and takes
+ *    the rows from the response (alive path),
  *  - matches title+artist via [YoutubeMatcher] (D3: everything that matches lands),
- *  - inserts missing songs (idempotent via `checkInPlaylist`), enqueues downloads
- *    (existing rules, D4+D5), marks rows done (**update, never delete** — the server
- *    diffs against all known URIs, so deleting would re-mirror on the next change),
+ *  - inserts missing songs in order (bounded-parallel match, chunked sequential
+ *    insert), enqueues downloads (existing rules, D4+D5),
+ *  - tracks consumption per-device (DataStore consumed set): two phones sharing one
+ *    source converge independently; global server state is never mutated by phones,
  *  - notifies per batch (D6).
  *
- * Two devices consuming the same rows converge: inserts and done-marks are idempotent.
+ * Concurrency: one intake at a time (intakeMutex) across worker, alive loop,
+ * pull-to-refresh, and link flows; fetches never run under it.
  */
 @Singleton
 class SpotifyMirrorRepository @Inject constructor(
@@ -139,6 +141,9 @@ class SpotifyMirrorRepository @Inject constructor(
 
     private val linksKey = stringPreferencesKey("mirror_links")
     private val workManager by lazy { WorkManager.getInstance(context) }
+    private val powerManager by lazy {
+        runCatching { context.getSystemService<PowerManager>() }.getOrNull()
+    }
     private val aliveScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var aliveJob: Job? = null
 
@@ -234,9 +239,6 @@ class SpotifyMirrorRepository @Inject constructor(
             saveConsumed(removed.sourceId, emptySet())
         }
     }
-
-    private fun parseSpotifyId(url: String): String? =
-        Regex("""open\.spotify\.com/playlist/([A-Za-z0-9]+)""").find(url)?.groupValues?.get(1)
 
     private suspend fun getOrCreateSource(spotifyId: String): String {
         val existing: List<Map<String, String>> = http.get(
@@ -469,7 +471,7 @@ class SpotifyMirrorRepository @Inject constructor(
         if (inserted.isNotEmpty()) {
             // Downloads enqueue after all inserts (same call as a manual add).
             inserted.forEach { enqueueDownload(it) }
-            SongNotificationHelper.showMirrorNotification(context, inserted.size, local.playlist.name)
+            SongNotificationHelper.showMirrorNotification(context, inserted.size, local.playlist.name, localPlaylistId)
         }
         Timber.tag(TAG).d("Mirror intake for $localPlaylistId: ${inserted.size}/${rows.size} added")
         return inserted.size
@@ -492,9 +494,7 @@ class SpotifyMirrorRepository @Inject constructor(
         artist: String?,
     ): Boolean {
         if (artist.isNullOrBlank()) return false
-        val t = title.lowercase()
-        val a = artist.lowercase()
-        return knownTitles.any { (kt, ka) -> kt == t && ka.any { it == a } }
+        return knownTitles.any { (kt, ka) -> matchTitleArtist(kt, ka, title, artist) }
     }
 
     /** Match all rows concurrently (bounded); results align by index (null = skip). */
@@ -585,7 +585,9 @@ class SpotifyMirrorRepository @Inject constructor(
         if (aliveJob?.isActive == true) return
         aliveJob = aliveScope.launch {
             while (isActive) {
-                delay(if (screenOpen) ALIVE_OPEN_MS else ALIVE_BG_MS)
+                // F12: screen off → 2 min (radio/battery); screen on → 10 s open / 30 s bg.
+                val screenOn = powerManager?.isInteractive ?: true
+                delay(if (!screenOn) ALIVE_SCREEN_OFF_MS else if (screenOpen) ALIVE_OPEN_MS else ALIVE_BG_MS)
                 runCatching { intakeAllDirect() }
                     .onFailure { Timber.tag(TAG).e(it, "Alive mirror poll failed") }
             }
@@ -597,37 +599,6 @@ class SpotifyMirrorRepository @Inject constructor(
         aliveJob = null
     }
 
-    /**
-     * Phase-2 gate helper (DEBUG only): with no UI yet, the worker needs a link. On a
-     * debug build with zero links and a test source configured, this creates a
-     * "Spotify Mirror Test" playlist and links it future-only. Production builds and
-     * real links never touch this path.
-     */
-    suspend fun debugBootstrapIfNeeded(): Boolean {
-        if (!BuildConfig.DEBUG || DEBUG_TEST_SOURCE_ID.isEmpty()) return links().isNotEmpty()
-        if (links().isNotEmpty()) return true
-        val existing = database.playlistEntitiesByNameAsc().firstOrNull { it.name == DEBUG_PLAYLIST_NAME }
-        val playlistId = existing?.id ?: run {
-            val entity = PlaylistEntity(
-                name = DEBUG_PLAYLIST_NAME,
-                browseId = null,
-                isLocal = true,
-                isEditable = true,
-                bookmarkedAt = LocalDateTime.now(),
-            )
-            database.withTransaction { insert(entity) }
-            entity.id
-        }
-        linkPlaylistBySource(playlistId, DEBUG_TEST_SOURCE_ID, MODE_FUTURE)
-        return true
-    }
-
-    private suspend fun linkPlaylistBySource(localPlaylistId: String, sourceId: String, mode: String) {
-        val updated = links().toMutableMap()
-        updated[localPlaylistId] = MirrorLink(sourceId, "", mode)
-        saveLinks(updated)
-    }
-
     companion object {
         private const val TAG = "SpotifyMirror"
         const val MODE_BACKFILL = "backfill"
@@ -635,16 +606,51 @@ class SpotifyMirrorRepository @Inject constructor(
 
         private const val ALIVE_OPEN_MS = 10_000L
         private const val ALIVE_BG_MS = 30_000L
+        private const val ALIVE_SCREEN_OFF_MS = 120_000L
 
         /** Songs per Room transaction during mirror intake (display smoothness). */
         private const val INSERT_CHUNK = 50
 
-        private const val DEBUG_PLAYLIST_NAME = "Spotify Mirror Test"
+        /** True for open.spotify.com playlist links (F20: single definition). */
+        fun isSpotifyPlaylistUrl(url: String): Boolean = parseSpotifyId(url) != null
+
+        internal fun parseSpotifyId(url: String): String? =
+            Regex("""open\.spotify\.com/playlist/([A-Za-z0-9]+)""").find(url)?.groupValues?.get(1)
 
         /**
-         * Test source id for the Phase-2 device gate ONLY. Empty = bootstrap disabled.
-         * Set to a real mirror_sources id for the gate run, verify, then revert.
+         * Fuzzy title+artist equality, comparison-only (F13). Titles: lowercase, strip
+         * [...] / (...) segments and trailing remaster/remix tails, collapse spaces.
+         * Artists: split on , ; & and feat/ft markers, any-overlap wins. Catches collabs
+         * ("A, B" vs "A") and edition variants without touching stored data.
          */
-        private const val DEBUG_TEST_SOURCE_ID = ""
+        internal fun matchTitleArtist(
+            storedTitle: String,
+            storedArtists: Set<String>,
+            title: String,
+            artist: String?,
+        ): Boolean {
+            if (artist.isNullOrBlank()) return false
+            if (normalizeTitle(storedTitle) != normalizeTitle(title)) return false
+            val incoming = splitArtists(artist)
+            if (incoming.isEmpty()) return false
+            val stored = storedArtists.flatMap { splitArtists(it) }.toSet()
+            return stored.any { it in incoming }
+        }
+
+        internal fun normalizeTitle(title: String): String =
+            title.lowercase()
+                .replace("\\[.*?\\]".toRegex(), "")
+                .replace("\\(.*?\\)".toRegex(), "")
+                .replace("\\s+-\\s+.*remaster.*$".toRegex(), "")
+                .replace("\\s+remaster(ed)?(\\s+\\d{4})?\\s*$".toRegex(), "")
+                .replace("\\s+".toRegex(), " ")
+                .trim()
+
+        internal fun splitArtists(artist: String): Set<String> =
+            artist.lowercase()
+                .split(",", ";", "&", " feat. ", " ft. ", " feat ", " ft ")
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+                .toSet()
     }
 }
