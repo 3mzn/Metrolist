@@ -32,6 +32,7 @@ import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.request.accept
 import io.ktor.client.request.get
 import io.ktor.client.request.header
@@ -129,6 +130,11 @@ class SpotifyMirrorRepository @Inject constructor(
     private val json = Json { ignoreUnknownKeys = true }
     private val http = HttpClient(CIO) {
         install(ContentNegotiation) { json(json) }
+        // F2: hung sockets must fail fast, never stall the intake mutex forever.
+        install(HttpTimeout) {
+            requestTimeoutMillis = 30_000
+            connectTimeoutMillis = 10_000
+        }
     }
 
     private val linksKey = stringPreferencesKey("mirror_links")
@@ -204,14 +210,18 @@ class SpotifyMirrorRepository @Inject constructor(
             val spotifyId = parseSpotifyId(spotifyUrl)
                 ?: throw IllegalArgumentException("Not a Spotify playlist link")
             val sourceId = getOrCreateSource(spotifyId)
-            val updated = links().toMutableMap()
-            updated[localPlaylistId] = MirrorLink(sourceId, spotifyUrl, mode)
-            saveLinks(updated)
-            // Consumption is tracked per-device (consumed set below): a relink must
-            // re-evaluate from scratch, so reset first, then fill per mode.
-            saveConsumed(sourceId, emptySet())
-            if (mode == MODE_FUTURE) seedFutureOnly(sourceId)
-            else backfillFromServer(sourceId, localPlaylistId)
+            // F1: hold the intake mutex across link+seed/backfill so alive ticks can't
+            // interleave inserts (order) or slip pre-existing songs into future-only.
+            intakeMutex.withLock {
+                val updated = links().toMutableMap()
+                updated[localPlaylistId] = MirrorLink(sourceId, spotifyUrl, mode)
+                saveLinks(updated)
+                // Consumption is tracked per-device (consumed set below): a relink must
+                // re-evaluate from scratch, so reset first, then fill per mode.
+                saveConsumed(sourceId, emptySet())
+                if (mode == MODE_FUTURE) seedFutureOnly(sourceId)
+                else backfillFromServer(sourceId, localPlaylistId)
+            }
             Timber.tag(TAG).d("Linked $localPlaylistId -> $spotifyId ($mode)")
         }
 
@@ -235,10 +245,17 @@ class SpotifyMirrorRepository @Inject constructor(
             supabaseHeaders().forEach { (k, v) -> header(k, v) }
         }.body()
         existing.firstOrNull()?.get("id")?.let { return it }
-        http.post("${BuildConfig.SUPABASE_URL}/rest/v1/mirror_sources") {
-            supabaseHeaders().forEach { (k, v) -> header(k, v) }
-            contentType(ContentType.Application.Json)
-            setBody(mapOf("spotify_id" to spotifyId))
+        // F4: two phones linking the same URL at once race here — a 409 means the
+        // other side won; re-read instead of failing the whole link.
+        try {
+            http.post("${BuildConfig.SUPABASE_URL}/rest/v1/mirror_sources") {
+                supabaseHeaders().forEach { (k, v) -> header(k, v) }
+                contentType(ContentType.Application.Json)
+                setBody(mapOf("spotify_id" to spotifyId))
+            }
+        } catch (e: io.ktor.client.plugins.ClientRequestException) {
+            if (e.response.status != io.ktor.http.HttpStatusCode.Conflict) throw e
+            Timber.tag(TAG).d("Source insert raced (409), re-reading")
         }
         return http.get(
             "${BuildConfig.SUPABASE_URL}/rest/v1/mirror_sources?spotify_id=eq.$spotifyId&select=id",
@@ -248,12 +265,18 @@ class SpotifyMirrorRepository @Inject constructor(
             ?: throw IllegalStateException("Source row not visible after insert")
     }
 
-    /** Mark every currently-known URI consumed-locally so future-only links ignore the past. */
+    /**
+     * Seed future-only: everything the server knows RIGHT NOW counts as "already there".
+     * Base is a pull of all known rows (instant, exact for the normal fully-resolved case);
+     * then a bounded direct loop catches anything resolving concurrently (mid-backfill
+     * links). The set is ALWAYS saved, even if every poll comes back empty — an empty
+     * save on failure would flood the playlist on the next intake.
+     */
     private suspend fun seedFutureOnly(sourceId: String) {
-        val seen = mutableSetOf<String>()
-        repeat(20) {
+        val seen = pullAll(listOf(sourceId))[sourceId].orEmpty().map { it.spotify_id }.toMutableSet()
+        for (i in 0 until 20) {
             val added = directInvoke(listOf(sourceId))[sourceId].orEmpty()
-            if (added.isEmpty()) return
+            if (added.isEmpty()) break
             added.forEach { seen += it.spotify_id }
         }
         saveConsumed(sourceId, seen)
@@ -385,38 +408,105 @@ class SpotifyMirrorRepository @Inject constructor(
     private suspend fun intakeRows(localPlaylistId: String, sourceId: String, rows: List<MirrorRow>): Int {
         if (rows.isEmpty()) return 0
         val local = database.playlistBlocking(localPlaylistId) ?: run {
-            Timber.tag(TAG).w("Mirror target $localPlaylistId gone, skipping ${rows.size} rows")
+            Timber.tag(TAG).w("Mirror target $localPlaylistId gone, auto-untracking")
+            untrack(localPlaylistId)
             return 0
         }
         val seen = consumed(sourceId).toMutableSet()
         val fresh = rows.filter { it.spotify_id !in seen }
         if (fresh.isEmpty()) return 0
-        val matched = matchAll(localPlaylistId, fresh)
-        var added = 0
+        // F7: snapshot the playlist's title+artist set ONCE (not per row), then keep it
+        // fresh incrementally as this pass inserts - O(N) instead of O(N^2).
+        val knownTitles = loadTitleIndex(localPlaylistId)
+        val matched = matchAll(knownTitles, fresh)
+        // Null matches are clean skips (present or unmatchable): consume immediately.
         matched.forEachIndexed { index, item ->
-            val row = fresh[index]
-            try {
-                if (item != null && insertMatched(localPlaylistId, item)) added++
-                seen += row.spotify_id
-            } catch (e: Exception) {
-                Timber.tag(TAG).e(e, "Mirror intake failed for ${row.title}")
+            if (item == null) seen += fresh[index].spotify_id
+        }
+        val pairs = matched.mapIndexedNotNull { index, item ->
+            if (item != null) fresh[index] to item else null
+        }
+        // F8: insert in 50-row transactions (playlist screen recomposes per chunk, not
+        // per song). Order preserved: chunks commit strictly in sequence; a failed chunk
+        // aborts the pass and its rows stay unconsumed for retry.
+        val inserted = mutableListOf<SongItem>()
+        try {
+            pairs.chunked(INSERT_CHUNK).forEach { chunk ->
+                database.withTransaction {
+                    var currentMax = playlistSongMaps(localPlaylistId, 0).maxOfOrNull { it.position } ?: -1
+                    chunk.forEach { (row, item) ->
+                        if (isPresent(knownTitles, item.title, item.artists.firstOrNull()?.name)) {
+                            seen += row.spotify_id
+                            return@forEach
+                        }
+                        if (checkInPlaylist(localPlaylistId, item.id) == 0) {
+                            if (getSongByIdBlocking(item.id) == null) {
+                                insert(item.toMediaMetadata())
+                            }
+                            currentMax += 1
+                            insert(
+                                PlaylistSongMap(
+                                    songId = item.id,
+                                    playlistId = localPlaylistId,
+                                    position = currentMax,
+                                ),
+                            )
+                            knownTitles += item.title.lowercase() to
+                                item.artists.map { it.name.lowercase() }.toSet()
+                            inserted += item
+                        }
+                        seen += row.spotify_id
+                    }
+                    updatePlaylistLastUpdated(localPlaylistId)
+                }
             }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Timber.tag(TAG).e(e, "Mirror chunk insert failed - remainder retried next pass")
         }
         saveConsumed(sourceId, seen)
-        if (added > 0) {
-            SongNotificationHelper.showMirrorNotification(context, added, local.playlist.name)
+        if (inserted.isNotEmpty()) {
+            // Downloads enqueue after all inserts (same call as a manual add).
+            inserted.forEach { enqueueDownload(it) }
+            SongNotificationHelper.showMirrorNotification(context, inserted.size, local.playlist.name)
         }
-        Timber.tag(TAG).d("Mirror intake for $localPlaylistId: $added/${rows.size} added")
-        return added
+        Timber.tag(TAG).d("Mirror intake for $localPlaylistId: ${inserted.size}/${rows.size} added")
+        return inserted.size
+    }
+
+    /** Snapshot of (title, artists) in a playlist for O(1) duplicate checks. */
+    private suspend fun loadTitleIndex(localPlaylistId: String): MutableList<Pair<String, Set<String>>> =
+        try {
+            database.playlistSongsBlocking(localPlaylistId).map { ps ->
+                ps.song.song.title.lowercase() to ps.song.artists.map { it.name.lowercase() }.toSet()
+            }.toMutableList()
+        } catch (e: Exception) {
+            Timber.tag(TAG).e(e, "Title index load failed, checks degrade to videoId-only")
+            mutableListOf()
+        }
+
+    private fun isPresent(
+        knownTitles: List<Pair<String, Set<String>>>,
+        title: String,
+        artist: String?,
+    ): Boolean {
+        if (artist.isNullOrBlank()) return false
+        val t = title.lowercase()
+        val a = artist.lowercase()
+        return knownTitles.any { (kt, ka) -> kt == t && ka.any { it == a } }
     }
 
     /** Match all rows concurrently (bounded); results align by index (null = skip). */
-    private suspend fun matchAll(localPlaylistId: String, rows: List<MirrorRow>): List<SongItem?> = coroutineScope {
+    private suspend fun matchAll(
+        knownTitles: List<Pair<String, Set<String>>>,
+        rows: List<MirrorRow>,
+    ): List<SongItem?> = coroutineScope {
         rows.map { row ->
             async {
                 matchSemaphore.withPermit {
                     // Dedupe before searching: present songs skip without a network call.
-                    if (isTitleArtistPresent(localPlaylistId, row.title, row.artist)) return@withPermit null
+                    if (isPresent(knownTitles, row.title, row.artist)) return@withPermit null
                     try {
                         youtubeMatcher.matchJsonTrackWithRetry(JsonTrack(row.title, row.artist))
                     } catch (e: CancellationException) {
@@ -430,49 +520,13 @@ class SpotifyMirrorRepository @Inject constructor(
         }.awaitAll()
     }
 
-    /** Insert one matched song if absent (videoId + title+artist guards). True if newly inserted. */
-    private suspend fun insertMatched(localPlaylistId: String, matched: SongItem): Boolean {
-        if (isTitleArtistPresent(localPlaylistId, matched.title, matched.artists.firstOrNull()?.name)) return false
-        var inserted = false
-        database.withTransaction {
-            if (checkInPlaylist(localPlaylistId, matched.id) == 0) {
-                if (getSongByIdBlocking(matched.id) == null) {
-                    insert(matched.toMediaMetadata())
-                }
-                val currentMax = playlistSongMaps(localPlaylistId, 0).maxOfOrNull { it.position } ?: -1
-                insert(
-                    PlaylistSongMap(
-                        songId = matched.id,
-                        playlistId = localPlaylistId,
-                        position = currentMax + 1,
-                    ),
-                )
-                updatePlaylistLastUpdated(localPlaylistId)
-                inserted = true
-            }
-        }
-        if (!inserted) return false
+    private fun enqueueDownload(matched: SongItem) {
         // D4: same enqueue as a manual add — existing WiFi/charging rules + lyrics (D5) apply.
         val request = androidx.media3.exoplayer.offline.DownloadRequest.Builder(matched.id, matched.id.toUri())
             .setCustomCacheKey(matched.id)
             .setData(matched.title.toByteArray())
             .build()
         DownloadService.sendAddDownload(context, ExoDownloadService::class.java, request, false)
-        return true
-    }
-
-    /** True when a song with this title+artist is already in the playlist. */
-    private suspend fun isTitleArtistPresent(playlistId: String, title: String, artist: String?): Boolean {
-        if (artist.isNullOrBlank()) return false
-        return try {
-            database.playlistSongsBlocking(playlistId).any { ps ->
-                ps.song.song.title.equals(title, ignoreCase = true) &&
-                    ps.song.artists.any { it.name.equals(artist, ignoreCase = true) }
-            }
-        } catch (e: Exception) {
-            Timber.tag(TAG).e(e, "Title+artist check failed, proceeding to match")
-            false
-        }
     }
 
     /** Alive path for one playlist (pull-to-refresh): direct-invoke now, consume. Returns songs added. */
@@ -581,6 +635,9 @@ class SpotifyMirrorRepository @Inject constructor(
 
         private const val ALIVE_OPEN_MS = 10_000L
         private const val ALIVE_BG_MS = 30_000L
+
+        /** Songs per Room transaction during mirror intake (display smoothness). */
+        private const val INSERT_CHUNK = 50
 
         private const val DEBUG_PLAYLIST_NAME = "Spotify Mirror Test"
 

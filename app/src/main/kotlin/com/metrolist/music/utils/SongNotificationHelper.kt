@@ -81,6 +81,9 @@ object SongNotificationHelper {
                 .setPriority(NotificationCompat.PRIORITY_DEFAULT)
                 .setCategory(NotificationCompat.CATEGORY_RECOMMENDATION)
                 .setAutoCancel(true)
+                // F11: batches replace (fixed id above) — buzz only the first time so an
+                // active backfill doesn't re-alert every few seconds.
+                .setOnlyAlertOnce(true)
                 .setContentIntent(pendingIntent)
                 .build()
 
