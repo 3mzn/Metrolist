@@ -185,6 +185,13 @@ class SpotifyMirrorLogicTest {
         thumbnail = "t",
     )
 
+    private fun titledCandidate(id: String, title: String, vararg artists: String) = SongItem(
+        id = id,
+        title = title,
+        artists = artists.map { Artist(it, null) },
+        thumbnail = "t",
+    )
+
     @Test
     fun filterByArtist_exactAndVariants() {
         val ok = candidate("ok", "Taylor Swift")
@@ -237,6 +244,20 @@ class SpotifyMirrorLogicTest {
             listOf("hit"),
             matcher.filterByArtist(listOf(hit, junk), "The Girl and The Dreamcatcher").map { it.id },
         )
+    }
+
+    @Test
+    fun filterCandidates_rejectsSameArtistDifferentSong() {
+        // The "safety net" hole: same artist, different song must not pass.
+        val wrongSong = titledCandidate("wrong", "positions", "Ariana Grande")
+        val rightSong = titledCandidate("right", "safety net (Official Video)", "Ariana Grande")
+        val cover = titledCandidate("cover", "safety net", "Wild Stylerz")
+        val kept = matcher.filterCandidates(
+            listOf(wrongSong, rightSong, cover),
+            "safety net (feat. Ty Dolla \$ign)",
+            "Ariana Grande",
+        ).map { it.id }
+        assertEquals(listOf("right"), kept)
     }
 
     @Test

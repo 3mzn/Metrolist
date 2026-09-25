@@ -61,14 +61,14 @@ class YoutubeMatcher @Inject constructor() {
                     }
                     var pool = page.first
                     val cont = page.second
-                    if (filterByArtist(pool, track.artist).isEmpty() && cont != null) {
-                        // Page 1 has hits but the gate killed them all: one more page
+                    if (filterCandidates(pool, track.title, track.artist).isEmpty() && cont != null) {
+                        // Page 1 has hits but the filter killed them all: one more page
                         // before giving up (the right upload may sit just below junk).
                         val more = YouTube.searchContinuation(cont)
                             .getOrNull()?.items?.filterIsInstance<SongItem>().orEmpty()
                         pool = pool + more
                     }
-                    val candidates = filterByArtist(pool, track.artist)
+                    val candidates = filterCandidates(pool, track.title, track.artist)
                     if (candidates.isNotEmpty()) {
                         return MatchOutcome.Found(pickBest(candidates, durationMs) ?: candidates.first())
                     }
@@ -146,6 +146,19 @@ class YoutubeMatcher @Inject constructor() {
         YouTube.search(query, filter = YouTube.SearchFilter.FILTER_SONG).map { page ->
             page.items.filterIsInstance<SongItem>() to page.continuation
         }.getOrNull()
+
+    /**
+     * Candidate filter (mirror path): artist overlap AND folded-title equality.
+     * Artist-only gating lets a same-artist different-song through, which the
+     * insert dedupe then eats silently (consumed, no song, no skip — the
+     * "safety net" hole). Both sides folded identically (brackets, parens,
+     * dash-tails, case, punctuation), so legit variants ("Side To Side (feat.
+     * Nicki Minaj)" == "Side To Side") still meet.
+     */
+    internal fun filterCandidates(candidates: List<SongItem>, title: String, artist: String): List<SongItem> {
+        val want = foldedTitle(title)
+        return filterByArtist(candidates, artist).filter { foldedTitle(it.title) == want }
+    }
 
     /**
      * Artist gate: keep hits sharing at least one normalized artist token with the
