@@ -8,10 +8,8 @@ package com.metrolist.music.social
 import android.content.Context
 import android.os.PowerManager
 import androidx.core.content.getSystemService
-import androidx.core.net.toUri
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
-import androidx.media3.exoplayer.offline.DownloadService
 import androidx.work.Constraints
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.NetworkType
@@ -21,12 +19,13 @@ import androidx.work.WorkManager
 import com.metrolist.innertube.models.SongItem
 import com.metrolist.music.BuildConfig
 import com.metrolist.music.db.MusicDatabase
+import com.metrolist.music.db.entities.MirrorSkipEntity
 import com.metrolist.music.db.entities.PlaylistSongMap
 import com.metrolist.music.models.toMediaMetadata
-import com.metrolist.music.playback.ExoDownloadService
 import com.metrolist.music.sync.JsonTrack
 import com.metrolist.music.utils.SongNotificationHelper
 import com.metrolist.music.utils.YoutubeMatcher
+import com.metrolist.music.utils.YoutubeMatcher.MatchOutcome
 import com.metrolist.music.utils.dataStore
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.ktor.client.HttpClient
@@ -56,6 +55,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
@@ -157,6 +157,16 @@ class SpotifyMirrorRepository @Inject constructor(
     /** Bounded parallelism for YouTube matching (network-bound; inserts stay ordered). */
     private val matchSemaphore = Semaphore(6)
 
+    /**
+     * Retry timetable for transient match failures, per Spotify id: 10s, 30s, 1m, 5m,
+     * then every 10m indefinitely. In-memory only (process lifetime); a restart simply
+     * retries sooner, which is the safe direction. Definitive misses are consumed, so
+     * this map only ever holds songs that errored.
+     */
+    private val retryDelays = longArrayOf(10_000L, 30_000L, 60_000L, 300_000L, 600_000L)
+    private val retryFails = mutableMapOf<String, Int>()
+    private val retryAfter = mutableMapOf<String, Long>()
+
     /** True while a tracked playlist screen is open (Phase 3 drives this). */
     @Volatile
     var screenOpen: Boolean = false
@@ -235,8 +245,9 @@ class SpotifyMirrorRepository @Inject constructor(
         val removed = updated.remove(localPlaylistId)
         saveLinks(updated)
         if (removed != null) {
-            // Drop local consumption state; a later re-track re-seeds per its mode.
+            // Drop local consumption state; a later re-track re-seeds per mode.
             saveConsumed(removed.sourceId, emptySet())
+            database.clearMirrorSkips(localPlaylistId)
         }
     }
 
@@ -420,13 +431,42 @@ class SpotifyMirrorRepository @Inject constructor(
         // F7: snapshot the playlist's title+artist set ONCE (not per row), then keep it
         // fresh incrementally as this pass inserts - O(N) instead of O(N^2).
         val knownTitles = loadTitleIndex(localPlaylistId)
-        val matched = matchAll(knownTitles, fresh)
-        // Null matches are clean skips (present or unmatchable): consume immediately.
-        matched.forEachIndexed { index, item ->
-            if (item == null) seen += fresh[index].spotify_id
+        // Skips are resolved against the SAME snapshot: a song added by hand since the
+        // last pass is no longer a miss (SPEC_MIRROR_REVIEW).
+        val existingSkips = database.mirrorSkipsBlocking(localPlaylistId).associateBy { it.spotifyId }
+        existingSkips.values.forEach { s ->
+            if (isPresent(knownTitles, s.title, s.artist)) {
+                database.deleteMirrorSkip(localPlaylistId, s.spotifyId)
+            }
         }
-        val pairs = matched.mapIndexedNotNull { index, item ->
-            if (item != null) fresh[index] to item else null
+        val now = System.currentTimeMillis()
+        // Rows inside their backoff slot wait silently for a later pass (untouched).
+        val eligible = fresh.filter { (retryAfter[it.spotify_id] ?: 0L) <= now }
+        val matched = matchAll(knownTitles, eligible)
+        val pairs = mutableListOf<Pair<MirrorRow, SongItem>>()
+        matched.forEachIndexed { index, outcome ->
+            val row = eligible[index]
+            when (outcome) {
+                // Definitive miss (or already present): consume, never retry.
+                is MatchOutcome.NotFound -> {
+                    seen += row.spotify_id
+                    retryFails.remove(row.spotify_id)
+                    retryAfter.remove(row.spotify_id)
+                    recordSkip(localPlaylistId, knownTitles, row, existingSkips)
+                }
+                // Transient failure: stay unconsumed AND wait out the backoff slot.
+                is MatchOutcome.NetworkError -> {
+                    val fails = (retryFails[row.spotify_id] ?: 0) + 1
+                    retryFails[row.spotify_id] = fails
+                    retryAfter[row.spotify_id] =
+                        now + retryDelays[minOf(fails - 1, retryDelays.lastIndex)]
+                }
+                is MatchOutcome.Found -> {
+                    retryFails.remove(row.spotify_id)
+                    retryAfter.remove(row.spotify_id)
+                    pairs += row to outcome.item
+                }
+            }
         }
         // F8: insert in 50-row transactions (playlist screen recomposes per chunk, not
         // per song). Order preserved: chunks commit strictly in sequence; a failed chunk
@@ -439,6 +479,7 @@ class SpotifyMirrorRepository @Inject constructor(
                     chunk.forEach { (row, item) ->
                         if (isPresent(knownTitles, item.title, item.artists.firstOrNull()?.name)) {
                             seen += row.spotify_id
+                            resolveSkip(localPlaylistId, row, existingSkips)
                             return@forEach
                         }
                         if (checkInPlaylist(localPlaylistId, item.id) == 0) {
@@ -458,6 +499,7 @@ class SpotifyMirrorRepository @Inject constructor(
                             inserted += item
                         }
                         seen += row.spotify_id
+                        resolveSkip(localPlaylistId, row, existingSkips)
                     }
                     updatePlaylistLastUpdated(localPlaylistId)
                 }
@@ -469,8 +511,8 @@ class SpotifyMirrorRepository @Inject constructor(
         }
         saveConsumed(sourceId, seen)
         if (inserted.isNotEmpty()) {
-            // Downloads enqueue after all inserts (same call as a manual add).
-            inserted.forEach { enqueueDownload(it) }
+            // Owner decision: mirrored songs stream on demand, no auto-download.
+            // Manual downloads later pick up lyrics via the existing warmer.
             SongNotificationHelper.showMirrorNotification(context, inserted.size, local.playlist.name, localPlaylistId)
         }
         Timber.tag(TAG).d("Mirror intake for $localPlaylistId: ${inserted.size}/${rows.size} added")
@@ -497,36 +539,148 @@ class SpotifyMirrorRepository @Inject constructor(
         return knownTitles.any { (kt, ka) -> matchTitleArtist(kt, ka, title, artist) }
     }
 
-    /** Match all rows concurrently (bounded); results align by index (null = skip). */
+    // ── Review list: couldnt-mirror skips (SPEC_MIRROR_REVIEW) ──────────────────────────────
+
+    /** Live review list for a tracked playlist; dismissed rows are hidden. */
+    fun skipsFlow(playlistId: String): Flow<List<MirrorSkipEntity>> = database.mirrorSkips(playlistId)
+
+    /** Badge count for the playlist banner. */
+    fun skipCountFlow(playlistId: String): Flow<Int> = database.mirrorSkipCount(playlistId)
+
+    /**
+     * Record a definitive miss. Never overwrites a dismissed row (user said stop) and
+     * never records rows already present — those are dedupe skips, not misses.
+     */
+    private fun recordSkip(
+        localPlaylistId: String,
+        knownTitles: List<Pair<String, Set<String>>>,
+        row: MirrorRow,
+        existingSkips: Map<String, MirrorSkipEntity>,
+    ) {
+        if (isPresent(knownTitles, row.title, row.artist)) {
+            resolveSkip(localPlaylistId, row, existingSkips)
+            return
+        }
+        if (existingSkips[row.spotify_id]?.dismissed == true) return
+        database.upsertMirrorSkip(
+            MirrorSkipEntity(
+                localPlaylistId = localPlaylistId,
+                spotifyId = row.spotify_id,
+                title = row.title,
+                artist = row.artist,
+                durationMs = row.duration_ms,
+                skippedAt = System.currentTimeMillis(),
+            ),
+        )
+    }
+
+    /** The row is in the playlist now (matched this pass or added by hand): miss resolved. */
+    private fun resolveSkip(
+        localPlaylistId: String,
+        row: MirrorRow,
+        existingSkips: Map<String, MirrorSkipEntity>,
+    ) {
+        if (existingSkips.containsKey(row.spotify_id)) {
+            database.deleteMirrorSkip(localPlaylistId, row.spotify_id)
+        }
+    }
+
+    /**
+     * User-driven retry of one review row. Returns true when the song is in the
+     * playlist afterwards (found, inserted, or resolved as already present).
+     */
+    suspend fun retrySkip(playlistId: String, skip: MirrorSkipEntity): Boolean {
+        if (isPresent(loadTitleIndex(playlistId), skip.title, skip.artist)) {
+            database.deleteMirrorSkip(playlistId, skip.spotifyId)
+            return true
+        }
+        val outcome = matchSemaphore.withPermit {
+            try {
+                youtubeMatcher.matchWithOutcome(JsonTrack(skip.title, skip.artist), skip.durationMs)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Timber.tag(TAG).w("Skip retry failed for ${skip.title} — ${skip.artist}")
+                MatchOutcome.NetworkError
+            }
+        }
+        return when (outcome) {
+            is MatchOutcome.Found -> {
+                insertRetryHit(playlistId, outcome.item)
+                database.deleteMirrorSkip(playlistId, skip.spotifyId)
+                true
+            }
+            // Still a miss: re-stamp so the row shows as retried, keep it listed.
+            is MatchOutcome.NotFound -> {
+                database.upsertMirrorSkip(skip.copy(skippedAt = System.currentTimeMillis()))
+                false
+            }
+            is MatchOutcome.NetworkError -> false
+        }
+    }
+
+    /** Retry every non-dismissed row sequentially; returns how many were added. */
+    suspend fun retryAllSkips(playlistId: String): Int {
+        val skips = database.mirrorSkipsBlocking(playlistId).filter { !it.dismissed }
+        var added = 0
+        skips.forEach { skip -> if (retrySkip(playlistId, skip)) added++ }
+        return added
+    }
+
+    /** Remove a row from the review list permanently (never resurfaces, even on relink). */
+    suspend fun dismissSkip(playlistId: String, spotifyId: String) {
+        database.dismissMirrorSkip(playlistId, spotifyId)
+    }
+
+    /**
+     * Append one retry hit at the live max position. Same guards as the intake chunk
+     * insert (videoId + tx ordering), so concurrent intakes can't duplicate or interleave.
+     */
+    private suspend fun insertRetryHit(localPlaylistId: String, item: SongItem) {
+        database.withTransaction {
+            if (checkInPlaylist(localPlaylistId, item.id) == 0) {
+                if (getSongByIdBlocking(item.id) == null) {
+                    insert(item.toMediaMetadata())
+                }
+                val currentMax = playlistSongMaps(localPlaylistId, 0).maxOfOrNull { it.position } ?: -1
+                insert(
+                    PlaylistSongMap(
+                        songId = item.id,
+                        playlistId = localPlaylistId,
+                        position = currentMax + 1,
+                    ),
+                )
+                updatePlaylistLastUpdated(localPlaylistId)
+            }
+        }
+    }
+
+    /**
+     * Match all rows concurrently (bounded); results align by index.
+     * Callers filter backoff-slotted rows beforehand.
+     */
     private suspend fun matchAll(
         knownTitles: List<Pair<String, Set<String>>>,
         rows: List<MirrorRow>,
-    ): List<SongItem?> = coroutineScope {
+    ): List<MatchOutcome> = coroutineScope {
         rows.map { row ->
             async {
                 matchSemaphore.withPermit {
                     // Dedupe before searching: present songs skip without a network call.
-                    if (isPresent(knownTitles, row.title, row.artist)) return@withPermit null
+                    if (isPresent(knownTitles, row.title, row.artist)) {
+                        return@withPermit MatchOutcome.NotFound
+                    }
                     try {
-                        youtubeMatcher.matchJsonTrackWithRetry(JsonTrack(row.title, row.artist))
+                        youtubeMatcher.matchWithOutcome(JsonTrack(row.title, row.artist), row.duration_ms)
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
                         Timber.tag(TAG).w("Match failed for ${row.title} — ${row.artist}")
-                        null
+                        MatchOutcome.NetworkError
                     }
                 }
             }
         }.awaitAll()
-    }
-
-    private fun enqueueDownload(matched: SongItem) {
-        // D4: same enqueue as a manual add — existing WiFi/charging rules + lyrics (D5) apply.
-        val request = androidx.media3.exoplayer.offline.DownloadRequest.Builder(matched.id, matched.id.toUri())
-            .setCustomCacheKey(matched.id)
-            .setData(matched.title.toByteArray())
-            .build()
-        DownloadService.sendAddDownload(context, ExoDownloadService::class.java, request, false)
     }
 
     /** Alive path for one playlist (pull-to-refresh): direct-invoke now, consume. Returns songs added. */

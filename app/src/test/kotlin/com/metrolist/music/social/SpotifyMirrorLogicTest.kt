@@ -5,8 +5,12 @@
 
 package com.metrolist.music.social
 
+import com.metrolist.innertube.models.Artist
+import com.metrolist.innertube.models.SongItem
+import com.metrolist.music.utils.YoutubeMatcher
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -99,5 +103,74 @@ class SpotifyMirrorLogicTest {
                 "dreams", setOf("fleetwood mac"), "Dreams", null,
             ),
         )
+    }
+
+    private val matcher = YoutubeMatcher()
+
+    private fun hit(id: String, durationSecs: Int?, video: Boolean) = SongItem(
+        id = id,
+        title = "T",
+        artists = listOf(Artist("A", null)),
+        duration = durationSecs,
+        musicVideoType = if (video) "MUSIC_VIDEO_TYPE_UGC" else null,
+        thumbnail = "t",
+    )
+
+    @Test
+    fun stripForSearch_slots() {
+        assertEquals("Dreams", matcher.stripForSearch("Dreams [Explicit]"))
+        assertEquals("Dreams", matcher.stripForSearch("Dreams (Remastered 2011)"))
+        assertEquals("Despacito", matcher.stripForSearch("Despacito - Remix"))
+        assertEquals(
+            "Sunflower",
+            matcher.stripForSearch("Sunflower - Spider-Man: Into the Spider-Verse"),
+        )
+        assertEquals("Hello World", matcher.stripForSearch("Hello   World"))
+        assertEquals("Dreams", matcher.stripForSearch("Dreams"))
+    }
+
+    @Test
+    fun fallbackQueries_orderAndDedupe() {
+        assertEquals(
+            listOf("Despacito - Remix Luis Fonsi", "Despacito Luis Fonsi"),
+            matcher.fallbackQueries("Despacito - Remix", "Luis Fonsi"),
+        )
+        assertEquals(
+            listOf("Dreams Fleetwood Mac"),
+            matcher.fallbackQueries("Dreams", "Fleetwood Mac"),
+        )
+    }
+
+    @Test
+    fun pickBest_prefersAudioInWindow() {
+        val video = hit("v", 231, true) // |231-229| = 2, in window but video
+        val audio = hit("a", 237, false) // |237-229| = 8, in window, audio
+        assertEquals("a", matcher.pickBest(listOf(video, audio), 229_000)?.id)
+    }
+
+    @Test
+    fun pickBest_windowBeatsAudio() {
+        val farAudio = hit("a", 400, false)
+        val nearVideo = hit("v", 231, true)
+        assertEquals("v", matcher.pickBest(listOf(farAudio, nearVideo), 229_000)?.id)
+    }
+
+    @Test
+    fun pickBest_degradesToFirstHit() {
+        val first = hit("first", 900, true)
+        val second = hit("second", 901, false)
+        // All wild durations -> first (today's behavior).
+        assertEquals("first", matcher.pickBest(listOf(first, second), 229_000)?.id)
+        // Unknown duration either side -> first.
+        assertEquals("first", matcher.pickBest(listOf(first, second), null)?.id)
+        assertEquals(
+            "first",
+            matcher.pickBest(listOf(hit("first", null, false), second), 229_000)?.id,
+        )
+    }
+
+    @Test
+    fun pickBest_emptyIsNull() {
+        assertNull(matcher.pickBest(emptyList(), 229_000))
     }
 }

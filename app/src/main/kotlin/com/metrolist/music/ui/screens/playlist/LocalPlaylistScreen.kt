@@ -15,6 +15,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -31,6 +33,7 @@ import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -159,6 +162,7 @@ import com.yalantis.ucrop.UCrop
 import io.ktor.client.plugins.ClientRequestException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import sh.calvin.reorderable.ReorderableItem
@@ -273,6 +277,11 @@ fun LocalPlaylistScreen(
     val mirrorRepo = LocalSpotifyMirrorRepository.current
     val mirrorLinks by mirrorRepo.linksFlow.collectAsStateWithLifecycle(initialValue = emptyMap())
     val mirrorTracked: Boolean = playlist?.id?.let { mirrorLinks.containsKey(it) } == true
+
+    // SPEC_MIRROR_REVIEW: live count of unreviewed misses for the banner.
+    val mirrorSkipCount by remember(playlist?.id) {
+        playlist?.id?.let { mirrorRepo.skipCountFlow(it) } ?: flowOf(0)
+    }.collectAsStateWithLifecycle(initialValue = 0)
 
     // Alive polling runs at 10 s while a tracked screen is open, 30 s otherwise.
     // Process-scoped in the repository; this only flips the rate flag.
@@ -578,6 +587,40 @@ fun LocalPlaylistScreen(
             contentPadding = LocalPlayerAwareWindowInsets.current.union(WindowInsets.ime).asPaddingValues(),
         ) {
             playlist?.let { playlist ->
+                if (!isSearching && mirrorTracked && mirrorSkipCount > 0) {
+                    item(key = "mirror_skip_banner") {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 4.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(MaterialTheme.colorScheme.errorContainer)
+                                .clickable { navController.navigate("mirror_review/${playlist.id}") }
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                        ) {
+                            Icon(
+                                painter = painterResource(R.drawable.warning),
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onErrorContainer,
+                                modifier = Modifier.size(20.dp),
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = stringResource(R.string.mirror_review_banner, mirrorSkipCount),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Text(
+                                text = stringResource(R.string.mirror_review_open),
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                            )
+                        }
+                    }
+                }
                 if (playlist.songCount == 0 && playlist.playlist.remoteSongCount == 0) {
                     item(key = "empty_placeholder") {
                         EmptyPlaceholder(

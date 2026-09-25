@@ -36,6 +36,7 @@ import com.metrolist.music.db.entities.Event
 import com.metrolist.music.db.entities.EventWithSong
 import com.metrolist.music.db.entities.FormatEntity
 import com.metrolist.music.db.entities.LyricsEntity
+import com.metrolist.music.db.entities.MirrorSkipEntity
 import com.metrolist.music.db.entities.PlayCountEntity
 import com.metrolist.music.db.entities.Playlist
 import com.metrolist.music.db.entities.PlaylistEntity
@@ -2162,6 +2163,34 @@ interface DatabaseDao {
 
     @Query("SELECT * FROM podcast WHERE channelId = :channelId")
     fun podcastsByChannelId(channelId: String): Flow<List<PodcastEntity>>
+
+    // Mirror skips (SPEC_MIRROR_REVIEW): songs a tracked playlist failed to match.
+
+    @Transaction
+    @Query("SELECT * FROM mirror_skip WHERE localPlaylistId = :playlistId AND dismissed = 0 ORDER BY skippedAt DESC")
+    fun mirrorSkips(playlistId: String): Flow<List<MirrorSkipEntity>>
+
+    @Transaction
+    @Query("SELECT * FROM mirror_skip WHERE localPlaylistId = :playlistId ORDER BY skippedAt DESC")
+    fun mirrorSkipsIncludingDismissed(playlistId: String): List<MirrorSkipEntity>
+
+    @Query("SELECT COUNT(1) FROM mirror_skip WHERE localPlaylistId = :playlistId AND dismissed = 0")
+    fun mirrorSkipCount(playlistId: String): Flow<Int>
+
+    @Query("SELECT * FROM mirror_skip WHERE localPlaylistId = :playlistId")
+    fun mirrorSkipsBlocking(playlistId: String): List<MirrorSkipEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    fun upsertMirrorSkip(skip: MirrorSkipEntity)
+
+    @Query("DELETE FROM mirror_skip WHERE localPlaylistId = :playlistId AND spotifyId = :spotifyId")
+    fun deleteMirrorSkip(playlistId: String, spotifyId: String)
+
+    @Query("UPDATE mirror_skip SET dismissed = 1 WHERE localPlaylistId = :playlistId AND spotifyId = :spotifyId")
+    fun dismissMirrorSkip(playlistId: String, spotifyId: String)
+
+    @Query("DELETE FROM mirror_skip WHERE localPlaylistId = :playlistId")
+    fun clearMirrorSkips(playlistId: String)
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     fun insert(podcast: PodcastEntity): Long

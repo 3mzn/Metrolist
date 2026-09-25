@@ -35,6 +35,7 @@ import com.metrolist.music.ui.screens.library.LibraryScreen
 import com.metrolist.music.ui.screens.playlist.AutoPlaylistScreen
 import com.metrolist.music.ui.screens.playlist.CachePlaylistScreen
 import com.metrolist.music.ui.screens.playlist.LocalPlaylistScreen
+import com.metrolist.music.ui.screens.playlist.MirrorReviewScreen
 import com.metrolist.music.ui.screens.playlist.OnlinePlaylistScreen
 import com.metrolist.music.ui.screens.playlist.TopPlaylistScreen
 import com.metrolist.music.ui.screens.podcast.OnlinePodcastScreen
@@ -299,6 +300,21 @@ fun NavGraphBuilder.navigationBuilder(
             ),
     ) {
         LocalPlaylistScreen(navController)
+    }
+
+    composable(
+        route = "mirror_review/{playlistId}",
+        arguments =
+            listOf(
+                navArgument("playlistId") {
+                    type = NavType.StringType
+                },
+            ),
+    ) { entry ->
+        MirrorReviewScreen(
+            navController = navController,
+            playlistId = entry.arguments?.getString("playlistId") ?: return@composable,
+        )
     }
 
     composable(

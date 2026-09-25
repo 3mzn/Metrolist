@@ -100,10 +100,17 @@ async function resolveTrack(trackId: string): Promise<{ title: string; artist: s
       const r = await sfetch(`https://open.spotify.com/embed/track/${trackId}`, { headers: EMBED_H });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const h = await r.text();
-      const names = [...h.matchAll(/"name":"([^"]{1,120})"/g)].map((m) => m[1]);
+      // Allow escaped quotes inside values (\" in titles like ... From \"Fifty ...\"):
+      // a naive [^"] class truncates at the escape's quote.
+      const names = [...h.matchAll(/"name":"((?:[^"\\]|\\.){1,200})"/g)].map((m) => m[1]);
       const dur = (h.match(/"duration":(\d{4,7})/) || [])[1];
-      if (names[0] && names[1] && dur) {
-        return { title: names[0], artist: names[1], duration_ms: +dur };
+      // The embed HTML carries JSON-escaped strings: decode (\uXXXX, \\, \/) or the
+      // stored titles come out mangled ("Kings \\u0026 Queens") and unmatchable.
+      // A trailing lone backslash means truncation at an escaped quote — drop it.
+      const title = names[0] ? unescapeJsonString(names[0]) : null;
+      const artist = names[1] ? unescapeJsonString(names[1]) : null;
+      if (title && artist && dur) {
+        return { title, artist, duration_ms: +dur };
       }
       throw new Error("parse-incomplete");
     } catch {
@@ -111,6 +118,15 @@ async function resolveTrack(trackId: string): Promise<{ title: string; artist: s
     }
   }
   return null;
+}
+
+function unescapeJsonString(s: string): string {
+  const cleaned = s.replace(/\\$/, "");
+  try {
+    return JSON.parse('"' + cleaned + '"');
+  } catch {
+    return cleaned;
+  }
 }
 
 type Source = {

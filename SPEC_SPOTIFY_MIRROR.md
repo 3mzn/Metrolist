@@ -60,8 +60,8 @@ function invoke are plain JSON calls with `apikey`/`Authorization` headers.
 | D1 | **Setup:** long-press an EXISTING playlist → "Track with Spotify" → paste link → choose **backfill-missing** (add Spotify songs not already here) or **future-only** (ignore current, track new additions). Never offered during new-playlist creation. **Untrack** from the same long-press menu. |
 | D2 | **Poll every 1 min** (server cron; ~2 tiny requests/min — trivial). Revision stamp short-circuits unchanged polls. |
 | D3 | **Match on title+artist only**, same as JSON import. Everything that matches lands — **no confidence gate, no review queue** (owner: "just let the songs in"). A YouTube search with zero results is skipped (nothing to insert) and logged. |
-| D4 | **Auto-download everything** mirrored, under the existing WiFi/charging rules. |
-| D5 | **Lyrics same as normal downloads** (existing warmer covers it, no special path). |
+| D4 | **No auto-download.** Mirrored songs stream on demand (owner decision, reverses the original auto-download plan). Manual downloads later pick up lyrics via the existing warmer. |
+| D5 | **Lyrics via manual downloads only** (no auto-download per D4, so the warmer runs only when the user downloads by hand). |
 | D6 | **Notify per batch** of new arrivals (local notification after intake). |
 | D7 | **Add-only.** Spotify-side removals change nothing here. |
 | D8 | **Local playlist, but shareable.** Mirrored adds go through the normal add path, so a shared playlist syncs to the partner exactly like a manual add (drives `removeSong`/`addSong` + listener, reuses SPEC_8 semantics). |

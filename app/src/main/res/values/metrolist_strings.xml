@@ -1126,6 +1126,14 @@
     <string name="mirror_linked">Tracking Spotify playlist</string>
     <string name="mirror_untracked">Stopped tracking Spotify playlist</string>
     <string name="mirror_link_failed">Couldn\'t reach the Spotify playlist — check the link and try again</string>
+    <string name="mirror_review_banner">%1$d Spotify songs couldn\'t be mirrored</string>
+    <string name="mirror_review_open">Review</string>
+    <string name="mirror_review_title">Couldn\'t mirror</string>
+    <string name="mirror_review_count">%1$d songs from Spotify couldn\'t be matched</string>
+    <string name="mirror_review_empty">Everything from Spotify is in this playlist</string>
+    <string name="mirror_review_retry_all">Retry all</string>
+    <string name="mirror_review_retry">Retry</string>
+    <string name="mirror_review_remove">Remove</string>
 
     <!-- Listen Together invites -->
     <string name="lt_invite_notification_title">%1$s wants to listen together</string>
