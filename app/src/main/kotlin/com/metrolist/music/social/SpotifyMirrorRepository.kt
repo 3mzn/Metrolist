@@ -348,15 +348,25 @@ class SpotifyMirrorRepository @Inject constructor(
     private suspend fun pullAll(sourceIds: List<String>): Map<String, List<MirrorRow>> {
         if (sourceIds.isEmpty()) return emptyMap()
         return try {
-            val rows: List<MirrorRow> = http.get(
-                "${BuildConfig.SUPABASE_URL}/rest/v1/mirror_tracks" +
-                    "?source_id=in.(${sourceIds.joinToString(",")})" +
-                    "&select=id,source_id,spotify_id,title,artist,duration_ms" +
-                    "&order=created_at&limit=2000",
-            ) {
-                supabaseHeaders().forEach { (k, v) -> header(k, v) }
-                accept(ContentType.Application.Json)
-            }.body()
+            // PostgREST caps a single response (max-rows, 1000 here) regardless of the
+            // requested limit, so page with offset like backfillFromServer — otherwise
+            // tracks past the first page are invisible and never consumed.
+            val rows = mutableListOf<MirrorRow>()
+            var offset = 0
+            while (true) {
+                val page: List<MirrorRow> = http.get(
+                    "${BuildConfig.SUPABASE_URL}/rest/v1/mirror_tracks" +
+                        "?source_id=in.(${sourceIds.joinToString(",")})" +
+                        "&select=id,source_id,spotify_id,title,artist,duration_ms" +
+                        "&order=created_at&limit=1000&offset=$offset",
+                ) {
+                    supabaseHeaders().forEach { (k, v) -> header(k, v) }
+                    accept(ContentType.Application.Json)
+                }.body()
+                rows += page
+                if (page.size < 1000) break
+                offset += page.size
+            }
             rows.groupBy { it.source_id }
         } catch (e: Exception) {
             Timber.tag(TAG).e(e, "pullAll failed")
@@ -426,9 +436,11 @@ class SpotifyMirrorRepository @Inject constructor(
             return 0
         }
         val seen = consumed(sourceId).toMutableSet()
+        // Server rows may carry JSON-escaped text from older resolves (\u0026 and
+        // friends): clean once so matching, skip records, and display all agree.
         val fresh = rows.filter { it.spotify_id !in seen }
-        if (fresh.isEmpty()) return 0
-        // F7: snapshot the playlist's title+artist set ONCE (not per row), then keep it
+            .map { it.copy(title = unescapeSpotifyText(it.title), artist = unescapeSpotifyText(it.artist)) }
+        if (fresh.isEmpty()) return 0        // F7: snapshot the playlist's title+artist set ONCE (not per row), then keep it
         // fresh incrementally as this pass inserts - O(N) instead of O(N^2).
         val knownTitles = loadTitleIndex(localPlaylistId)
         // Skips are resolved against the SAME snapshot: a song added by hand since the
@@ -542,7 +554,11 @@ class SpotifyMirrorRepository @Inject constructor(
     // ── Review list: couldnt-mirror skips (SPEC_MIRROR_REVIEW) ──────────────────────────────
 
     /** Live review list for a tracked playlist; dismissed rows are hidden. */
-    fun skipsFlow(playlistId: String): Flow<List<MirrorSkipEntity>> = database.mirrorSkips(playlistId)
+    fun skipsFlow(playlistId: String): Flow<List<MirrorSkipEntity>> =
+        database.mirrorSkips(playlistId).map { list ->
+            // Old skip rows may predate the server unescape fix: clean for display/retry.
+            list.map { it.copy(title = unescapeSpotifyText(it.title), artist = unescapeSpotifyText(it.artist)) }
+        }
 
     /** Badge count for the playlist banner. */
     fun skipCountFlow(playlistId: String): Flow<Int> = database.mirrorSkipCount(playlistId)
@@ -596,7 +612,7 @@ class SpotifyMirrorRepository @Inject constructor(
         }
         val outcome = matchSemaphore.withPermit {
             try {
-                youtubeMatcher.matchWithOutcome(JsonTrack(skip.title, skip.artist), skip.durationMs)
+                youtubeMatcher.matchWithOutcome(JsonTrack(skip.title, skip.artist), skip.durationMs, lenientTopHit = true)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -638,7 +654,8 @@ class SpotifyMirrorRepository @Inject constructor(
      */
     private suspend fun insertRetryHit(localPlaylistId: String, item: SongItem) {
         database.withTransaction {
-            if (checkInPlaylist(localPlaylistId, item.id) == 0) {
+            val already = checkInPlaylist(localPlaylistId, item.id)
+            if (already == 0) {
                 if (getSongByIdBlocking(item.id) == null) {
                     insert(item.toMediaMetadata())
                 }
@@ -802,9 +819,43 @@ class SpotifyMirrorRepository @Inject constructor(
 
         internal fun splitArtists(artist: String): Set<String> =
             artist.lowercase()
-                .split(",", ";", "&", " feat. ", " ft. ", " feat ", " ft ")
+                .split(",", ";", "&", " and ", " feat. ", " ft. ", " feat ", " ft ")
                 .map { it.trim() }
                 .filter { it.isNotEmpty() }
                 .toSet()
+
+        /**
+         * Decode JSON-escaped Spotify text (\\uXXXX, \\", \\\\, \\/, \\n; a trailing
+         * lone backslash is dropped). Server rows resolved before the unescape fix
+         * carry these literally, which poisons both search queries and the artist gate.
+         */
+        internal fun unescapeSpotifyText(s: String): String {
+            if (!s.contains('\\')) return s
+            val sb = StringBuilder(s.length)
+            var i = 0
+            while (i < s.length) {
+                val c = s[i]
+                // Trailing lone backslash: truncation artifact, drop it.
+                if (c == '\\' && i + 1 >= s.length) break
+                if (c == '\\') {
+                    val n = s[i + 1]
+                    if (n == 'u' && i + 5 < s.length) {
+                        val code = s.substring(i + 2, i + 6).toIntOrNull(16)
+                        if (code != null) {
+                            sb.append(code.toChar())
+                            i += 6
+                            continue
+                        }
+                    }
+                    // \" \\ \/ \n, or unknown/trailing: keep the char, drop the backslash.
+                    if (n == 'n') sb.append('\n') else sb.append(n)
+                    i += 2
+                    continue
+                }
+                sb.append(c)
+                i++
+            }
+            return sb.toString()
+        }
     }
 }

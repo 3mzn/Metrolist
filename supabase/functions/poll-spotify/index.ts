@@ -17,6 +17,9 @@
  * Fail-closed: any Spotify error → source.error set, logged, nothing deleted.
  * Quiet backoff (Fix-A): consecutive failures wait min(60, 2^count) minutes.
  * Poison backoff (Fix-A): URIs failing resolve 5× park for 7 days (mirror_skipped).
+ * Subset guard (Fix-D): a repeated revision must yield ≥ expected_total URIs
+ * (mirror_sources.expected_total, reset on revision change), else short-read —
+ * spclient sometimes ends the page walk early AND reports the subset length.
  * FCM (Fix-A): best-effort data wake after new rows; WorkManager stays the guarantee.
  */
 
@@ -135,6 +138,7 @@ type Source = {
   last_revision: string | null;
   error_count: number | null;
   last_checked_at: string | null;
+  expected_total: number | null;
 };
 
 async function markFailed(source: Source, code: string) {
@@ -197,6 +201,25 @@ async function pollSource(source: Source) {
     // partial URI set, which would misreport old songs as new and set revision on garbage.
     await markFailed(source, "short-read");
     return { added: [] as object[], error: "short-read" };
+  }
+  // Generation-scoped completeness (Fix-D): spclient sometimes ends the page walk early
+  // (truncated=false mid-list) AND reports the subset length as total. The guard above
+  // can't see that, so unknown computes empty, stillUnknown hits 0, and the revision
+  // advances on a subset — stranding the tail forever behind skipped_unchanged.
+  // A NEW revision resets the expectation; a REPEATED revision must yield at least that
+  // many URIs or the read is a subset flake and fails closed like a short read.
+  let expectedTotal = source.expected_total ?? 0;
+  if (read.revision && read.revision !== source.last_revision) {
+    expectedTotal = read.total;
+  } else {
+    expectedTotal = Math.max(expectedTotal, read.total);
+  }
+  if (expectedTotal !== (source.expected_total ?? 0)) {
+    await supabase.from("mirror_sources").update({ expected_total: expectedTotal }).eq("id", source.id);
+  }
+  if (read.uris.length < expectedTotal) {
+    await markFailed(source, "subset-read");
+    return { added: [] as object[], error: "subset-read" };
   }
   if (read.revision && read.revision === source.last_revision) {
     await markOk(source, source.last_revision);
@@ -357,7 +380,7 @@ async function handler(req: Request): Promise<Response> {
       return Response.json({ ok: true, total: read.total, revision: read.revision });
     }
   }
-  let q = supabase.from("mirror_sources").select("id,spotify_id,last_revision,error_count,last_checked_at");
+  let q = supabase.from("mirror_sources").select("id,spotify_id,last_revision,error_count,last_checked_at,expected_total");
   if (only) q = q.in("id", only);
   const { data: sources, error } = await q;
   if (error) return Response.json({ ok: false, error: error.message }, { status: 500 });

@@ -57,6 +57,10 @@ class SpotifyMirrorLogicTest {
             setOf("a", "b"),
             SpotifyMirrorRepository.splitArtists("A feat. B"),
         )
+        assertEquals(
+            setOf("the girl", "the dreamcatcher"),
+            SpotifyMirrorRepository.splitArtists("The Girl and The Dreamcatcher"),
+        )
     }
 
     @Test
@@ -172,5 +176,80 @@ class SpotifyMirrorLogicTest {
     @Test
     fun pickBest_emptyIsNull() {
         assertNull(matcher.pickBest(emptyList(), 229_000))
+    }
+
+    private fun candidate(id: String, vararg artists: String) = SongItem(
+        id = id,
+        title = "T",
+        artists = artists.map { Artist(it, null) },
+        thumbnail = "t",
+    )
+
+    @Test
+    fun filterByArtist_exactAndVariants() {
+        val ok = candidate("ok", "Taylor Swift")
+        val topic = candidate("topic", "Taylor Swift - Topic")
+        val vevo = candidate("vevo", "TaylorSwiftVEVO")
+        val collab = candidate("collab", "Maanu, Annural Khalid")
+        val junk = candidate("junk", "Wild Stylerz")
+        assertEquals(
+            listOf("ok", "topic", "vevo"),
+            matcher.filterByArtist(listOf(ok, topic, vevo, junk), "Taylor Swift").map { it.id },
+        )
+        assertEquals(
+            listOf("collab"),
+            matcher.filterByArtist(listOf(collab, junk), "Maanu, Annural Khalid").map { it.id },
+        )
+        assertEquals(
+            emptyList<SongItem>(),
+            matcher.filterByArtist(listOf(junk), "Taylor Swift"),
+        )
+    }
+
+    @Test
+    fun filterByArtist_blankArtistDisablesGate() {
+        val junk = candidate("junk", "Wild Stylerz")
+        assertEquals(listOf(junk), matcher.filterByArtist(listOf(junk), ""))
+    }
+
+    @Test
+    fun splitArtists_foldsVariants() {
+        assertEquals(setOf("taylorswift"), matcher.splitArtists("Taylor Swift - Topic"))
+        assertEquals(setOf("taylorswift"), matcher.splitArtists("TaylorSwiftVEVO"))
+        assertEquals(setOf("arrahman"), matcher.splitArtists("A.R. Rahman"))
+        assertEquals(setOf("beyonce"), matcher.splitArtists("Beyoncé"))
+        assertEquals(setOf("pink"), matcher.splitArtists("P!nk"))
+        assertEquals(
+            setOf("arianagrande", "justinbieber"),
+            matcher.splitArtists("Ariana Grande feat. Justin Bieber"),
+        )
+        assertEquals(
+            setOf("thegirl", "thedreamcatcher"),
+            matcher.splitArtists("The Girl and The Dreamcatcher"),
+        )
+    }
+
+    @Test
+    fun filterByArtist_andSplit() {
+        val hit = candidate("hit", "The Girl", "the Dreamcatcher")
+        val junk = candidate("junk", "Wild Stylerz")
+        assertEquals(
+            listOf("hit"),
+            matcher.filterByArtist(listOf(hit, junk), "The Girl and The Dreamcatcher").map { it.id },
+        )
+    }
+
+    @Test
+    fun unescapeSpotifyText_decodesEscapes() {
+        assertEquals(
+            "Selena Gomez & The Scene",
+            SpotifyMirrorRepository.unescapeSpotifyText("Selena Gomez \\u0026 The Scene"),
+        )
+        assertEquals(
+            "From \"Fifty\"",
+            SpotifyMirrorRepository.unescapeSpotifyText("From \\\"Fifty\\\""),
+        )
+        assertEquals("Dreams", SpotifyMirrorRepository.unescapeSpotifyText("Dreams\\"))
+        assertEquals("Dreams", SpotifyMirrorRepository.unescapeSpotifyText("Dreams"))
     }
 }

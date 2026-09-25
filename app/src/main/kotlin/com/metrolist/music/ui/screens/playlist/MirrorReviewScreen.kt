@@ -46,6 +46,7 @@ import com.metrolist.music.LocalPlayerAwareWindowInsets
 import com.metrolist.music.LocalSpotifyMirrorRepository
 import com.metrolist.music.R
 import com.metrolist.music.ui.component.EmptyPlaceholder
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 /**
@@ -98,7 +99,7 @@ fun MirrorReviewScreen(
                             enabled = !busy,
                             onClick = {
                                 retryingAll = true
-                                coroutineScope.launch {
+                                coroutineScope.launch(Dispatchers.IO) {
                                     mirrorRepo.retryAllSkips(playlistId)
                                     retryingAll = false
                                 }
@@ -130,7 +131,7 @@ fun MirrorReviewScreen(
                             .fillMaxWidth()
                             .clickable(enabled = !busy && !retrying) {
                                 busyRow = skip.spotifyId
-                                coroutineScope.launch {
+                                coroutineScope.launch(Dispatchers.IO) {
                                     mirrorRepo.retrySkip(playlistId, skip)
                                     busyRow = null
                                 }
@@ -156,7 +157,7 @@ fun MirrorReviewScreen(
                             enabled = !busy,
                             onClick = {
                                 busyRow = skip.spotifyId
-                                coroutineScope.launch {
+                                coroutineScope.launch(Dispatchers.IO) {
                                     mirrorRepo.retrySkip(playlistId, skip)
                                     busyRow = null
                                 }
@@ -177,7 +178,7 @@ fun MirrorReviewScreen(
                         IconButton(
                             enabled = !busy,
                             onClick = {
-                                coroutineScope.launch { mirrorRepo.dismissSkip(playlistId, skip.spotifyId) }
+                                coroutineScope.launch(Dispatchers.IO) { mirrorRepo.dismissSkip(playlistId, skip.spotifyId) }
                             },
                         ) {
                             Icon(

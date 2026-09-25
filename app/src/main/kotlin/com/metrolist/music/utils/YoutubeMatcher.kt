@@ -37,20 +37,39 @@ class YoutubeMatcher @Inject constructor() {
      *
      * Query chain is strict improvement over the old exact-only behavior: the exact
      * query runs first with the same retry shape as before; the stripped fallback
-     * only runs when exact returned hits-but-empty. Duration preference only
-     * reorders hits and degrades to the old first-hit pick, so worst case ==
-     * status quo (skip), never a worse insert.
+     * only runs when exact returned hits-but-empty. Every query's hits pass the
+     * artist gate (title-only junk — covers, karaoke, 8D uploads — is rejected);
+     * duration preference only reorders survivors and degrades to their first hit.
+     * Gated-out-everything reads as NotFound (review list), never a wrong insert.
      */
     suspend fun matchWithOutcome(
         track: JsonTrack,
         durationMs: Int? = null,
         maxAttempts: Int = 2,
+        lenientTopHit: Boolean = false,
     ): MatchOutcome {
         for (query in fallbackQueries(track.title, track.artist)) {
             repeat(maxAttempts) { attempt ->
                 try {
-                    val candidates = searchSongs(query)
-                    if (!candidates.isNullOrEmpty()) {
+                    val page = searchSongs(query)
+                    if (page == null) {
+                        // Search itself failed: wait before retry, then next query.
+                        if (attempt < maxAttempts - 1) {
+                            kotlinx.coroutines.delay(500)
+                        }
+                        return@repeat
+                    }
+                    var pool = page.first
+                    val cont = page.second
+                    if (filterByArtist(pool, track.artist).isEmpty() && cont != null) {
+                        // Page 1 has hits but the gate killed them all: one more page
+                        // before giving up (the right upload may sit just below junk).
+                        val more = YouTube.searchContinuation(cont)
+                            .getOrNull()?.items?.filterIsInstance<SongItem>().orEmpty()
+                        pool = pool + more
+                    }
+                    val candidates = filterByArtist(pool, track.artist)
+                    if (candidates.isNotEmpty()) {
                         return MatchOutcome.Found(pickBest(candidates, durationMs) ?: candidates.first())
                     }
                     // Empty hits, no error: wait before retry, then next query.
@@ -65,6 +84,20 @@ class YoutubeMatcher @Inject constructor() {
                         return MatchOutcome.NetworkError
                     }
                     kotlinx.coroutines.delay(500)
+                }
+            }
+        }
+        // Manual-retry-only leniency (collab-credit mismatches like Talk/Retronaut):
+        // exact query's top hit, same folded title, duration within 10 s. Never used
+        // by unattended intake — the user explicitly asked for THIS song and sees
+        // what lands.
+        if (lenientTopHit && durationMs != null) {
+            val top = searchSongs(track.toSearchQuery())?.first?.firstOrNull()
+            if (top != null && foldedTitle(top.title) == foldedTitle(track.title)) {
+                val secs = durationMs / 1000
+                val topSecs = top.duration
+                if (topSecs != null && kotlin.math.abs(topSecs - secs) <= DURATION_WINDOW_SECS) {
+                    return MatchOutcome.Found(top)
                 }
             }
         }
@@ -102,14 +135,59 @@ class YoutubeMatcher @Inject constructor() {
      */
     suspend fun matchJsonTrack(track: JsonTrack): SongItem? {
         val query = track.toSearchQuery()
-        return searchSongs(query)?.firstOrNull()
+        return searchSongs(query)?.first?.firstOrNull()
     }
 
-    /** Raw candidate list for one query; null when the search itself failed. */
-    private suspend fun searchSongs(query: String): List<SongItem>? =
+    /**
+     * Raw candidate list for one query plus its continuation token (null when the
+     * search itself failed). Page 2 is fetched by the caller only when needed.
+     */
+    private suspend fun searchSongs(query: String): Pair<List<SongItem>, String?>? =
         YouTube.search(query, filter = YouTube.SearchFilter.FILTER_SONG).map { page ->
-            page.items.filterIsInstance<SongItem>()
+            page.items.filterIsInstance<SongItem>() to page.continuation
         }.getOrNull()
+
+    /**
+     * Artist gate: keep hits sharing at least one normalized artist token with the
+     * incoming artist. Kills title-only junk (covers, karaoke, 8D/8-bit uploads)
+     * that the query + duration pick can't distinguish. Blank incoming artist
+     * can't gate — preserve old behavior rather than reject everything.
+     */
+    internal fun filterByArtist(candidates: List<SongItem>, artist: String): List<SongItem> {
+        val incoming = splitArtists(artist)
+        if (incoming.isEmpty()) return candidates
+        return candidates.filter { item ->
+            item.artists.flatMap { splitArtists(it.name) }.any { it in incoming }
+        }
+    }
+
+    /**
+     * Artist tokens: strip distributor tails ("- Topic", "VEVO" — official uploads
+     * arrive under those), split collabs/lists on , ; & and feat/ft markers, then
+     * fold (diacritics, case, punctuation: "A.R. Rahman" == "AR Rahman", "P!nk" ==
+     * "Pink"). Both sides folded identically, so legit variants meet.
+     */
+    internal fun splitArtists(artist: String): Set<String> =
+        artist.lowercase()
+            .replace("\\s+-\\s+topic\\s*$".toRegex(), "")
+            .replace("vevo\\s*$".toRegex(), "")
+            .split(",", ";", "&", " and ", " feat. ", " ft. ", " feat ", " ft ", " featuring ")
+            .map { foldToken(it) }
+            .filter { it.isNotEmpty() }
+            .toSet()
+
+    private fun foldToken(s: String): String {
+        val ascii = java.text.Normalizer.normalize(s, java.text.Normalizer.Form.NFD)
+            .replace("\\p{Mn}+".toRegex(), "")
+        return ascii.lowercase()
+            .replace("!", "i")
+            .replace("$", "s")
+            .replace("0", "o")
+            .replace("[^a-z0-9]+".toRegex(), "")
+    }
+
+    /** Folded title for equality checks (same stripping as fallback queries). */
+    internal fun foldedTitle(title: String): String = foldToken(stripForSearch(title))
 
     /**
      * Ordered search queries for a track: exact first, stripped fallback second
