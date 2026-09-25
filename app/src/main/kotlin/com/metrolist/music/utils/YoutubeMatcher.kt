@@ -49,7 +49,9 @@ class YoutubeMatcher @Inject constructor() {
         lenientTopHit: Boolean = false,
     ): MatchOutcome {
         for (query in fallbackQueries(track.title, track.artist)) {
-            repeat(maxAttempts) { attempt ->
+            // Errors retry within a query; empty results move to the next query
+            // immediately (re-searching a dead query only feeds rate limits).
+            for (attempt in 0 until maxAttempts) {
                 try {
                     val page = searchSongs(query)
                     if (page == null) {
@@ -57,13 +59,14 @@ class YoutubeMatcher @Inject constructor() {
                         if (attempt < maxAttempts - 1) {
                             kotlinx.coroutines.delay(500)
                         }
-                        return@repeat
+                        continue
                     }
                     var pool = page.first
                     val cont = page.second
-                    if (filterCandidates(pool, track.title, track.artist).isEmpty() && cont != null) {
-                        // Page 1 has hits but the filter killed them all: one more page
-                        // before giving up (the right upload may sit just below junk).
+                    if (cont != null && needsMore(pool, track.title, track.artist, durationMs)) {
+                        // Page 1 can't yield a good pick: one more page before
+                        // giving up (the right upload may sit just below junk, or
+                        // nothing in range yet).
                         val more = YouTube.searchContinuation(cont)
                             .getOrNull()?.items?.filterIsInstance<SongItem>().orEmpty()
                         pool = pool + more
@@ -72,10 +75,7 @@ class YoutubeMatcher @Inject constructor() {
                     if (candidates.isNotEmpty()) {
                         return MatchOutcome.Found(pickBest(candidates, durationMs) ?: candidates.first())
                     }
-                    // Empty hits, no error: wait before retry, then next query.
-                    if (attempt < maxAttempts - 1) {
-                        kotlinx.coroutines.delay(500)
-                    }
+                    break
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e // Don't retry on cancellation
                 } catch (e: Exception) {
@@ -146,6 +146,26 @@ class YoutubeMatcher @Inject constructor() {
         YouTube.search(query, filter = YouTube.SearchFilter.FILTER_SONG).map { page ->
             page.items.filterIsInstance<SongItem>() to page.continuation
         }.getOrNull()
+
+    /**
+     * Whether page 2 is worth fetching: nothing survived the filter, or survivors
+     * exist but none is in the duration window (a better hit may sit below).
+     * No duration known → never extend on quality grounds.
+     */
+    internal fun needsMore(
+        pool: List<SongItem>,
+        title: String,
+        artist: String,
+        durationMs: Int?,
+    ): Boolean {
+        val survivors = filterCandidates(pool, title, artist)
+        if (survivors.isEmpty()) return true
+        val expected = durationMs?.div(1000) ?: return false
+        return survivors.none { c ->
+            val secs = c.duration ?: return@none false
+            kotlin.math.abs(secs - expected) <= DURATION_WINDOW_SECS
+        }
+    }
 
     /**
      * Candidate filter (mirror path): artist overlap AND folded-title equality.
@@ -233,9 +253,9 @@ class YoutubeMatcher @Inject constructor() {
 
     /**
      * Pick the best hit: prefer in-window durations (|yt - expected| <= 10s),
-     * audio over music-video among those, closest duration last. Degrades to the
-     * old first-hit behavior whenever duration is unknown or nothing is in window —
-     * reorders only, never discards.
+     * audio over music-video among those, closest duration, studio over live
+     * last. Degrades to the old first-hit behavior whenever duration is unknown
+     * or nothing is in window — reorders only, never discards.
      */
     internal fun pickBest(candidates: List<SongItem>, durationMs: Int?): SongItem? {
         if (candidates.isEmpty()) return null
@@ -246,9 +266,17 @@ class YoutubeMatcher @Inject constructor() {
         }
         if (inWindow.isEmpty()) return candidates.first()
         return inWindow.minWithOrNull(
-            compareBy({ if (it.isVideoSong) 1 else 0 }, { kotlin.math.abs((it.duration ?: expectedSecs) - expectedSecs) }),
+            compareBy(
+                { if (it.isVideoSong) 1 else 0 },
+                { kotlin.math.abs((it.duration ?: expectedSecs) - expectedSecs) },
+                { if (isLiveTitle(it.title)) 1 else 0 },
+            ),
         ) ?: candidates.first()
     }
+
+    /** Live recordings land only as last resort (studio preferred, never rejected). */
+    internal fun isLiveTitle(title: String): Boolean =
+        "\\blive\\b|\\bunplugged\\b".toRegex(RegexOption.IGNORE_CASE).containsMatchIn(title)
 
     companion object {
         /** Duration preference window (secs) for pickBest. */

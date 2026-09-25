@@ -42,6 +42,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -567,12 +568,21 @@ fun LocalPlaylistScreen(
                             state = pullRefreshState,
                             isRefreshing = isRefreshing,
                             onRefresh = {
-                                val pid = playlist?.id ?: return@pullToRefresh
                                 isRefreshing = true
                                 coroutineScope.launch(Dispatchers.IO) {
-                                    mirrorRepo.intakeDirectFor(pid)
+                                    // H3: full intake (stored + fresh rows), not just
+                                    // direct-invoke — a pull must also catch up rows
+                                    // the server already knows.
+                                    val added = mirrorRepo.intakeAllDirect()
                                     withContext(Dispatchers.Main) {
                                         isRefreshing = false
+                                        snackbarHostState.showSnackbar(
+                                            when {
+                                                added > 0 -> context.resources.getQuantityString(R.plurals.mirror_n_added, added, added)
+                                                added < 0 -> context.getString(R.string.mirror_refresh_metered)
+                                                else -> context.getString(R.string.mirror_refresh_uptodate)
+                                            },
+                                        )
                                     }
                                 }
                             },
@@ -607,7 +617,7 @@ fun LocalPlaylistScreen(
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = stringResource(R.string.mirror_review_banner, mirrorSkipCount),
+                                text = pluralStringResource(R.plurals.mirror_n_skipped, mirrorSkipCount, mirrorSkipCount),
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onErrorContainer,
                                 modifier = Modifier.weight(1f),
@@ -911,6 +921,15 @@ fun LocalPlaylistScreen(
             scrollState = lazyListState,
             headerItems = 2,
         )
+
+        if (mirrorTracked && isRefreshing) {
+            CircularProgressIndicator(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 16.dp)
+                    .size(28.dp),
+            )
+        }
 
         TopAppBar(
             title = {

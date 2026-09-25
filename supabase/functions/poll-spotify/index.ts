@@ -16,7 +16,7 @@
  *
  * Fail-closed: any Spotify error → source.error set, logged, nothing deleted.
  * Quiet backoff (Fix-A): consecutive failures wait min(60, 2^count) minutes.
- * Poison backoff (Fix-A): URIs failing resolve 5× park for 7 days (mirror_skipped).
+ * Poison backoff (Fix-A, tuned H2): URIs failing resolve 25x park for 24h (mirror_skipped).
  * Subset guard (Fix-D): a repeated revision must yield ≥ expected_total URIs
  * (mirror_sources.expected_total, reset on revision change), else short-read —
  * spclient sometimes ends the page walk early AND reports the subset length.
@@ -32,9 +32,9 @@ const EMBED_H = {
 };
 const BACKFILL_CAP = 100;
 const TRACK_SPACING_MS = 300;
-const FETCH_TIMEOUT_MS = 15000;
-const POISON_MAX = 5;
-const POISON_RETRY_MS = 7 * 24 * 3600 * 1000;
+const RESOLVE_DEADLINE_MS = 50_000;
+const POISON_MAX = 25;
+const POISON_RETRY_MS = 24 * 3600 * 1000;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -251,7 +251,12 @@ async function pollSource(source: Source) {
   const fresh = unknown.slice(0, BACKFILL_CAP);
 
   const added: object[] = [];
+  const resolveDeadline = Date.now() + RESOLVE_DEADLINE_MS;
   for (const tid of fresh) {
+    // Graceful partial (S7): the edge wall clock (~60s) can cut a 100-track loop.
+    // Commits persist per track and the revision stays put, so the next poll
+    // continues — but only if we stop ourselves instead of being killed mid-loop.
+    if (Date.now() > resolveDeadline) break;
     const meta = await resolveTrack(tid);
     await sleep(TRACK_SPACING_MS);
     if (!meta) {
@@ -377,7 +382,9 @@ async function handler(req: Request): Promise<Response> {
       if (!read || read.uris.length < read.total) {
         return Response.json({ ok: false, error: "playlist-read-failed" });
       }
-      return Response.json({ ok: true, total: read.total, revision: read.revision });
+      // S6: report what the client will actually receive when the listing
+      // disagrees with itself (flaky length claim).
+      return Response.json({ ok: true, total: Math.max(read.total, read.uris.length), revision: read.revision });
     }
   }
   let q = supabase.from("mirror_sources").select("id,spotify_id,last_revision,error_count,last_checked_at,expected_total");

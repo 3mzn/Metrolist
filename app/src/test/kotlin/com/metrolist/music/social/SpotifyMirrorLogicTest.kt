@@ -247,8 +247,7 @@ class SpotifyMirrorLogicTest {
     }
 
     @Test
-    fun filterCandidates_rejectsSameArtistDifferentSong() {
-        // The "safety net" hole: same artist, different song must not pass.
+    fun filterCandidates_rejectsSameArtistDifferentSong() {        // The "safety net" hole: same artist, different song must not pass.
         val wrongSong = titledCandidate("wrong", "positions", "Ariana Grande")
         val rightSong = titledCandidate("right", "safety net (Official Video)", "Ariana Grande")
         val cover = titledCandidate("cover", "safety net", "Wild Stylerz")
@@ -272,5 +271,35 @@ class SpotifyMirrorLogicTest {
         )
         assertEquals("Dreams", SpotifyMirrorRepository.unescapeSpotifyText("Dreams\\"))
         assertEquals("Dreams", SpotifyMirrorRepository.unescapeSpotifyText("Dreams"))
+    }
+
+    @Test
+    fun isLiveTitle_flagsLive() {
+        assertTrue(matcher.isLiveTitle("Song - Live"))
+        assertTrue(matcher.isLiveTitle("Song (Unplugged)"))
+        assertFalse(matcher.isLiveTitle("Song (Official Video)"))
+        assertFalse(matcher.isLiveTitle("Alive"))
+    }
+
+    @Test
+    fun pickBest_prefersStudioOverLive() {
+        val live = titledCandidate("live", "T (Live)", "A").copy(duration = 227)
+        val studio = titledCandidate("studio", "T", "A").copy(duration = 231)
+        assertEquals("studio", matcher.pickBest(listOf(live, studio), 229_000)?.id)
+    }
+
+    @Test
+    fun needsMore_rules() {
+        val good = titledCandidate("good", "T", "A").copy(duration = 229)
+        val far = titledCandidate("far", "T", "A").copy(duration = 400)
+        val junk = titledCandidate("junk", "Other", "Nobody")
+        // Nothing survives: extend.
+        assertTrue(matcher.needsMore(listOf(junk), "T", "A", 229_000))
+        // Survivor in window: no need.
+        assertFalse(matcher.needsMore(listOf(good, junk), "T", "A", 229_000))
+        // Survivors exist but none in window: extend.
+        assertTrue(matcher.needsMore(listOf(far, junk), "T", "A", 229_000))
+        // No duration known: never extend on quality.
+        assertFalse(matcher.needsMore(listOf(far), "T", "A", null))
     }
 }

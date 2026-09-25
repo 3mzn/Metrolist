@@ -24,6 +24,9 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -35,7 +38,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -62,8 +67,10 @@ fun MirrorReviewScreen(
 ) {
     val mirrorRepo = LocalSpotifyMirrorRepository.current
     val coroutineScope = rememberCoroutineScope()
-    val skips by mirrorRepo.skipsFlow(playlistId)
-        .collectAsStateWithLifecycle(initialValue = emptyList())
+    val context = LocalContext.current
+    val snackbarHostState = remember { SnackbarHostState() }
+    val skips: List<com.metrolist.music.db.entities.MirrorSkipEntity>? by mirrorRepo.skipsFlow(playlistId)
+        .collectAsStateWithLifecycle(initialValue = null)
     val lazyListState = rememberLazyListState()
 
     var busyRow by remember { mutableStateOf<String?>(null) }
@@ -75,7 +82,20 @@ fun MirrorReviewScreen(
             state = lazyListState,
             contentPadding = LocalPlayerAwareWindowInsets.current.asPaddingValues(),
         ) {
-            if (skips.isEmpty()) {
+            val current = skips
+            if (current == null) {
+                item(key = "loading") {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(32.dp)
+                            .animateItem(),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                    }
+                }
+            } else if (current.isEmpty()) {
                 item(key = "empty") {
                     EmptyPlaceholder(
                         icon = R.drawable.check,
@@ -91,7 +111,7 @@ fun MirrorReviewScreen(
                             .padding(horizontal = 16.dp, vertical = 8.dp),
                     ) {
                         Text(
-                            text = stringResource(R.string.mirror_review_count, skips.size),
+                            text = pluralStringResource(R.plurals.mirror_n_unmatched, current.size, current.size),
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
                         )
@@ -123,7 +143,7 @@ fun MirrorReviewScreen(
                     }
                 }
 
-                items(skips, key = { it.spotifyId }) { skip ->
+                items(current, key = { it.spotifyId }) { skip ->
                     val retrying = busyRow == skip.spotifyId
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -149,6 +169,19 @@ fun MirrorReviewScreen(
                                 text = skip.artist,
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                text = stringResource(
+                                    R.string.mirror_review_skipped,
+                                    remember(skip.skippedAt) {
+                                        java.text.DateFormat.getDateInstance()
+                                            .format(java.util.Date(skip.skippedAt))
+                                    },
+                                ),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.4f),
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
@@ -178,7 +211,16 @@ fun MirrorReviewScreen(
                         IconButton(
                             enabled = !busy,
                             onClick = {
-                                coroutineScope.launch(Dispatchers.IO) { mirrorRepo.dismissSkip(playlistId, skip.spotifyId) }
+                                coroutineScope.launch(Dispatchers.IO) {
+                                    mirrorRepo.dismissSkip(playlistId, skip.spotifyId)
+                                    val result = snackbarHostState.showSnackbar(
+                                        message = context.getString(R.string.mirror_review_removed),
+                                        actionLabel = context.getString(R.string.mirror_review_undo),
+                                    )
+                                    if (result == SnackbarResult.ActionPerformed) {
+                                        mirrorRepo.undismissSkip(playlistId, skip.spotifyId)
+                                    }
+                                }
                             },
                         ) {
                             Icon(
@@ -206,6 +248,13 @@ fun MirrorReviewScreen(
                     )
                 }
             },
+        )
+
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(LocalPlayerAwareWindowInsets.current.asPaddingValues()),
         )
     }
 }

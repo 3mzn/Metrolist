@@ -197,10 +197,16 @@ fun PlaylistMenu(
                         onDismiss()
                         val url = mirrorPendingUrl
                         coroutineScope.launch(Dispatchers.IO) {
-                            // Future-only: link now (toast at once), seed continues in background.
-                            mirrorRepo.linkPlaylist(playlist.id, url, SpotifyMirrorRepository.MODE_FUTURE)
+                            // Future-only: toast only once linking actually succeeded.
+                            val result = mirrorRepo.linkPlaylist(playlist.id, url, SpotifyMirrorRepository.MODE_FUTURE)
+                            withContext(Dispatchers.Main) {
+                                Toast.makeText(
+                                    context,
+                                    if (result.isSuccess) R.string.mirror_linked else R.string.mirror_link_failed,
+                                    Toast.LENGTH_SHORT,
+                                ).show()
+                            }
                         }
-                        Toast.makeText(context, R.string.mirror_linked, Toast.LENGTH_SHORT).show()
                     },
                 ) {
                     Text(text = stringResource(R.string.mirror_mode_future))
@@ -240,14 +246,15 @@ fun PlaylistMenu(
                         }
                         val url = mirrorPendingUrl
                         coroutineScope.launch(Dispatchers.IO) {
-                            mirrorRepo.linkPlaylist(playlist.id, url, SpotifyMirrorRepository.MODE_BACKFILL)
-                                .onFailure {
-                                    withContext(Dispatchers.Main) {
-                                        Toast.makeText(context, R.string.mirror_link_failed, Toast.LENGTH_SHORT).show()
-                                    }
-                                }
+                            val result = mirrorRepo.linkPlaylist(playlist.id, url, SpotifyMirrorRepository.MODE_BACKFILL)
+                            withContext(Dispatchers.Main) {
+                                Toast.makeText(
+                                    context,
+                                    if (result.isSuccess) R.string.mirror_linked else R.string.mirror_link_failed,
+                                    Toast.LENGTH_SHORT,
+                                ).show()
+                            }
                         }
-                        Toast.makeText(context, R.string.mirror_linked, Toast.LENGTH_SHORT).show()
                     },
                 ) {
                     Text(text = stringResource(android.R.string.ok))
@@ -762,8 +769,10 @@ fun PlaylistMenu(
                                             onDismiss()
                                             coroutineScope.launch(Dispatchers.IO) {
                                                 mirrorRepo.untrack(playlist.id)
+                                                withContext(Dispatchers.Main) {
+                                                    Toast.makeText(context, R.string.mirror_untracked, Toast.LENGTH_SHORT).show()
+                                                }
                                             }
-                                            Toast.makeText(context, R.string.mirror_untracked, Toast.LENGTH_SHORT).show()
                                         },
                                     ),
                                 )

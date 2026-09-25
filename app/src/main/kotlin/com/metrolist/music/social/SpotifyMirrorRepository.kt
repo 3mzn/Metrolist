@@ -8,6 +8,7 @@ package com.metrolist.music.social
 import android.content.Context
 import android.os.PowerManager
 import androidx.core.content.getSystemService
+import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.work.Constraints
@@ -34,6 +35,7 @@ import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.request.accept
+import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.patch
@@ -173,7 +175,7 @@ class SpotifyMirrorRepository @Inject constructor(
 
     /** Live link map for UI (menu items, badges). */
     val linksFlow: StateFlow<Map<String, MirrorLink>> = context.dataStore.data
-        .map { prefs -> parseLinks(prefs[linksKey].orEmpty()) }
+        .map { prefs -> parseLinksSafe(prefs[linksKey].orEmpty()) }
         .stateIn(aliveScope, SharingStarted.Eagerly, emptyMap())
 
     private fun supabaseHeaders(): Map<String, String> =
@@ -186,7 +188,31 @@ class SpotifyMirrorRepository @Inject constructor(
 
     suspend fun links(): Map<String, MirrorLink> {
         val raw = context.dataStore.data.map { it[linksKey].orEmpty() }.first()
-        return parseLinks(raw)
+        return parseLinksSafe(raw)
+    }
+
+    /** Last good link map: if stored JSON ever corrupts, keep serving it (loudly). */
+    @Volatile
+    private var lastGoodLinks: Map<String, MirrorLink> = emptyMap()
+
+    private fun parseLinksSafe(raw: String): Map<String, MirrorLink> {
+        if (raw.isBlank()) {
+            lastGoodLinks = emptyMap()
+            return emptyMap()
+        }
+        val parsed = parseLinks(raw)
+        if (parsed.isEmpty()) {
+            // Genuine empty ("{}") clears the cache; corrupt JSON keeps serving it.
+            val genuine = runCatching { JSONObject(raw).length() == 0 }.getOrDefault(false)
+            if (!genuine && lastGoodLinks.isNotEmpty()) {
+                Timber.tag(TAG).e("Mirror links JSON unparseable, serving last good map")
+                return lastGoodLinks
+            }
+            lastGoodLinks = emptyMap()
+            return emptyMap()
+        }
+        lastGoodLinks = parsed
+        return parsed
     }
 
     private fun parseLinks(raw: String): Map<String, MirrorLink> {
@@ -231,10 +257,10 @@ class SpotifyMirrorRepository @Inject constructor(
                 val updated = links().toMutableMap()
                 updated[localPlaylistId] = MirrorLink(sourceId, spotifyUrl, mode)
                 saveLinks(updated)
-                // Consumption is tracked per-device (consumed set below): a relink must
-                // re-evaluate from scratch, so reset first, then fill per mode.
-                saveConsumed(sourceId, emptySet())
-                if (mode == MODE_FUTURE) seedFutureOnly(sourceId)
+                // Consumption is tracked per-device AND per-playlist (consumed set below):
+                // a relink must re-evaluate from scratch, so reset first, then fill per mode.
+                saveConsumed(sourceId, localPlaylistId, emptySet())
+                if (mode == MODE_FUTURE) seedFutureOnly(sourceId, localPlaylistId)
                 else backfillFromServer(sourceId, localPlaylistId)
             }
             Timber.tag(TAG).d("Linked $localPlaylistId -> $spotifyId ($mode)")
@@ -245,9 +271,22 @@ class SpotifyMirrorRepository @Inject constructor(
         val removed = updated.remove(localPlaylistId)
         saveLinks(updated)
         if (removed != null) {
-            // Drop local consumption state; a later re-track re-seeds per mode.
-            saveConsumed(removed.sourceId, emptySet())
+            // Drop this playlist's consumption state only (H1: sibling playlists
+            // sharing the source keep theirs); a later re-track re-seeds per mode.
+            saveConsumed(removed.sourceId, localPlaylistId, emptySet())
+            val doomed = database.mirrorSkipsBlocking(localPlaylistId).map { it.spotifyId }
             database.clearMirrorSkips(localPlaylistId)
+            // S9: unpublish this playlist's dismissals (best-effort, silent).
+            if (doomed.isNotEmpty()) {
+                runCatching {
+                    http.delete(
+                        "${BuildConfig.SUPABASE_URL}/rest/v1/mirror_dismissed" +
+                            "?source_id=eq.${removed.sourceId}&spotify_id=in.(${doomed.joinToString(",")})",
+                    ) {
+                        supabaseHeaders().forEach { (k, v) -> header(k, v) }
+                    }.body<Unit>()
+                }
+            }
         }
     }
 
@@ -285,14 +324,14 @@ class SpotifyMirrorRepository @Inject constructor(
      * links). The set is ALWAYS saved, even if every poll comes back empty — an empty
      * save on failure would flood the playlist on the next intake.
      */
-    private suspend fun seedFutureOnly(sourceId: String) {
+    private suspend fun seedFutureOnly(sourceId: String, localPlaylistId: String) {
         val seen = pullAll(listOf(sourceId))[sourceId].orEmpty().map { it.spotify_id }.toMutableSet()
         for (i in 0 until 20) {
             val added = directInvoke(listOf(sourceId))[sourceId].orEmpty()
             if (added.isEmpty()) break
             added.forEach { seen += it.spotify_id }
         }
-        saveConsumed(sourceId, seen)
+        saveConsumed(sourceId, localPlaylistId, seen)
     }
 
     /** Backfill: pull every known row and insert what's missing locally, in order. */
@@ -321,14 +360,21 @@ class SpotifyMirrorRepository @Inject constructor(
     }
 
     /**
-     * Per-device consumption state: which Spotify ids THIS phone already handled.
-     * Global done-marking cannot work (two phones share rows — one phone's done would
-     * starve the other), so each device tracks its own set and filters pulls locally.
+     * Per-device, per-playlist consumption state: which Spotify ids THIS phone already
+     * handled FOR THIS playlist. Keyed by source+playlist (H1): two local playlists
+     * tracking the same Spotify URL must not share consumption — sharing starves the
+     * second playlist and makes untracking one wipe the other's progress.
+     * Global done-marking cannot work either (two phones share rows — one phone's
+     * done would starve the other), so each device tracks its own sets locally.
      */
-    private fun consumedKey(sourceId: String) = stringPreferencesKey("mirror_consumed_$sourceId")
+    private fun consumedKey(sourceId: String, localPlaylistId: String) =
+        stringPreferencesKey("mirror_consumed_${sourceId}_$localPlaylistId")
 
-    private suspend fun consumed(sourceId: String): Set<String> {
-        val raw = context.dataStore.data.map { it[consumedKey(sourceId)].orEmpty() }.first()
+    /** Legacy shared key (pre-H1): adopted once, then cleared. */
+    private fun legacyConsumedKey(sourceId: String) = stringPreferencesKey("mirror_consumed_$sourceId")
+
+    private suspend fun readConsumedSet(key: Preferences.Key<String>): Set<String> {
+        val raw = context.dataStore.data.map { it[key].orEmpty() }.first()
         if (raw.isBlank()) return emptySet()
         return runCatching {
             val arr = org.json.JSONArray(raw)
@@ -336,9 +382,15 @@ class SpotifyMirrorRepository @Inject constructor(
         }.getOrDefault(emptySet())
     }
 
-    private suspend fun saveConsumed(sourceId: String, ids: Set<String>) {
+    private suspend fun consumed(sourceId: String, localPlaylistId: String): Set<String> =
+        readConsumedSet(consumedKey(sourceId, localPlaylistId))
+
+    private suspend fun hasConsumedKey(sourceId: String, localPlaylistId: String): Boolean =
+        context.dataStore.data.map { it.contains(consumedKey(sourceId, localPlaylistId)) }.first()
+
+    private suspend fun saveConsumed(sourceId: String, localPlaylistId: String, ids: Set<String>) {
         context.dataStore.edit { prefs ->
-            prefs[consumedKey(sourceId)] = org.json.JSONArray().apply { ids.forEach(::put) }.toString()
+            prefs[consumedKey(sourceId, localPlaylistId)] = org.json.JSONArray().apply { ids.forEach(::put) }.toString()
         }
     }
 
@@ -394,6 +446,10 @@ class SpotifyMirrorRepository @Inject constructor(
 
     /** Closed path: consume server-stored pending rows for every linked playlist. */
     suspend fun intakeAll() = intakeMutex.withLock {
+        if (isMetered()) {
+            Timber.tag(TAG).d("intakeAll skipped on metered connection")
+            return
+        }
         val allLinks = links()
         if (allLinks.isEmpty()) return
         val pending = pullAll(allLinks.values.map { it.sourceId }.distinct())
@@ -405,21 +461,35 @@ class SpotifyMirrorRepository @Inject constructor(
     /**
      * Alive path: consume already-pending rows first (incremental — first songs appear
      * without waiting for a full server resolve), then direct-invoke to trigger fresh
-     * resolution and consume what comes back.
+     * resolution and consume what comes back. Returns total songs added, or -1 when
+     * skipped on a metered connection (H3/F2: the pull gesture reports honestly
+     * instead of firing blind or claiming "up to date").
      */
-    suspend fun intakeAllDirect() = intakeMutex.withLock {
+    suspend fun intakeAllDirect(): Int = intakeMutex.withLock {
+        if (isMetered()) {
+            Timber.tag(TAG).d("intakeAllDirect skipped on metered connection")
+            return -1
+        }
         val allLinks = links()
-        if (allLinks.isEmpty()) return
+        if (allLinks.isEmpty()) return 0
         val sourceIds = allLinks.values.map { it.sourceId }.distinct()
         val pending = pullAll(sourceIds)
+        var added = 0
         allLinks.forEach { (localId, link) ->
-            intakeRows(localId, link.sourceId, pending[link.sourceId].orEmpty())
+            added += intakeRows(localId, link.sourceId, pending[link.sourceId].orEmpty())
         }
         val fresh = directInvoke(sourceIds)
         allLinks.forEach { (localId, link) ->
-            intakeRows(localId, link.sourceId, fresh[link.sourceId].orEmpty())
+            added += intakeRows(localId, link.sourceId, fresh[link.sourceId].orEmpty())
         }
+        added
     }
+
+    /** Metered connection (cellular/hotspot): intake matching waits for WiFi (M1). */
+    private fun isMetered(): Boolean =
+        runCatching {
+            context.getSystemService<android.net.ConnectivityManager>()?.isActiveNetworkMetered == true
+        }.getOrDefault(false)
 
     /**
      * Consume rows in playlist order and return songs added. Matching runs bounded-parallel;
@@ -435,7 +505,20 @@ class SpotifyMirrorRepository @Inject constructor(
             untrack(localPlaylistId)
             return 0
         }
-        val seen = consumed(sourceId).toMutableSet()
+        var seen = consumed(sourceId, localPlaylistId).toMutableSet()
+        if (!hasConsumedKey(sourceId, localPlaylistId)) {
+            // One-time H1 adoption: pre-fix builds stored one shared set per source.
+            // Key-absence (never written) means a pre-fix playlist; a present-but-empty
+            // key means a fresh link/relink that must re-evaluate from scratch.
+            // Adopt then clear the legacy key (a sibling playlist adopts it too if it
+            // runs first — worst case one guarded, silent re-match).
+            val legacy = readConsumedSet(legacyConsumedKey(sourceId))
+            if (legacy.isNotEmpty()) {
+                seen = legacy.toMutableSet()
+                saveConsumed(sourceId, localPlaylistId, seen)
+                context.dataStore.edit { prefs -> prefs.remove(legacyConsumedKey(sourceId)) }
+            }
+        }
         // Server rows may carry JSON-escaped text from older resolves (\u0026 and
         // friends): clean once so matching, skip records, and display all agree.
         val fresh = rows.filter { it.spotify_id !in seen }
@@ -446,9 +529,14 @@ class SpotifyMirrorRepository @Inject constructor(
         // Skips are resolved against the SAME snapshot: a song added by hand since the
         // last pass is no longer a miss (SPEC_MIRROR_REVIEW).
         val existingSkips = database.mirrorSkipsBlocking(localPlaylistId).associateBy { it.spotifyId }
+        // S9 union: rows dismissed on the partner phone stay hidden here too.
+        val remoteDismissed = fetchRemoteDismissed(sourceId)
         existingSkips.values.forEach { s ->
             if (isPresent(knownTitles, s.title, s.artist)) {
                 database.deleteMirrorSkip(localPlaylistId, s.spotifyId)
+            } else if (!s.dismissed && s.spotifyId in remoteDismissed) {
+                // Dismissed remotely after we listed it: adopt the dismissal.
+                database.dismissMirrorSkip(localPlaylistId, s.spotifyId)
             }
         }
         val now = System.currentTimeMillis()
@@ -464,7 +552,7 @@ class SpotifyMirrorRepository @Inject constructor(
                     seen += row.spotify_id
                     retryFails.remove(row.spotify_id)
                     retryAfter.remove(row.spotify_id)
-                    recordSkip(localPlaylistId, knownTitles, row, existingSkips)
+                    recordSkip(localPlaylistId, knownTitles, row, existingSkips, remoteDismissed)
                 }
                 // Transient failure: stay unconsumed AND wait out the backoff slot.
                 is MatchOutcome.NetworkError -> {
@@ -521,7 +609,7 @@ class SpotifyMirrorRepository @Inject constructor(
         } catch (e: Exception) {
             Timber.tag(TAG).e(e, "Mirror chunk insert failed - remainder retried next pass")
         }
-        saveConsumed(sourceId, seen)
+        saveConsumed(sourceId, localPlaylistId, seen)
         if (inserted.isNotEmpty()) {
             // Owner decision: mirrored songs stream on demand, no auto-download.
             // Manual downloads later pick up lyrics via the existing warmer.
@@ -572,12 +660,15 @@ class SpotifyMirrorRepository @Inject constructor(
         knownTitles: List<Pair<String, Set<String>>>,
         row: MirrorRow,
         existingSkips: Map<String, MirrorSkipEntity>,
+        remoteDismissed: Set<String> = emptySet(),
     ) {
         if (isPresent(knownTitles, row.title, row.artist)) {
             resolveSkip(localPlaylistId, row, existingSkips)
             return
         }
         if (existingSkips[row.spotify_id]?.dismissed == true) return
+        // S9 union: dismissed on the partner phone stays hidden here.
+        if (row.spotify_id in remoteDismissed) return
         database.upsertMirrorSkip(
             MirrorSkipEntity(
                 localPlaylistId = localPlaylistId,
@@ -622,7 +713,7 @@ class SpotifyMirrorRepository @Inject constructor(
         }
         return when (outcome) {
             is MatchOutcome.Found -> {
-                insertRetryHit(playlistId, outcome.item)
+                insertRetryHit(playlistId, skip.spotifyId, outcome.item)
                 database.deleteMirrorSkip(playlistId, skip.spotifyId)
                 true
             }
@@ -646,30 +737,94 @@ class SpotifyMirrorRepository @Inject constructor(
     /** Remove a row from the review list permanently (never resurfaces, even on relink). */
     suspend fun dismissSkip(playlistId: String, spotifyId: String) {
         database.dismissMirrorSkip(playlistId, spotifyId)
+        // S9: publish so the partner phone hides it too (best-effort, silent).
+        val sourceId = links()[playlistId]?.sourceId ?: return
+        runCatching {
+            http.post("${BuildConfig.SUPABASE_URL}/rest/v1/mirror_dismissed") {
+                supabaseHeaders().forEach { (k, v) -> header(k, v) }
+                contentType(ContentType.Application.Json)
+                setBody(mapOf("source_id" to sourceId, "spotify_id" to spotifyId))
+            }.body<Unit>()
+        }.onFailure { Timber.tag(TAG).d("Dismiss publish failed, stays local-only") }
+    }
+
+    /** Undo a dismissal (M2): the row returns to the review list. */
+    suspend fun undismissSkip(playlistId: String, spotifyId: String) {
+        database.undismissMirrorSkip(playlistId, spotifyId)
+        val sourceId = links()[playlistId]?.sourceId ?: return
+        runCatching {
+            http.delete(
+                "${BuildConfig.SUPABASE_URL}/rest/v1/mirror_dismissed" +
+                    "?source_id=eq.$sourceId&spotify_id=eq.$spotifyId",
+            ) {
+                supabaseHeaders().forEach { (k, v) -> header(k, v) }
+            }.body<Unit>()
+        }.onFailure { Timber.tag(TAG).d("Undismiss unpublish failed") }
     }
 
     /**
-     * Append one retry hit at the live max position. Same guards as the intake chunk
-     * insert (videoId + tx ordering), so concurrent intakes can't duplicate or interleave.
+     * Remotely dismissed ids for a source (S9 union): a dismissal on either phone
+     * hides the row everywhere. Best-effort — failure degrades to local-only.
      */
-    private suspend fun insertRetryHit(localPlaylistId: String, item: SongItem) {
+    private suspend fun fetchRemoteDismissed(sourceId: String): Set<String> = try {
+        val rows: List<Map<String, String>> = http.get(
+            "${BuildConfig.SUPABASE_URL}/rest/v1/mirror_dismissed" +
+                "?source_id=eq.$sourceId&select=spotify_id",
+        ) {
+            supabaseHeaders().forEach { (k, v) -> header(k, v) }
+            accept(ContentType.Application.Json)
+        }.body()
+        rows.mapNotNull { it["spotify_id"] }.toSet()
+    } catch (e: Exception) {
+        Timber.tag(TAG).d("Remote dismissed fetch failed, local-only")
+        emptySet()
+    }
+
+    /**
+     * Insert one retry hit at its Spotify position instead of the end (M4), so
+     * retried songs land in row order like backfill inserts. Falls back to
+     * end-append when the source order is unavailable. Same guards as the intake
+     * chunk insert (videoId + tx ordering).
+     */
+    private suspend fun insertRetryHit(localPlaylistId: String, spotifyId: String, item: SongItem) {
+        val target = targetPosition(localPlaylistId, spotifyId)
         database.withTransaction {
-            val already = checkInPlaylist(localPlaylistId, item.id)
-            if (already == 0) {
+            if (checkInPlaylist(localPlaylistId, item.id) == 0) {
                 if (getSongByIdBlocking(item.id) == null) {
                     insert(item.toMediaMetadata())
                 }
                 val currentMax = playlistSongMaps(localPlaylistId, 0).maxOfOrNull { it.position } ?: -1
+                val pos = target?.coerceIn(0, currentMax + 1) ?: (currentMax + 1)
+                if (pos <= currentMax) {
+                    shiftPositions(localPlaylistId, pos)
+                }
                 insert(
                     PlaylistSongMap(
                         songId = item.id,
                         playlistId = localPlaylistId,
-                        position = currentMax + 1,
+                        position = pos,
                     ),
                 )
                 updatePlaylistLastUpdated(localPlaylistId)
             }
         }
+    }
+
+    /**
+     * Spotify-order position for a retried row: how many preceding source rows are
+     * already present (they occupy 0..n). Null when unknowable → end-append.
+     */
+    private suspend fun targetPosition(localPlaylistId: String, spotifyId: String): Int? {
+        val sourceId = links()[localPlaylistId]?.sourceId ?: return null
+        val rows = pullAll(listOf(sourceId))[sourceId].orEmpty()
+        val idx = rows.indexOfFirst { it.spotify_id == spotifyId }
+        if (idx < 0) return null
+        val known = loadTitleIndex(localPlaylistId)
+        var pos = 0
+        for (i in 0 until idx) {
+            if (isPresent(known, rows[i].title, rows[i].artist)) pos++
+        }
+        return pos
     }
 
     /**
@@ -698,14 +853,6 @@ class SpotifyMirrorRepository @Inject constructor(
                 }
             }
         }.awaitAll()
-    }
-
-    /** Alive path for one playlist (pull-to-refresh): direct-invoke now, consume. Returns songs added. */
-    suspend fun intakeDirectFor(localPlaylistId: String): Int = intakeMutex.withLock {
-        val link = links()[localPlaylistId] ?: return 0
-        val rows = directInvoke(listOf(link.sourceId))[link.sourceId].orEmpty()
-        if (rows.isEmpty()) return 0
-        intakeRows(localPlaylistId, link.sourceId, rows)
     }
 
     /** Probe a Spotify link: returns total track count without resolving or storing. */

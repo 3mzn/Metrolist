@@ -2189,8 +2189,14 @@ interface DatabaseDao {
     @Query("UPDATE mirror_skip SET dismissed = 1 WHERE localPlaylistId = :playlistId AND spotifyId = :spotifyId")
     fun dismissMirrorSkip(playlistId: String, spotifyId: String)
 
+    @Query("UPDATE mirror_skip SET dismissed = 0 WHERE localPlaylistId = :playlistId AND spotifyId = :spotifyId")
+    fun undismissMirrorSkip(playlistId: String, spotifyId: String)
+
     @Query("DELETE FROM mirror_skip WHERE localPlaylistId = :playlistId")
     fun clearMirrorSkips(playlistId: String)
+
+    @Query("UPDATE playlist_song_map SET position = position + 1 WHERE playlistId = :playlistId AND position >= :from")
+    fun shiftPositions(playlistId: String, from: Int)
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     fun insert(podcast: PodcastEntity): Long
