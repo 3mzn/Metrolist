@@ -120,3 +120,5 @@ SPEC_9_*.md
 
 # Firebase service account credentials (never commit)
 *-firebase-adminsdk-*.json
+# Supabase CLI local state
+supabase/.temp/

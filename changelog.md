@@ -1,3 +1,9 @@
+---v13.11.0
+- Spotify tracking: songs that can't be matched now show in a review list inside the playlist (banner count, retry/remove per song, removed songs stay hidden on both phones)
+- Matching is stricter — right singer and right title required, so covers and karaoke versions no longer slip into tracked playlists
+- Pull-to-refresh in a tracked playlist now catches up everything and reports what arrived
+- Mirror pauses on mobile data and resumes on WiFi
+
 ---v13.10.2
 - Shared playlists now arrive in the exact order they were shared — both phones show the same sequence
 - Receives also survive hung song fetches (30s cap) instead of stalling the whole playlist
