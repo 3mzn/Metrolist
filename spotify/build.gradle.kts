@@ -44,6 +44,10 @@ dependencies {
     // is not needed: Ktor only advertises br when a request asks for it.
     implementation(libs.brotli)
     testImplementation(libs.junit)
+    // Phase 1.5 smoke test: proves the real Spotify chain works before any UI is built.
+    androidTestImplementation(libs.junit)
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test:core-ktx:1.6.1")
 
     coreLibraryDesugaring(libs.desugaring)
 }

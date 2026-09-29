@@ -641,6 +641,14 @@ No logic was altered anywhere.
 Phase 2 (login) and Phase 3 (fetch). Compilation proves the copy is *syntactically* faithful,
 not that it *behaves* — which is exactly what those phases are for.
 
+#### 14.1a-bis Phase 1.5 marker
+
+Phase 1.5 is an **inserted** phase, not one of the original eight. It was added after Phase 1
+because Phase 1 proved compilation but not behaviour, and Phases 2-4 all depend on the Spotify
+chain actually working. It is deliberately UI-free and runs headlessly on a device.
+
+**Status: DONE.** Results and the blocking finding are in 14.1c.
+
 #### 14.1b Audit findings (Phase 1)
 
 A line-by-line diff against SimpMusic, ignoring only the GPL header and package line:
@@ -684,6 +692,100 @@ leaving the function body visually misaligned with the source. Corrected to matc
 > Debug builds keep SimpMusic's full verbosity for diagnostics; release builds print nothing.
 > `LogLevel.NONE` rather than `INFO` because these are third-party API calls whose only value is
 > debugging, and the request bodies contain session material.
+
+#### 14.1c Phase 1.5 — headless de-risking: ALL PASS
+
+Phase 1 proved the copy compiles. It proved nothing about *behaviour*, and Phases 2-4 all assume
+the Spotify chain works. So a headless instrumented test
+(`spotify/src/androidTest/.../SpotifyChainSmokeTest.kt`) runs the whole risky path on a real
+device with no UI, no DataStore, and no login screen.
+
+**Final result: 4/4 passed against the live Spotify API.**
+
+| Test | Needs cookie | Result |
+|---|---|---|
+`clientToken_isObtainableWithoutAnyCredentials` | no | **PASSED** |
+`totpSecret_isFetchable` | no | **PASSED** — the external GitHub secrets repo is alive |
+`personalToken_isObtainableAndAuthenticated` | yes | **PASSED** — `isAnonymous=false` |
+`canvas_isFetchableForAKnownCanvasTrack` | yes | **PASSED** — real Canvas URL returned |
+
+**The Canvas it retrieved:**
+
+```
+spotify:track:1fk5Jx5ytAcfc9o1tcrQ1d
+https://canvaz.scdn.co/upload/licensor/3NAqPxQzicHuJO85ZYITtF/video/09b72ea8cb8f44128f02a26a5331d039.cnvs.mp4
+```
+
+**Independently cross-checked:** that URL is byte-identical to the one SimpMusic had already
+cached in its Room database for the same track (`zrW87-xUvt4` = "Dat Bad"). Two separate
+implementations, same answer.
+
+### The trap this phase caught
+
+**Phase 0's track list is YouTube video IDs. Spotify's canvas endpoint wants a Spotify track ID.**
+
+Feeding one to the other returns a *perfectly well-formed* `HTTP 200` with
+`Content-Type: application/protobuf` and a 3-byte body:
+
+```
+10 90 1c
+```
+
+which decodes to "no canvas for that id". It looks exactly like a broken protobuf mapping — the
+failure the spec warned about twice — and is not one. Distinguishing the two required dumping
+the raw response rather than inferring from a decoded model, because a decoded empty
+`CanvasResponse` is indistinguishable from a successful one with no entries.
+
+The real chain, copied from SimpMusic (`LyricsCanvasRepositoryImpl.getCanvas`, lines 114-200),
+is:
+
+```
+YouTube videoId
+  -> local SongEntity (title + artist)
+  -> scrub the query of "(feat." / "&" / ")" / "." etc.
+  -> searchSpotifyTrack()
+  -> match candidates on DURATION (abs(trackDuration - localDuration) < 1s)
+  -> Spotify track ID
+  -> getSpotifyCanvas()
+```
+
+> **Requirement for Phase 3:** the search-and-match step must be ported, not just the canvas
+> fetch. It is the part that maps our YouTube IDs onto Spotify's, and skipping it produces a
+> silent, plausible-looking failure. The smoke test takes the first search hit because it only
+> needs *a* known-canvas track; **the real implementation must match on duration**, or a song
+> with a same-titled different-length match will get the wrong Canvas, or none.
+
+### A second false signal, also caught here
+
+SimpMusic's own auth code asserts the personal token is exactly **374** characters and retries
+`init` if not. A live, fully authenticated token measured on 2026-09-30 was **395**. So that
+constant is not a contract, and the first run's "expected 374 but was 140/395" was misleading —
+140 was a genuinely anonymous token, 395 was a genuinely *valid* one. The ported logic keeps
+SimpMusic's check (it is load-bearing for its retry), but **the test no longer asserts a fixed
+length**, and asserts `isAnonymous == false` instead, which is the property that actually
+matters.
+
+### Test hygiene
+
+Cookie-dependent tests use `Assume`, so they **skip** rather than fail when no cookie is
+supplied, and the suite stays green for anyone without a Spotify session. The very first run
+reported "2 passed, 2 skipped" and looked clean — which is precisely why the XML had to be
+read rather than the console summary.
+
+### How to run it
+
+```
+adb pull /data/data/com.maxrave.simpmusic.dev/files/datastore/settings.preferences_pb
+# extract the sp_dc value, then:
+./gradlew :spotify:connectedDebugAndroidTest \
+  "-Pandroid.testInstrumentationRunnerArguments.sp_dc=<cookie>"
+```
+
+Quote the whole `-P...` argument: the cookie contains `&`, which PowerShell otherwise turns
+into a `Selection failed` error.
+
+**A stale cookie surfaces as `isAnonymous=true`, not as an exception.** Re-login in SimpMusic
+and re-copy when that happens.
 
 ---
 
