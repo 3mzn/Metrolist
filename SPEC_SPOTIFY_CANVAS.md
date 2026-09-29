@@ -465,6 +465,9 @@ Must all pass:
 
 - `./gradlew :app:compileFossDebugKotlin` clean.
 - `./gradlew :app:testFossDebugUnitTest` — full suite green (132 tests at base `7f168bf`).
+  **`:spotify`'s instrumented suite is separate and additional** (4 tests via
+  `:spotify:connectedDebugAndroidTest`); it does not change the 132, so a phase that adds
+  neither nor removes a `:app` test should still report exactly 132.
 - Delete `app/build/outputs/apk/foss/debug` before assembling (stale-APK rule).
 - Manual on-device verification of §11.2, with logcat evidence for the Canvas fetch and for
   each failure path.
@@ -820,6 +823,10 @@ because they are testable without a device or a network.
 
 **Rollback:** delete the module directory + one `settings.gradle.kts` line.
 
+### Phase 1.5 — Headless chain proof (inserted)
+
+**Status:** ✅ **DONE - commit `b393250d`** (see 14.1c)
+
 ---
 
 ### Phase 2 — Login and token storage
@@ -835,12 +842,21 @@ because they are testable without a device or a network.
 **Goal:** sign in to Spotify from inside Metrolist. Proves the entire auth chain end to end.
 
 **In:**
+- **`app/build.gradle.kts`: add `implementation(projects.spotify)`.** This is the first link
+  between `:app` and the ported module — until it exists, nothing in the app can call the
+  Spotify client and this phase has nothing to wire up.
 - DataStore keys for `spdc`, client token, personal token, and their expiries.
 - `SpotifySettings.kt` in `ui/screens/settings/integrations/`, with a **Log in to Spotify** row
   routing to a WebView, and a **Log out from Spotify** row once signed in.
 - Registration in `IntegrationScreen` alongside Last.fm and Discord.
 - Strings in `metrolist_strings.xml`.
 - Token-refresh handling on expiry.
+
+> **Stale-cookie note.** An `sp_dc` cookie is not permanent — one measured 2026-09-30 had
+> roughly 4 hours left. When it expires, Spotify returns a **valid-looking anonymous token**
+> (`isAnonymous = true`), *not* an error, and that token carries no Canvas entitlement. So a
+> login can appear to succeed and then fail silently at Canvas time. Re-login in SimpMusic and
+> re-copy the cookie whenever a test fails this way.
 
 **Out:** the Canvas switch (P7), Canvas fetching (P3), all player changes.
 
@@ -850,6 +866,15 @@ because they are testable without a device or a network.
 "Log out", and **confirm the tokens actually landed in DataStore** by reading the
 `settings.preferences_pb` file. A green UI is not proof the token was stored; SimpMusic's
 Canvas depends on the token, not the login label.
+
+**Then close the loop:** copy the freshly-stored `sp_dc` out of the app and re-run
+`:spotify:connectedDebugAndroidTest` with it, confirming all four Phase 1.5 tests still pass.
+This catches a login UI that stores a well-formed but useless token — which the UI alone
+cannot detect, and which only shows up later as silently-missing Canvas.
+
+**Expected state after this phase:** `:app` depends on `:spotify`, the login works, tokens
+persist, and the Phase 1.5 suite passes against a cookie produced by *our* login flow rather
+than SimpMusic's.
 
 **Rollback:** revert the commit. No player behaviour existed to depend on it.
 
@@ -872,6 +897,13 @@ exists.
 
 **In:**
 - `utils/spotify/` orchestration in `:app`.
+- **Map YouTube videoId → Spotify track ID.** Ported from
+  `LyricsCanvasRepositoryImpl.getCanvas` (lines 114-200): build a scrubbed
+  `"title artist"` query from the local `SongEntity`, call `searchSpotifyTrack()`,
+  then **match candidates on duration** (SimpMusic uses `abs(difference) < 1s`).
+  The `:spotify` module already contains the search call and response model; this
+  step is the `:app`-side glue and is **required** — see §14.1c. Fetching by
+  YouTube ID returns HTTP 200 with an empty body, not an error.
 - Canvas fetch on track change, **gated behind a temporary internal flag** (default off).
 - Positive disk cache of the Canvas video.
 - Negative cache: only clean negatives, **only after 3 attempts** (§9.2).
@@ -884,8 +916,10 @@ exists.
 cache, which retry).
 
 **Verification — this is the phase's whole purpose:**
-- Enable the flag, play a **known** Canvas track → Canvas file lands in the cache. Log the URL
-  and the HTTP status.
+- Enable the flag, play a track **from the §14.0a list** (e.g. Dat Bad) → the search matches
+  it to a Spotify track ID → the Canvas file lands in the cache. Log the mapped Spotify track
+  ID, the URL and the HTTP status. *The mapping step is part of the expected path, not a
+  shortcut — a Canvas cannot be fetched from the YouTube ID alone.*
 - Replay it → served from cache, no network hit.
 - Play a **known non-Canvas** track → silent, and after 3 attempts the negative is cached.
 - Simulate a timeout → confirm it is **not** cached as a negative, and the counter resets on
@@ -1026,8 +1060,9 @@ with no Canvas and no orphaned UI.
 
 | # | Phase | UI risk | Needs device? | Verifiable without later phases? |
 |---|---|---|---|---|
-| 0 | Pre-flight | none | baseline | **✅ DONE** |
-| 1 | `:spotify` module | none | no | **✅ DONE** |
+| 0 | Pre-flight | none | baseline | **✅ DONE** `97107e2e` |
+| 1 | `:spotify` module | none | no | **✅ DONE** `42aaa9f8` |
+| **1.5** | **Headless chain proof (inserted)** | **none** | **yes** | **✅ DONE** `b393250d` |
 | 2 | Login + tokens | low | **yes — real login** | yes |
 | 3 | Fetch + cache | **none** | **yes — the risky one** | **yes — headless** |
 | 4 | Video surface | **medium** | **yes** | yes — flag-driven |
@@ -1037,6 +1072,12 @@ with no Canvas and no orphaned UI.
 
 Phases 0–4 are complete without a single gesture existing. That is the point: the risky work
 is finished and proven before the interaction design is layered on top.
+
+**Phase 1.5 was inserted, not originally planned.** Phase 1 proved the copy compiled but not
+that it *worked*, and Phases 2–4 all depend on it working. Adding it cost one test file and
+immediately caught the YouTube-ID-vs-Spotify-ID trap described in §14.1c — which would
+otherwise have been discovered only after the login screen and settings wiring were finished.
+Nine phases in total, not eight.
 
 ### 14.3 Commit discipline
 
@@ -1232,6 +1273,29 @@ Music accounts.
 - Canvas renders and loops for tracks that have one
 - **Spotify lyrics also work** (verified: "Word by word / Lyrics provided by SimpMusic Lyrics")
 
+> **⚠ THE ID TRAP — the single most expensive mistake available in this project.**
+>
+> Metrolist deals in **YouTube video IDs** (`zrW87-xUvt4`). Spotify's canvas endpoint wants a
+> **Spotify track ID** (`1fk5Jx5ytAcfc9o1tcrQ1d`). These spaces do not overlap, and passing one to
+> the other returns **`HTTP 200`, `Content-Type: application/protobuf`, 3-byte body `10 90 1c`** —
+> a well-formed success meaning "no canvas for that id".
+>
+> From a decoded model this is **indistinguishable from broken protobuf field mapping**, which
+> is the failure this spec warns about twice. A reader who hits it may "fix" the `@ProtoNumber`
+> annotations and break code that is working.
+>
+> The real chain (SimpMusic, `LyricsCanvasRepositoryImpl.getCanvas:114-200`):
+> ```
+> YouTube videoId → local SongEntity (title, artist, duration)
+>   → scrub query of "(feat.", "&", ")", "." etc.
+>   → searchSpotifyTrack()
+>   → MATCH ON DURATION (abs difference < 1s)   ← the part that matters
+>   → Spotify track ID → getSpotifyCanvas()
+> ```
+> The `:spotify` module has the search call and response model. The mapping glue is Phase 3
+> work. **Taking the first search hit instead of matching on duration gives the wrong Canvas
+> on a search that returns a remix or a live version.**
+
 **The gate that blocks Canvas in SimpMusic** (`SharedViewModel.kt:286`) — **must NOT be
 reproduced:**
 ```kotlin
@@ -1257,6 +1321,16 @@ Metrolist has no equivalent gate because it has no video/Canvas slot at all.
 - ✅ Canvas is a **vertical 9:16** video, 3–8 seconds, loops.
 - ✅ Most tracks have **no** Canvas. Silence on a no-Canvas track is correct behaviour and is
   **indistinguishable from a bug** unless a known-Canvas track is used as a control.
+- ✅ **Proven working via our own port** (Phase 1.5, commit `b393250d`): all four chain tests
+  pass against the live API, and the Canvas URL returned is byte-identical to the one SimpMusic
+  had cached for the same track. Two independent implementations agree.
+- ✅ An `sp_dc` cookie is **not permanent** (~4 hours observed). A stale one yields a
+  **valid-looking anonymous token** (`isAnonymous=true`), not an error — so a login can appear
+  to succeed and then fail silently when no Canvas comes back. Re-login in SimpMusic to refresh.
+- ⚠️ SimpMusic's auth code asserts the personal token is exactly **374** chars; a live
+  authenticated token measured 2026-09-30 was **395**. That constant is not a contract. The
+  ported logic keeps it (it only drives a retry — the real gate is `accessToken.isEmpty()`), but
+  **our tests assert `isAnonymous == false`, never a fixed length.**
 
 ### 16.7 Metrolist code facts (the exact touchpoints)
 
@@ -1476,21 +1550,25 @@ Current status: **Phase 0 not yet started. Spec awaiting approval.**
 ### 16.16 If you are resuming
 
 1. Re-read §16.8 (the previous failure) before writing any playback code.
-2. Confirm `git status` — only `SPEC_SPOTIFY_CANVAS.md` should be untracked.
-3. Confirm `adb devices` shows `emulator-5556`.
-4. **Check with the user whether the spec is approved.** No code has been written; do not
-   assume approval from an earlier session.
-5. Start at **Phase 0** — it is non-destructive and writes no code. It produces the
-   confirmed-Canvas track list that every later phase's verification depends on.
+2. Re-read the **ID trap** in §16.6 before writing any Canvas-fetch code. It is the mistake
+   most likely to be made and most likely to be misdiagnosed.
+3. Confirm `git status` — should be clean at `b393250d` (Phases 0, 1 and 1.5 complete).
+4. Confirm `adb devices` shows `emulator-5556`.
+5. **Check with the user for approval to start Phase 2.** Phases 0, 1 and 1.5 are done and
+   committed; nothing beyond them has been started.
+6. **Phase 2 will need a live Spotify session** to close the loop. If the `sp_dc` cookie has
+   gone stale, the symptom is `isAnonymous=true` rather than an error — re-login in SimpMusic
+   and re-copy.
 
 ### 16.17 Facts deliberately NOT established here
 
 | Open | Resolved in |
 |---|---|
 A confirmed list of tracks that definitively have a Canvas | ✅ **Phase 0 — done, 8 tracks (§14.0a)** |
-Canvas URLs still live and resolvable through our own fetch | Phase 3 |
-`@ProtoNumber` mapping survives the copy | Phase 1, fixture-decode unit tests |
-Metrolist's Ktor 3.5.2 has nothing missing for this code | **✅ Phase 1 — compiles clean** |
+Canvas URLs still live and resolvable through our own fetch | ✅ **Phase 1.5 — proven against the live API** |
+`@ProtoNumber` mapping survives the copy | ✅ **Phase 1 — verified 21 = 21, files byte-identical** |
+Metrolist's Ktor 3.5.2 has nothing missing for this code | ✅ **Phase 1 — compiles clean** |
+The YouTube→Spotify ID mapping works | ✅ **Phase 1.5 — proven** (search + Canvas URL returned) |
 TextureView composites correctly under the existing background stack | Phase 4, on device |
 Whether a clean negative needs exactly 3 attempts or fewer in practice | Phase 3 |
 
@@ -1518,4 +1596,6 @@ writes — main DB was 598 KB, WAL 4.1 MB), then
 
 None. All design decisions are locked and recorded above.
 
-**Phase 0 is complete. Phase 1 (`:spotify` module) is next, pending approval.**
+**Phase 1.5 is complete. Phase 2 (login + token storage) is next, pending approval.**
+Phases 0, 1 and 1.5 are done: 97107e2e, 42aaa9f8, b393250d. The Spotify chain is proven
+end to end against the live API — see §14.1c.
