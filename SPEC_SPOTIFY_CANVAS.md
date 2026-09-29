@@ -689,7 +689,7 @@ leaving the function body visually misaligned with the source. Corrected to matc
 
 ### Phase 1 — `:spotify` module
 
-**Status:** ✅ **DONE - commit PENDING** (see 14.1a)
+**Status:** ✅ **DONE - commit `42aaa9f8`** (see 14.1a)
 
 > **⚑ COPY, DON'T REWRITE.** SimpMusic's Spotify code is working, production code verified on
 > device. Take it **as it is**. The only permitted changes are the four in §4.2: package/import
