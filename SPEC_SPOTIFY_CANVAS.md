@@ -794,6 +794,8 @@ and re-copy when that happens.
 
 #### 14.1d Phase 2 result — login + token storage, and the WebView layout trap
 
+**Status: DONE — commit `e65881a55`**
+
 `:app` now depends on `:spotify`. The login WebView renders, the settings row, routes, token
 repository and strings are in place. Gate green: `:app:compileFossDebugKotlin` +
 `:app:testFossDebugUnitTest` — **132 tests, 0 failures**, unchanged from base.
@@ -922,7 +924,8 @@ because they are testable without a device or a network.
 
 ### Phase 2 — Login and token storage
 
-**Status:** ✅ **DONE** (results in §14.1d) — end-to-end token verification still outstanding
+**Status:** ✅ **DONE — commit `e65881a55`** (results in §14.1d) — end-to-end token
+verification still outstanding
 
 > **⚑ COPY, DON'T REWRITE.** Port `SpotifyAuth.kt`, `SpotifyClient`'s login calls, and
 > `SpotifyTotp.kt` **as they are** from SimpMusic. The TOTP flow in particular is delicate —
@@ -1154,7 +1157,7 @@ with no Canvas and no orphaned UI.
 | 0 | Pre-flight | none | baseline | **✅ DONE** `97107e2e` |
 | 1 | `:spotify` module | none | no | **✅ DONE** `42aaa9f8` |
 | **1.5** | **Headless chain proof (inserted)** | **none** | **yes** | **✅ DONE** `b393250d` |
-| 2 | Login + tokens | low | **yes — real login** | **✅ code DONE**; token persistence still to verify |
+| 2 | Login + tokens | low | **yes — real login** | **✅ DONE** `e65881a55`; token persistence still to verify |
 | 3 | Fetch + cache | **none** | **yes — the risky one** | **yes — headless** |
 | 4 | Video surface | **medium** | **yes** | yes — flag-driven |
 | 5 | Long-press | medium | yes | needs 4 |
@@ -1286,8 +1289,8 @@ single most important thing to understand before writing code.**
 |---|---|
 Working repo | `C:\musicapp\metrolist` |
 Branch | `testing` |
-HEAD | `883d3cdd` - *"docs(spotify): fold Phase 1.5 findings back into the spec"* |
-Working tree | Phase 2 changes pending commit; everything committed before it is intact |
+HEAD | `e65881a55` - *"feat(spotify): add Spotify login and token storage"* |
+Working tree | **Clean** |
 Remotes | `origin` = MetrolistGroup/metrolist, `personal` = 3mzn/Metrolist. **Never push.** |
 Protected tag | `rollback/pre-video` → `1e4bf4618` — **must stay intact** |
 Reference repo | `C:\musicapp\SimpMusic` @ `b967fda`, v2.2.0 (code 59) |
@@ -1637,8 +1640,8 @@ flag**, not a gesture. **Phases 0–4 are complete without a single gesture exis
 are layered on last.
 
 Each phase: one commit, `testing`, explicit user authorisation required.
-Current status: **Phases 0, 1, 1.5 and 2 are committed** (`97107e2e`, `42aaa9f8`, `b393250d`,
-`883d3cdd`, plus the Phase 2 commit). **Phase 3 — Canvas fetch and cache — is next**, and is
+Current status: **Phases 0, 1, 1.5 and 2 are committed** — `97107e2e`, `42aaa9f8`,
+`b393250d`, `883d3cdd` (spec fold), `e65881a55`. **Phase 3 — Canvas fetch and cache — is next**, and is
 the highest-risk phase in the project. Its two outstanding prerequisites are listed in
 **§14.1d**: confirm our own login actually persists a usable token, then close the loop by
 re-running the Phase 1.5 suite against that cookie.
@@ -1702,6 +1705,6 @@ writes — main DB was 598 KB, WAL 4.1 MB), then
 
 Both need the user to type their own Spotify credentials.
 
-**Phases 0, 1, 1.5 and 2 are done.** The Spotify chain is proven end to end against the live
+**Phases 0, 1, 1.5 and 2 are committed** — `97107e2e`, `42aaa9f8`, `b393250d`, `e65881a55`. The Spotify chain is proven end to end against the live
 API (§14.1c) and the login screen renders (§14.1d). **Phase 3 — Canvas fetch and cache —
 is next**, the highest-risk phase, and it runs with no UI at all behind a temporary flag.
