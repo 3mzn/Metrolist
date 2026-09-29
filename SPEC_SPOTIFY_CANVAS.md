@@ -544,16 +544,59 @@ reason to continue and accumulate breakage.
 
 **No code.** Establish ground truth before writing anything.
 
-- Confirm the emulator/device and build pipeline (compile green, 132 tests green at base).
-- **Identify at least 3 tracks that definitively have a Canvas**, and record their video IDs.
-  This is required because criterion §11.2.6 (a track with no Canvas must do *nothing*) is
-  otherwise indistinguishable from a bug. Verified on SimpMusic, then re-confirmed on
-  Metrolist once P3 lands.
+- ~~Confirm the emulator/device and build pipeline.~~ **SKIPPED by user** — compile + the full
+  132-test suite were already verified green at base `7f168bf` during the earlier rollback, and
+  the only commit since (`104db38a4`) adds a markdown file, which cannot break a build.
+- **Identify at least 3 tracks that definitively have a Canvas.** **DONE** — see §14.0a below.
+  The list was recovered from SimpMusic's own database, so nothing was re-tested.
 - Record a logcat baseline for the Canvas fetch tag, to compare against.
 - Delete `app/build/outputs/apk/foss/debug` before any assemble (stale-APK rule).
 
-**Gate:** compile + tests green; three confirmed Canvas tracks recorded.
-**Risk:** none. **Rollback:** nothing to roll back.
+**Gate:** confirmed Canvas tracks recorded. **Risk:** none. **Rollback:** nothing to roll back.
+
+#### 14.0a Confirmed Canvas tracks
+
+**Eight tracks, verified to have a working Spotify Canvas.** Recovered from SimpMusic's
+`Music Database` on `emulator-5556` — the app writes `canvasUrl` into the `song` table only
+after a successful fetch, so this list is your own testing, read back off disk. **Nothing was
+re-tested.**
+
+| # | videoId | Title | Type |
+|---|---|---|---|
+| 1 | `zrW87-xUvt4` | Dat Bad | video |
+| 2 | `LqaDwpR0KuM` | Itsy Bitsy | video |
+| 3 | `3NVf0iAw5NY` | Producer Man | video |
+| 4 | `4OncUpJmhtk` | Room For You | video |
+| 5 | `9QrG7SUdbzs` | back from the dead | video |
+| 6 | `pIZN1xCFUvQ` | buzzkill | video |
+| 7 | `4y5B8A5DHwk` | do u really? (feat. Ruth B.) | video |
+| 8 | `WXjWN08tnUU` | take me as I am | video |
+
+All eight are **video** Canvas (`canvaz.scdn.co/.../video/...mp4`), not still images — so they
+exercise the full playback path rather than a trivial image case.
+
+**How this was obtained** (reproduce if the emulator is ever reset):
+
+```
+adb root
+adb pull "/data/data/com.maxrave.simpmusic.dev/databases/Music Database"
+adb pull "/data/data/com.maxrave.simpmusic.dev/databases/Music Database-wal"   # recent writes
+adb pull "/data/data/com.maxrave.simpmusic.dev/databases/Music Database-shm"
+```
+```sql
+SELECT videoId, title, canvasUrl FROM song WHERE canvasUrl IS NOT NULL AND canvasUrl != '';
+```
+
+> **The `-wal` file matters.** Recent Canvas writes live in the write-ahead log; pulling only
+> the main DB can miss them. The main DB was 598 KB while the WAL held 4.1 MB.
+
+**Usage:** any phase verifying Canvas behaviour (§11.2 criteria 1, 3, 4, 5) must use one of
+these. A track **not** on this list serves as the negative control for criterion 6 — proving
+that a no-Canvas track stays silent and does nothing.
+
+**Still to confirm during Phase 3:** these IDs must resolve to Canvas via Metrolist's own fetch
+path, and the URLs must still be live. The list proves they *existed*; Phase 3 proves our port
+retrieves them.
 
 ---
 
@@ -780,7 +823,7 @@ with no Canvas and no orphaned UI.
 
 | # | Phase | UI risk | Needs device? | Verifiable without later phases? |
 |---|---|---|---|---|
-| 0 | Pre-flight | none | baseline | — |
+| 0 | Pre-flight | none | baseline | **✅ DONE** |
 | 1 | `:spotify` module | none | no | yes — compile + unit tests |
 | 2 | Login + tokens | low | **yes — real login** | yes |
 | 3 | Fetch + cache | **none** | **yes — the risky one** | **yes — headless** |
@@ -866,14 +909,14 @@ Honest list of what is **not yet proven**, each with when it gets resolved:
 
 | Assumption | Resolved in |
 |---|---|
-A confirmed-Canvas track list exists | Phase 0 |
-Canvas URLs are stable per track (cache validity) | Phase 3 |
+A confirmed-Canvas track list exists | ✅ **Phase 0 — done, 8 tracks (§14.0a)** |
+Canvas URLs are still live and resolve via our fetch path | Phase 3 |
 `@ProtoNumber` mapping survives the copy intact | Phase 1, via fixture-decode unit tests |
 Metrolist's Ktor 3.5.2 has no missing API for this code | Phase 1, at compile |
 TextureView composites correctly under the existing background stack | Phase 4, on device |
 No DB schema change needed | Confirmed by design (§4.3, §11.4) |
 
-None of these block starting Phase 0, which is pre-flight and non-destructive by design.
+None of these block starting Phase 1, which is a pure copy with no UI and no device dependency.
 
 ---
 
@@ -1241,8 +1284,8 @@ Current status: **Phase 0 not yet started. Spec awaiting approval.**
 
 | Open | Resolved in |
 |---|---|
-A confirmed list of tracks that definitively have a Canvas | Phase 0 |
-Canvas URLs are stable per track | Phase 3 |
+A confirmed list of tracks that definitively have a Canvas | ✅ **Phase 0 — done, 8 tracks (§14.0a)** |
+Canvas URLs still live and resolvable through our own fetch | Phase 3 |
 `@ProtoNumber` mapping survives the copy | Phase 1, fixture-decode unit tests |
 Metrolist's Ktor 3.5.2 has nothing missing for this code | Phase 1, at compile time |
 TextureView composites correctly under the existing background stack | Phase 4, on device |
@@ -1250,10 +1293,26 @@ Whether a clean negative needs exactly 3 attempts or fewer in practice | Phase 3
 
 **No database schema change is required** — confirmed by design.
 
+### 16.18 Confirmed Canvas tracks (Phase 0 output)
+
+**Eight tracks, verified, full table in §14.0a:**
+
+`zrW87-xUvt4` (Dat Bad) · `LqaDwpR0KuM` (Itsy Bitsy) · `3NVf0iAw5NY` (Producer Man) ·
+`4OncUpJmhtk` (Room For You) · `9QrG7SUdbzs` (back from the dead) · `pIZN1xCFUvQ` (buzzkill) ·
+`4y5B8A5DHwk` (do u really?) · `WXjWN08tnUU` (take me as I am)
+
+All eight are **video** Canvas. Use these to verify any Canvas behaviour. Use a track **not** on
+this list as the negative control.
+
+Recovered from SimpMusic's database, not re-tested. To regenerate if the emulator is reset:
+pull `Music Database`, `Music Database-wal` **and** `Music Database-shm` (the WAL holds recent
+writes — main DB was 598 KB, WAL 4.1 MB), then
+`SELECT videoId,title,canvasUrl FROM song WHERE canvasUrl IS NOT NULL AND canvasUrl != ''`.
+
 ---
 
 ## 17. Open items
 
 None. All design decisions are locked and recorded above.
 
-**Awaiting approval before any code is written.**
+**Phase 0 is complete. Phase 1 (`:spotify` module) is next, pending approval.**
