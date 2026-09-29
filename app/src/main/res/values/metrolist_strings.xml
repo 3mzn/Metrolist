@@ -433,6 +433,12 @@
     <string name="lastfm_now_playing">Send Now Playing status</string>
     <string name="last_fm_send_likes">Sync Loved and Unloved</string>
     <string name="last_fm_send_likes_description">Love or unlove songs in Last.fm when you like or unlike them in Metrolist</string>
+
+    <!-- Spotify, for the music-video background. Phase 2 of SPEC_SPOTIFY_CANVAS. -->
+    <string name="spotify_integration">Spotify integration</string>
+    <string name="log_in_to_spotify">Log in to Spotify</string>
+    <string name="spotify_logged_in">Logged in</string>
+    <string name="spotify_login_success">Logged in to Spotify</string>
     <string name="logging_in">Logging in…</string>
 
     <string name="scrobbling_configuration">Scrobbling configuration</string>

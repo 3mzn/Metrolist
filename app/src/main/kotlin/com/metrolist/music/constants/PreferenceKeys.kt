@@ -228,6 +228,21 @@ val LastFMUsernameKey = stringPreferencesKey("lastfmUsername")
 val EnableLastFMScrobblingKey = booleanPreferencesKey("lastfmScrobblingEnable")
 val LastFMUseNowPlaying = booleanPreferencesKey("lastfmUseNowPlaying")
 
+// Spotify, for the music-video background. Phase 2 of SPEC_SPOTIFY_CANVAS.
+// `sp_dc` is the cookie captured from the Spotify WebView login; the two tokens
+// are the account-scoped and app-scoped credentials derived from it, each with
+// its own expiry. SimpMusic's DataStoreManager holds the same six values.
+val SpotifySpdcKey = stringPreferencesKey("spotifySpdc")
+val SpotifyPersonalTokenKey = stringPreferencesKey("spotifyPersonalToken")
+val SpotifyPersonalTokenExpiresKey = longPreferencesKey("spotifyPersonalTokenExpires")
+val SpotifyClientTokenKey = stringPreferencesKey("spotifyClientToken")
+val SpotifyClientTokenExpiresKey = longPreferencesKey("spotifyClientTokenExpires")
+
+// Master switch for the Canvas background, and the consecutive-failure counter
+// that auto-disables it (N = 3, see spec 9.2).
+val SpotifyCanvasEnabledKey = booleanPreferencesKey("spotifyCanvasEnabled")
+val SpotifyCanvasFailureCountKey = intPreferencesKey("spotifyCanvasFailureCount")
+
 val LastFMUseSendLikes = booleanPreferencesKey("lastfmUseSendLikes")
 
 val ScrobbleDelayPercentKey = floatPreferencesKey("scrobbleDelayPercent")

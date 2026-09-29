@@ -1,7 +1,7 @@
 # SPEC_SPOTIFY_CANVAS — Spotify Canvas as the Player Background
 
-Status: DRAFT — awaiting approval. No code has been written.
-Date: 2026-09-29
+Status: ACTIVE — Phases 0, 1, 1.5 and 2 complete. Phase 3 next.
+Date: 2026-09-29 (Phase 2 results folded in 2026-09-30)
 Branch: `testing`
 Base: `7f168bf`
 
@@ -792,6 +792,97 @@ and re-copy when that happens.
 
 ---
 
+#### 14.1d Phase 2 result — login + token storage, and the WebView layout trap
+
+`:app` now depends on `:spotify`. The login WebView renders, the settings row, routes, token
+repository and strings are in place. Gate green: `:app:compileFossDebugKotlin` +
+`:app:testFossDebugUnitTest` — **132 tests, 0 failures**, unchanged from base.
+
+##### The bug that cost the most: a WebView that loads perfectly and shows nothing
+
+The login screen rendered **completely blank** for several build cycles. Recorded here because
+the failure is invisible to every signal an engineer normally trusts.
+
+**Root cause:** SimpMusic's `PlatformWebView` sets explicit layout params on the WebView. The
+port omitted them:
+
+```kotlin
+layoutParams = ViewGroup.LayoutParams(
+    ViewGroup.LayoutParams.MATCH_PARENT,
+    ViewGroup.LayoutParams.MATCH_PARENT,
+)
+```
+
+**Measured A/B — one line toggled, same build cycle:**
+
+| | `layoutParams` | WebView view size | `document.body` | Screenshot |
+|---|---|---|---|---|
+| without | absent | 900×1600 | `clientHeight = 0` | **blank** (54.9 KB PNG) |
+| with | `MATCH_PARENT` | 900×1600 | `450 × 800` | **renders** (115.9 KB PNG) |
+
+**Mechanism:** Compose's `AndroidView` sizes the WebView *view* to the full available bounds
+either way — the view measured 900×1600 in **both** runs. But the WebView lays out its *document*
+from its `LayoutParams`, so with those unset the page's `<body>` measured **zero height** and
+painted nothing.
+
+##### Why the diagnostics all said the WebView was innocent — because it was
+
+The page was loading flawlessly the whole time, even while the screen was black:
+
+| Signal | Value while blank |
+|---|---|
+| `document.readyState` | `complete` |
+| `body.children.length` | 5 |
+| `body.innerHTML.length` | 22 904 |
+| subresources fetched | 22 (Next.js chunks, woff2 fonts, reCAPTCHA) |
+| errors / HTTP failures | **none** |
+| `onPageFinished` | fired, `title = "Spotify"` |
+| `onPageCommitVisible` | fired |
+
+**So the DOM probe is not a valid blank/loaded discriminator on its own.** Two earlier
+experiments were actively misleading, and both are recorded so they are not repeated:
+
+1. **`example.com` rendered**, which looked like proof the WebView worked.
+2. **A `data:` URL with inline JavaScript "proved JS works."** The background turned green —
+   but the `JS-EXECUTED` **text was never visible**. CSS propagates a root element's background
+   to the canvas regardless of body height, so the background got through while the content was
+   clipped by the very same zero-height bug. **The test was hitting the bug it was meant to rule
+   out.**
+
+The reliable discriminators are **`document.body.clientHeight`** and a **screenshot file size**
+(a blank PNG is ~55 KB, a rendered one ~115 KB — immediate and free).
+
+**Also ruled out, with evidence, so they are not re-investigated:** network, DNS, TLS,
+`network_security_config` (byte-identical to SimpMusic's), User-Agent, JavaScript or DOM-storage
+settings, cookie-clearing races, third-party cookies, app theme and hardware acceleration,
+WebView version (110.0.5481.154.1 — identical in both apps), and any WebView provider or
+`setDataDirectorySuffix` in Metrolist's manifest.
+
+> **Lesson carried into the remaining phases:** a WebView can report complete success and paint
+> nothing. Assert on **rendered geometry**, never on callbacks.
+
+##### Deviation from SimpMusic, and why
+
+SimpMusic does **not** clear cookies on entry to the login screen. The port originally did
+(`LaunchedEffect { removeAllCookies }`, added to stop a stale session bouncing the page straight
+to `/status`). It was **removed**: the porting rule (§4.2) permits only four kinds of change and
+this was a fifth. SimpMusic's design already covers the case — it clears cookies after a
+successful save, so the jar is empty on the next entry. The user was notified and did not object.
+
+##### ⚠ Outstanding — required before Phase 3
+
+Phase 2's on-device verification is **half done**. The login form renders, but the far end of
+the chain is not yet proven:
+
+- [ ] Log in for real; the IntegrationScreen row flips to "Log out from Spotify".
+- [ ] Tokens are genuinely present in `settings.preferences_pb` — **a green UI is not proof**.
+- [ ] Close the loop: copy the `sp_dc` that **our** login stored and re-run
+      `:spotify:connectedDebugAndroidTest` with it; all four Phase 1.5 tests must still pass.
+
+This requires the user to type their own credentials, so it cannot be automated.
+
+---
+
 ### Phase 1 — `:spotify` module
 
 **Status:** ✅ **DONE - commit `42aaa9f8`** (see 14.1a)
@@ -831,7 +922,7 @@ because they are testable without a device or a network.
 
 ### Phase 2 — Login and token storage
 
-**Status:** ⏳ **PENDING**
+**Status:** ✅ **DONE** (results in §14.1d) — end-to-end token verification still outstanding
 
 > **⚑ COPY, DON'T REWRITE.** Port `SpotifyAuth.kt`, `SpotifyClient`'s login calls, and
 > `SpotifyTotp.kt` **as they are** from SimpMusic. The TOTP flow in particular is delicate —
@@ -1063,7 +1154,7 @@ with no Canvas and no orphaned UI.
 | 0 | Pre-flight | none | baseline | **✅ DONE** `97107e2e` |
 | 1 | `:spotify` module | none | no | **✅ DONE** `42aaa9f8` |
 | **1.5** | **Headless chain proof (inserted)** | **none** | **yes** | **✅ DONE** `b393250d` |
-| 2 | Login + tokens | low | **yes — real login** | yes |
+| 2 | Login + tokens | low | **yes — real login** | **✅ code DONE**; token persistence still to verify |
 | 3 | Fetch + cache | **none** | **yes — the risky one** | **yes — headless** |
 | 4 | Video surface | **medium** | **yes** | yes — flag-driven |
 | 5 | Long-press | medium | yes | needs 4 |
@@ -1155,7 +1246,7 @@ Honest list of what is **not yet proven**, each with when it gets resolved:
 |---|---|
 A confirmed-Canvas track list exists | ✅ **Phase 0 — done, 8 tracks (§14.0a)** |
 Canvas URLs are still live and resolve via our fetch path | Phase 3 |
-`@ProtoNumber` mapping survives the copy intact | Phase 1, via fixture-decode unit tests |
+`@ProtoNumber` mapping survives the copy intact | ✅ **Phase 1 — verified 21 = 21, files byte-identical** |
 Metrolist's Ktor 3.5.2 has no missing API for this code | **✅ Phase 1 — compiles clean**
 TextureView composites correctly under the existing background stack | Phase 4, on device |
 No DB schema change needed | Confirmed by design (§4.3, §11.4) |
@@ -1170,8 +1261,9 @@ None of these block starting Phase 1, which is a pure copy with no UI and no dev
 > self-sufficient. Read it fully before touching anything. Do not re-derive what is already
 > established here — it was all verified against running code and real devices.
 >
-> **Nothing in this project has been built yet. No Kotlin file has been modified. The only
-> file created is this spec.**
+> **Phases 0, 1, 1.5 and 2 are committed.** The `:spotify` module exists and the Spotify chain is
+> proven end to end against the live API. Phase 2 added the login UI, which renders correctly.
+> Phase 3 (Canvas fetch + cache) is next and is the highest-risk phase in the project.
 
 ---
 
@@ -1194,8 +1286,8 @@ single most important thing to understand before writing code.**
 |---|---|
 Working repo | `C:\musicapp\metrolist` |
 Branch | `testing` |
-HEAD | `7f168bf6ef4793c7ad6eb0e3f9cc8d88af74b937` — *"docs(mirror): feature guide, build history, issues and runbook"* |
-Working tree | **Clean**, except untracked `SPEC_SPOTIFY_CANVAS.md` (this file) |
+HEAD | `883d3cdd` - *"docs(spotify): fold Phase 1.5 findings back into the spec"* |
+Working tree | Phase 2 changes pending commit; everything committed before it is intact |
 Remotes | `origin` = MetrolistGroup/metrolist, `personal` = 3mzn/Metrolist. **Never push.** |
 Protected tag | `rollback/pre-video` → `1e4bf4618` — **must stay intact** |
 Reference repo | `C:\musicapp\SimpMusic` @ `b967fda`, v2.2.0 (code 59) |
@@ -1545,20 +1637,26 @@ flag**, not a gesture. **Phases 0–4 are complete without a single gesture exis
 are layered on last.
 
 Each phase: one commit, `testing`, explicit user authorisation required.
-Current status: **Phase 0 not yet started. Spec awaiting approval.**
+Current status: **Phases 0, 1, 1.5 and 2 are committed** (`97107e2e`, `42aaa9f8`, `b393250d`,
+`883d3cdd`, plus the Phase 2 commit). **Phase 3 — Canvas fetch and cache — is next**, and is
+the highest-risk phase in the project. Its two outstanding prerequisites are listed in
+**§14.1d**: confirm our own login actually persists a usable token, then close the loop by
+re-running the Phase 1.5 suite against that cookie.
 
 ### 16.16 If you are resuming
 
 1. Re-read §16.8 (the previous failure) before writing any playback code.
 2. Re-read the **ID trap** in §16.6 before writing any Canvas-fetch code. It is the mistake
    most likely to be made and most likely to be misdiagnosed.
-3. Confirm `git status` — should be clean at `b393250d` (Phases 0, 1 and 1.5 complete).
-4. Confirm `adb devices` shows `emulator-5556`.
-5. **Check with the user for approval to start Phase 2.** Phases 0, 1 and 1.5 are done and
-   committed; nothing beyond them has been started.
-6. **Phase 2 will need a live Spotify session** to close the loop. If the `sp_dc` cookie has
-   gone stale, the symptom is `isAnonymous=true` rather than an error — re-login in SimpMusic
-   and re-copy.
+3. Read **§14.1d** in full. It records the WebView `layoutParams` trap and the two
+   misleading experiments that preceded it, so neither is repeated.
+4. Confirm `git status` — clean once Phase 2 is committed.
+5. Confirm `adb devices` shows `emulator-5556`.
+6. **Clear the two outstanding items in §14.1d before writing Phase 3 code.** They need the
+   user to complete a real Spotify login, then a DataStore read, then a re-run of the
+   Phase 1.5 suite against the cookie our own login stored.
+7. **If the `sp_dc` cookie has gone stale**, the symptom is `isAnonymous=true` rather than an
+   error — re-login and re-copy.
 
 ### 16.17 Facts deliberately NOT established here
 
@@ -1570,6 +1668,7 @@ Canvas URLs still live and resolvable through our own fetch | ✅ **Phase 1.5 �
 Metrolist's Ktor 3.5.2 has nothing missing for this code | ✅ **Phase 1 — compiles clean** |
 The YouTube→Spotify ID mapping works | ✅ **Phase 1.5 — proven** (search + Canvas URL returned) |
 TextureView composites correctly under the existing background stack | Phase 4, on device |
+**Our own login persists a token the API accepts** | **⚠ Phase 2 — outstanding, §14.1d** |
 Whether a clean negative needs exactly 3 attempts or fewer in practice | Phase 3 |
 
 **No database schema change is required** — confirmed by design.
@@ -1594,8 +1693,15 @@ writes — main DB was 598 KB, WAL 4.1 MB), then
 
 ## 17. Open items
 
-None. All design decisions are locked and recorded above.
+**Two, both carried from Phase 2 and both blocking Phase 3** (§14.1d):
 
-**Phase 1.5 is complete. Phase 2 (login + token storage) is next, pending approval.**
-Phases 0, 1 and 1.5 are done: 97107e2e, 42aaa9f8, b393250d. The Spotify chain is proven
-end to end against the live API — see §14.1c.
+1. Log in for real on device and confirm the IntegrationScreen row flips to "Log out".
+2. Confirm the tokens really landed in `settings.preferences_pb`, then re-run
+   `:spotify:connectedDebugAndroidTest` with that cookie — all four tests must pass. This is
+   what catches a login UI that stores a well-formed but useless token.
+
+Both need the user to type their own Spotify credentials.
+
+**Phases 0, 1, 1.5 and 2 are done.** The Spotify chain is proven end to end against the live
+API (§14.1c) and the login screen renders (§14.1d). **Phase 3 — Canvas fetch and cache —
+is next**, the highest-risk phase, and it runs with no UI at all behind a temporary flag.

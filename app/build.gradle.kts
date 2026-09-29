@@ -414,6 +414,8 @@ dependencies {
     implementation(project(":betterlyrics"))
     implementation(project(":shazamkit"))
     implementation(project(":paxsenix"))
+    // Spotify Canvas, for the music-video background. Phase 2 of SPEC_SPOTIFY_CANVAS.
+    implementation(project(":spotify"))
 
     implementation(libs.ktor.client.core)
     implementation(libs.ktor.client.cio)
