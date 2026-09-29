@@ -542,6 +542,8 @@ reason to continue and accumulate breakage.
 
 ### Phase 0 — Pre-flight
 
+**Status:** ✅ **DONE - commit 97107e2ed**
+
 **No code.** Establish ground truth before writing anything.
 
 - ~~Confirm the emulator/device and build pipeline.~~ **SKIPPED by user** — compile + the full
@@ -598,9 +600,96 @@ that a no-Canvas track stays silent and does nothing.
 path, and the URLs must still be live. The list proves they *existed*; Phase 3 proves our port
 retrieves them.
 
+#### 14.1a Phase 1 result — `:spotify` module
+
+**16 files, 1469 lines.** 14 copied verbatim + 2 Ktor helpers.
+
+| Check | Result |
+|---|---|
+`:spotify:compileDebugKotlin` | **BUILD SUCCESSFUL** |
+`:app:compileFossDebugKotlin` | **BUILD SUCCESSFUL** |
+`:app:testFossDebugUnitTest` | **132 tests, 0 failures** (unchanged from base) |
+Ktor 3.5.2 compatibility | **Confirmed** — no missing API, no version bump needed |
+`@ProtoNumber` preservation | **Verified 21 = 21**, and `CanvasResponse.kt` / `TokenResponse.kt` are **byte-identical** to source beyond the package line and header |
+
+**Fidelity audit.** Every copied file's line delta was checked against its source:
+
+| Delta | Files | Cause |
+|---|---|---|
+**+30** | 11 files | The 30-line GPL-3.0 header, nothing else |
+**+32** | `SpotifyClient.kt` | header + 2 lines commenting the inlined OkHttp engine |
+**+42** | `SpotifyTotp.kt` | header + the collapsed `expect`/`actual` (12 lines: imports, function body, doc) |
+
+No logic was altered anywhere.
+
+**The three adaptations from §4.2.1, as actually performed:**
+
+1. `getEngine()` → **`HttpClient(OkHttp)`** at `SpotifyClient.kt:88`. Matches `:innertube`'s engine.
+2. `CurlLoggerPlugin.kt` — copied verbatim, package rewritten only.
+3. `BrotliEncoder.kt` — the `expect` declaration and the `androidMain` actual merged into one
+   file. **Finding worth recording:** the encoder's `encode()` throws
+   `UnsupportedOperationException`; only `decode()` is implemented, because `org.brotli:dec` is
+   decode-only. Unreachable in practice — Ktor only advertises `br` when a request asks for it,
+   and the Spotify client relies on gzip/deflate. Documented in the file so a future reader does
+   not mistake it for a bug.
+
+**New catalog entries:** `ktor-serialization-protobuf`, `kotlinx-serialization-protobuf`
+(needs a new `kotlinx-serialization = "1.10.0"` version key), `ktor-client-logging`,
+`kotlin-onetimepassword = "3.0.0"`.
+
+**Not yet exercised:** the module compiles but nothing calls it. Its behaviour is unproven until
+Phase 2 (login) and Phase 3 (fetch). Compilation proves the copy is *syntactically* faithful,
+not that it *behaves* — which is exactly what those phases are for.
+
+#### 14.1b Audit findings (Phase 1)
+
+A line-by-line diff against SimpMusic, ignoring only the GPL header and package line:
+
+| Result | Files |
+|---|---|
+**Identical** | 11 of 14 — all models, `Spotify.kt`, `SpotifyAuth.kt`, `StringExt.kt` |
+**Differ, documented only** | `SpotifyClient.kt` (engine inlined), `SpotifyTotp.kt` (`expect`/`actual` collapsed) |
+
+**Defect found and fixed:** my `HttpClient(OkHttp) {` edit landed at the wrong indentation,
+leaving the function body visually misaligned with the source. Corrected to match.
+
+**Pre-existing quirks in SimpMusic, deliberately preserved:**
+
+1. **`getSpotifyAccessToken` accepts `sTime` and `cTime` and never sends them.** Present in
+   SimpMusic's source identically. Documented with a comment at the call site so a future
+   reader doesn't "fix" it into a behaviour change.
+2. **`BrotliEncoder.encode()` throws.** `org.brotli:dec` is decode-only. Documented in the file.
+3. **`HttpCache` installed with no explicit storage directory.** Identical upstream.
+
+> **⚠ SECURITY FINDING — carry into Phase 2.** The Spotify client installs `Logging` at
+> `LogLevel.ALL` plus `CurlLogger`, and **neither redacts anything**. Every request therefore
+> prints in full, including the `sp_dc` cookie, the personal `Authorization: Bearer` token, and
+> the `Client-Token`. SimpMusic gates nothing on build type, so this is upstream behaviour.
+>
+> Two aggravating factors specific to Metrolist:
+> - Ktor's `Logger.DEFAULT` uses `println`, **not** `android.util.Log`. Metrolist's ProGuard
+>   strips `Log.v`/`Log.d` in release but **cannot strip `println`**, so this logging survives
+>   into release builds. It would not if it used Timber.
+> - The CurlLogger plugin *supports* `redactHeaders` (it prints `<redacted>`) — SimpMusic simply
+>   never sets it.
+>
+> **Not reachable yet:** `:app` does not depend on `:spotify`, so none of this is in an APK.
+>
+> **RESOLVED — fixed in Phase 1** (user delegated the call). Two changes, both additive, neither
+> touching logic:
+> 1. `redactHeaders = setOf("Cookie", "Authorization", "Client-Token")` on the CurlLogger plugin.
+> 2. `level = if (BuildConfig.DEBUG) LogLevel.ALL else LogLevel.NONE`, plus
+>    `buildFeatures { buildConfig = true }` in the module.
+>
+> Debug builds keep SimpMusic's full verbosity for diagnostics; release builds print nothing.
+> `LogLevel.NONE` rather than `INFO` because these are third-party API calls whose only value is
+> debugging, and the request bodies contain session material.
+
 ---
 
 ### Phase 1 — `:spotify` module
+
+**Status:** ✅ **DONE - commit PENDING** (see 14.1a)
 
 > **⚑ COPY, DON'T REWRITE.** SimpMusic's Spotify code is working, production code verified on
 > device. Take it **as it is**. The only permitted changes are the four in §4.2: package/import
@@ -633,6 +722,8 @@ because they are testable without a device or a network.
 
 ### Phase 2 — Login and token storage
 
+**Status:** ⏳ **PENDING**
+
 > **⚑ COPY, DON'T REWRITE.** Port `SpotifyAuth.kt`, `SpotifyClient`'s login calls, and
 > `SpotifyTotp.kt` **as they are** from SimpMusic. The TOTP flow in particular is delicate —
 > it depends on an external secrets repository, a spoofed client version string, and randomised
@@ -663,6 +754,8 @@ Canvas depends on the token, not the login label.
 ---
 
 ### Phase 3 — Canvas fetch and caching
+
+**Status:** ⏳ **PENDING**
 
 > **⚑ COPY, DON'T REWRITE.** Port `Spotify.kt`'s `getCanvas` and SimpMusic's
 > `LyricsCanvasRepositoryImpl.getCanvas` **as they are**. SimpMusic already has a working
@@ -704,6 +797,8 @@ the commit is clean.
 
 ### Phase 4 — Canvas video surface
 
+**Status:** ⏳ **PENDING**
+
 **Goal:** a Canvas renders full-screen behind the player, correctly, in all layouts.
 
 **In:**
@@ -735,6 +830,8 @@ the commit is clean.
 
 ### Phase 5 — Long-press gesture
 
+**Status:** ⏳ **PENDING**
+
 **Goal:** the 2s long-press engages and dismisses the Canvas. First real user-facing phase.
 
 **In:**
@@ -762,6 +859,8 @@ the commit is clean.
 ---
 
 ### Phase 6 — Swipe and artwork fade
+
+**Status:** ⏳ **PENDING**
 
 **Goal:** the reveal/hide interaction. Smallest, lowest-risk phase.
 
@@ -792,6 +891,8 @@ the commit is clean.
 ---
 
 ### Phase 7 — Settings, failure handling, credits
+
+**Status:** ⏳ **PENDING**
 
 **Goal:** the feature is complete, controllable, and correctly attributed.
 
@@ -824,7 +925,7 @@ with no Canvas and no orphaned UI.
 | # | Phase | UI risk | Needs device? | Verifiable without later phases? |
 |---|---|---|---|---|
 | 0 | Pre-flight | none | baseline | **✅ DONE** |
-| 1 | `:spotify` module | none | no | yes — compile + unit tests |
+| 1 | `:spotify` module | none | no | **✅ DONE** |
 | 2 | Login + tokens | low | **yes — real login** | yes |
 | 3 | Fetch + cache | **none** | **yes — the risky one** | **yes — headless** |
 | 4 | Video surface | **medium** | **yes** | yes — flag-driven |
@@ -912,7 +1013,7 @@ Honest list of what is **not yet proven**, each with when it gets resolved:
 A confirmed-Canvas track list exists | ✅ **Phase 0 — done, 8 tracks (§14.0a)** |
 Canvas URLs are still live and resolve via our fetch path | Phase 3 |
 `@ProtoNumber` mapping survives the copy intact | Phase 1, via fixture-decode unit tests |
-Metrolist's Ktor 3.5.2 has no missing API for this code | Phase 1, at compile |
+Metrolist's Ktor 3.5.2 has no missing API for this code | **✅ Phase 1 — compiles clean**
 TextureView composites correctly under the existing background stack | Phase 4, on device |
 No DB schema change needed | Confirmed by design (§4.3, §11.4) |
 
@@ -1287,7 +1388,7 @@ Current status: **Phase 0 not yet started. Spec awaiting approval.**
 A confirmed list of tracks that definitively have a Canvas | ✅ **Phase 0 — done, 8 tracks (§14.0a)** |
 Canvas URLs still live and resolvable through our own fetch | Phase 3 |
 `@ProtoNumber` mapping survives the copy | Phase 1, fixture-decode unit tests |
-Metrolist's Ktor 3.5.2 has nothing missing for this code | Phase 1, at compile time |
+Metrolist's Ktor 3.5.2 has nothing missing for this code | **✅ Phase 1 — compiles clean** |
 TextureView composites correctly under the existing background stack | Phase 4, on device |
 Whether a clean negative needs exactly 3 attempts or fewer in practice | Phase 3 |
 

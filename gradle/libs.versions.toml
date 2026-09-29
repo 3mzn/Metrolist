@@ -17,6 +17,8 @@ hilt = "2.60.1"
 hiltWork = "1.2.0"
 work = "2.10.0"
 ktor = "3.5.2"
+kotlinx-serialization = "1.10.0"
+onetimepassword = "3.0.0"
 ksp = "2.3.10"
 jsoup = "1.22.2"
 coil = "3.5.0"
@@ -109,8 +111,15 @@ ktor-client-cio = { module = "io.ktor:ktor-client-cio", version.ref = "ktor" }
 ktor-client-okhttp = { module = "io.ktor:ktor-client-okhttp", version.ref = "ktor" }
 ktor-client-content-negotiation = { module = "io.ktor:ktor-client-content-negotiation", version.ref = "ktor" }
 ktor-client-encoding = { module = "io.ktor:ktor-client-encoding", version.ref = "ktor" }
+ktor-client-logging = { module = "io.ktor:ktor-client-logging", version.ref = "ktor" }
 ktor-client-mock = { module = "io.ktor:ktor-client-mock", version.ref = "ktor" }
 ktor-serialization-json = { module = "io.ktor:ktor-serialization-kotlinx-json", version.ref = "ktor" }
+# Spotify Canvas speaks protobuf: the client sends Accept/Content-Type
+# application/protobuf and the response models use @ProtoNumber field indices.
+ktor-serialization-protobuf = { module = "io.ktor:ktor-serialization-kotlinx-protobuf", version.ref = "ktor" }
+kotlinx-serialization-protobuf = { module = "org.jetbrains.kotlinx:kotlinx-serialization-protobuf", version.ref = "kotlinx-serialization" }
+# TOTP for Spotify login; see SPEC_SPOTIFY_CANVAS.md 4.2.1
+kotlin-onetimepassword = { module = "dev.turingcomplete:kotlin-onetimepassword", version.ref = "onetimepassword" }
 
 jsoup = { module = "org.jsoup:jsoup", version.ref = "jsoup" }
 
