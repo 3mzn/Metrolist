@@ -197,6 +197,8 @@ import com.metrolist.music.utils.makeTimeString
 import com.metrolist.music.utils.rememberEnumPreference
 import com.metrolist.music.utils.rememberPreference
 import com.metrolist.music.utils.safeDataStoreEdit
+import com.metrolist.music.di.SpotifyCanvasEntryPoint
+import com.metrolist.music.utils.spotify.CanvasResult
 import dagger.hilt.android.EntryPointAccessors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -992,14 +994,76 @@ fun BottomSheetPlayer(
         state = state,
         modifier = modifier,
         background = {
+            // ---- Spotify Canvas, SPEC_SPOTIFY_CANVAS Phase 4. ---------------------------
+            // TEMPORARY: the flag stands in for the long-press gesture, which arrives in Phase 5.
+            //
+            // How far the sheet must be up before the Canvas is shown. Low enough that the Canvas
+            // is already visible during the expand animation, high enough that at the mini player
+            // no full-screen layer sits over the app. Phase 5 replaces this with the gesture.
+            // With the flag off, or when the track has no Canvas, every value below stays at its
+            // Normal-state default and the player behaves exactly as it did before this project.
+            val canvasRepository =
+                remember(context) {
+                    EntryPointAccessors
+                        .fromApplication(context.applicationContext, SpotifyCanvasEntryPoint::class.java)
+                        .spotifyCanvasRepository()
+                }
+            var canvasResult by remember { mutableStateOf<CanvasResult?>(null) }
+            // Stays false until the Canvas reports a rendered frame, so the existing background is
+            // held in place and there is no black flash (spec 7.4).
+            var canvasFirstFrameReady by remember { mutableStateOf(false) }
+
+            // Phase 3 already fetched and cached the Canvas on track change, so this is normally a
+            // cache read rather than a network call.
+            LaunchedEffect(mediaMetadata?.id, SPOTIFY_CANVAS_RENDER_ENABLED) {
+                if (!SPOTIFY_CANVAS_RENDER_ENABLED) {
+                    canvasResult = null
+                    canvasFirstFrameReady = false
+                    return@LaunchedEffect
+                }
+                val meta = mediaMetadata ?: return@LaunchedEffect
+                canvasFirstFrameReady = false
+                canvasResult = canvasRepository.cachedCanvas(meta.id)
+            }
+
+            // TEMPORARY Phase 4. Gated on the sheet's continuous `progress`, NOT on
+            // `state.isExpanded`.
+            //
+            // `isExpanded` is `value == upperBound` - exact equality against the anchor - so it is
+            // false for the whole of the expand and the collapse. Gating on it made the Canvas pop
+            // in only after the animation had finished: the normal background stayed visible
+            // through the entire slide up, and again through the finger-tracked slide down.
+            //
+            // `progress` runs continuously from 0 (collapsed) to 1 (expanded), so the Canvas
+            // appears as the sheet rises and hides as it falls, animations included.
+            val sheetProgress by remember(state) { derivedStateOf { state.progress } }
+            val canvasActive =
+                SPOTIFY_CANVAS_RENDER_ENABLED &&
+                    canvasResult != null &&
+                    sheetProgress > CANVAS_ACTIVE_PROGRESS_THRESHOLD
+
             Box(
                 modifier =
                     Modifier
                         .fillMaxSize()
                         .background(bottomSheetBackgroundColor),
             ) {
+                // The Canvas video, as the FIRST child so everything below composites on top of it:
+                // the artwork, the title, the transport row and the header all stay above it and
+                // fully legible, which is what spec 5 requires (no scrim, Canvas never over the
+                // controls). Drawn last it painted over the "Now Playing" header instead.
+                CanvasBackgroundLayer(
+                    canvas = canvasResult,
+                    isActive = canvasActive,
+                    modifier = Modifier.fillMaxSize(),
+                    onFirstFrameReady = { canvasFirstFrameReady = true },
+                    onPlaybackError = { canvasResult = null },
+                )
+
                 when (playerBackground) {
-                    PlayerBackgroundStyle.BLUR -> {
+                    // While the Canvas is up it replaces the background entirely (spec 5). The
+                    // crossfade between them is Phase 5, where the gesture provides the timing.
+                    PlayerBackgroundStyle.BLUR -> if (!canvasActive) {
                         // Single AsyncImage with Coil crossfade — no AnimatedContent snap.
                         // Coil keeps the old image visible while loading the new one, then
                         // crossfades between them. No gap, no flash.
@@ -1040,7 +1104,7 @@ fun BottomSheetPlayer(
                         }
                     }
 
-                    PlayerBackgroundStyle.GRADIENT -> {
+                    PlayerBackgroundStyle.GRADIENT -> if (!canvasActive) {
                         AnimatedContent(
                             targetState = gradientColors,
                             transitionSpec = {
@@ -1074,20 +1138,25 @@ fun BottomSheetPlayer(
                         }
                     }
 
-                    else -> {
+                    else -> if (!canvasActive) {
                         PlayerBackgroundStyle.DEFAULT
                     }
                 }
 
-                // Track-change color wash — always rendered so animation stays alive across recompositions
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(animatedWashColor.copy(alpha = 0.4f)),
-                )
+                // Track-change color wash — always rendered so animation stays alive across
+                // recompositions. Suppressed while a Canvas renders: particles and the wash belong
+                // to the normal background, and spec 5 forbids either over a Canvas.
+                if (!canvasActive) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(animatedWashColor.copy(alpha = 0.4f)),
+                    )
+                }
 
-                // Bass-reactive particles — full screen behind everything
-                if (useNewPlayerDesign) {
+                // Bass-reactive particles — full screen behind everything. Never drawn over a
+                // Canvas; they return only when the Canvas itself is dismissed (spec 5).
+                if (useNewPlayerDesign && !canvasActive) {
                     PlayerParticles(
                         modifier = Modifier.fillMaxSize(),
                         baseColor = TextBackgroundColor,

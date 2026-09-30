@@ -293,6 +293,24 @@ class SpotifyCanvasRepository @Inject constructor(
         }
     }
 
+    /**
+     * Returns an already-resolved Canvas for [videoId], or null.
+     *
+     * **Read-only by design: never touches the network**, and deliberately **not** gated on
+     * [SPOTIFY_CANVAS_FETCH_ENABLED]. That flag governs fetching new Canvas data; this only reads
+     * what a previous fetch already stored. Conflating the two would mean the render layer silently
+     * renders nothing whenever fetching is off, even with a perfectly good Canvas sitting in the
+     * cache — which is what happened on the first Phase 4 run.
+     *
+     * Returns null both when the track has no Canvas *and* when it simply has not been looked up
+     * yet. The caller cannot tell those apart, and does not need to: both mean "no Canvas to show".
+     */
+    suspend fun cachedCanvas(videoId: String): CanvasResult? {
+        val entry = cachedEntry(videoId) ?: return null
+        val url = entry.canvasUrl ?: return null
+        return CanvasResult(entry.isVideo, url, entry.canvasThumbUrl)
+    }
+
     // ---------------------------------------------------------------- cache index
 
     private suspend fun cachedEntry(videoId: String): CanvasCacheEntry? = readIndex()[videoId]

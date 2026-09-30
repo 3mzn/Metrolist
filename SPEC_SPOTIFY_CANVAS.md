@@ -994,6 +994,87 @@ SpotifyCanvas: cache hit for zrW87-xUvt4 'Dat Bad'
 **Adjudicated on-device:** with the legacy library removed, `GoogleAuthenticator` constructs, the
 TOTP is produced, and Spotify returns `isAnonymous=false`. The fix is not theoretical.
 
+#### 14.1h Phase 4 — the Canvas renders. Five bugs, four of them mine.
+
+**Status: DONE.** The Canvas is on screen behind the player: full-screen, centre-cropped, looping,
+behind the artwork and the controls. This is the thing the previous attempt never reached (§16.8).
+
+```
+SpotifyCanvas: cache hit for zrW87-xUvt4 'Dat Bad' -> .../09b72ea8cb8f44128f02a26a5331d039.cnvs.mp4
+SpotifyCanvas: first canvas frame rendered
+```
+
+**Architecture, and why it cannot repeat the previous failure:**
+
+| Decision | Reason |
+|---|---|
+| **TextureView**, not SurfaceView (§7.1) | A SurfaceView composites *above* the UI layer, so it would ignore the 800ms wash and pop in at full opacity. Verified visually: the header and artwork sit on top. |
+| **A separate, muted ExoPlayer** owned by the UI layer (§7.2) | Not a second output on the music player. No `MergingMediaSource`, so the `Children enabled at different positions` class of failure is structurally impossible. |
+| `handleAudioFocus = false` | Verified: **zero audio-focus events in logcat** across a full run. The music is untouchable by construction. |
+| Its own `CacheDataSource` over the Canvas `SimpleCache` | Shares no state with the music player's cache. |
+
+**Verified on device:** renders; genuinely animating (3 distinct frames, MD5-compared); gradient,
+blur, colour wash and particles all suppressed while it is up; silent fallback on a no-Canvas track;
+audio uninterrupted; portrait. Gate: compile clean, **139/139**.
+
+#### The five bugs — four were mine, and the user found every one
+
+Worth recording in full, because the pattern is the lesson: **four of these were invisible to the
+build, the tests, and my own on-device checks.** The user found all four by using the app.
+
+**1. A full-screen view blocking every touch.** The player is a bottom sheet that stays composed when
+collapsed, so the TextureView sat invisibly over the entire app and ate every press — while looking
+perfectly normal. Three "fixes" failed before the right one:
+
+| Attempt | Why it did not work |
+|---|---|
+| `dispatchTouchEvent`/`onTouchEvent` → false | The event is still *delivered* to the view first; the player beneath never receives it |
+| `isEnabled = false` | `dumpsys activity top` showed the view still `V..D` — **Android hit-tests disabled views**; disabled stops *handling*, not *receiving* |
+| `clearVideoTextureView()` | Removes the video surface, but the View stays full-size in the hierarchy |
+| **zero size + `View.GONE`** | A zero-area view contains no point, so no touch can land on it. Confirmed: `G.ED..... 0,0-0,0` |
+
+The decisive clue came from the user: *it blocks even for songs with no Canvas.* With no Canvas there
+is no surface to clear, so the culprit had to be the View itself, not the video. That is what pointed
+at the view dump instead of at the player.
+
+**2. Dead after one collapse.** `stop()` on collapse, then a re-expand guard that compared only the
+URL. The URL was unchanged, so `prepare()`/`play()` were skipped and the Canvas stayed dead until the
+track changed. Fixed with `pause()` on collapse plus an explicit `STATE_IDLE` recovery.
+
+**3. Written from inside `DisposableEffect`.** `firstFrameSeen = false` was a side effect Compose
+does not reliably run, so the gate never re-armed.
+
+**4. Not gated on the animation.** This was the user's diagnosis and the code proved it exactly:
+`BottomSheetState.isExpanded` is `value == upperBound` — **exact equality against the anchor** — so
+it is false for the whole of the expand and collapse animations. The normal background was visible
+through the entire slide up, and again through the finger-tracked slide down. Now gated on
+`state.progress`, which is continuous, with `CANVAS_ACTIVE_PROGRESS_THRESHOLD = 0.35f`.
+
+**5. Media3 has no `videoTextureView` getter.** Assumed one existed, spent a build on it. `javap` on
+`media3-exoplayer-1.10.1` confirms only `setVideoTextureView` / `clearVideoTextureView` are exposed,
+so attachment is tracked locally.
+
+#### ⚠ §7.4 is deliberately NOT done
+
+`CanvasBackgroundLayer` reports its first frame; `Player.kt` assigns the flag and **never reads it**.
+The background is swapped when the Canvas becomes active, not when its first frame is ready.
+
+This is on purpose, not an oversight. The gate only matters once the Canvas appears **after a
+deliberate gesture** — spec §6.1 issues no fetch before the 2s hold completes, so there is a real
+window before the first decoded frame, and §7.4's crossfade is what hides it. Today the Canvas
+appears on its own for any track that has one and the surface already holds a frame, so there is
+nothing to hide. Wiring it now would gate a swap that already looks instant and could not be tested
+until the gesture exists.
+
+**Carried into Phase 5** as a requirement and a verification item.
+
+**Still unverified:** landscape (the heavy-crop case), pause-keeps-looping, and `isFullScreen`.
+
+**Committed state:** both `SPOTIFY_CANVAS_FETCH_ENABLED` and `SPOTIFY_CANVAS_RENDER_ENABLED` are
+`false`, so the committed tree renders nothing and the player behaves exactly as it did before.
+
+---
+
 #### 14.1g Phase 3 — safety checks, and a second real bug they caught
 
 **Status: DONE — commit `42eccd38c`**
@@ -1283,7 +1364,7 @@ the commit is clean.
 
 ### Phase 4 — Canvas video surface
 
-**Status:** ⏳ **PENDING**
+**Status:** ✅ **DONE** (results in §14.1h) — **⚠ spec §7.4 deliberately deferred to Phase 5**
 
 **Goal:** a Canvas renders full-screen behind the player, correctly, in all layouts.
 
@@ -1298,6 +1379,20 @@ the commit is clean.
 - Controls legible with no scrim (§5.3).
 
 **Out:** every gesture. No swipe, no long-press. Driven by the flag from P3.
+
+> **⚠ §7.4 (first-frame gate) is NOT implemented and is deferred to Phase 5, deliberately.**
+> `CanvasBackgroundLayer` reports its first frame via `onFirstFrameReady`, but `Player.kt` assigns
+> the flag and never reads it, so the background is swapped when the Canvas becomes *active* rather
+> than when its first frame is *ready*.
+>
+> It has not mattered yet: the Canvas currently appears on its own for any track that has one, and
+> by then the surface already holds a decoded frame. The gate only becomes load-bearing once the
+> Canvas appears **after a deliberate gesture**, because spec §6.1 issues no fetch before the 2s hold
+> completes — that leaves a real window between the gesture and the first decoded frame, and
+> §7.4's crossfade-from-the-existing-background is precisely what hides it. Wiring it now would
+> gate a swap that already looks instant, and it could not be tested until the gesture exists.
+>
+> **Phase 5 must wire §7.4 as part of the wash**, and must add it to its own verification list.
 
 **Gate:** compile + 132 tests.
 
@@ -1326,6 +1421,11 @@ the commit is clean.
 - Cancel on early release; **no fetch issued before 2000ms**.
 - First engagement sets the phase gate to the real gesture and **retires the temporary flag**.
 - 800ms wash in; 800ms restore on dismissal, 400ms artwork return to opaque.
+- **⚠ Implement spec §7.4 here, not before** — Phase 4 deferred it. The Canvas only appears
+  after the 2s hold completes and no fetch was issued before it, so there is a genuine window
+  between the gesture and the first decoded frame. Hold the existing background until
+  `onFirstFrameReady`, then crossfade over 800ms. This is the one thing that makes the no-black-flash
+  guarantee true rather than incidental.
 
 **Out:** the swipe gesture.
 
@@ -1336,6 +1436,9 @@ the commit is clean.
 - Release at 1.5s → nothing happens, **and no network request** (check the log).
 - Haptic fires at 2s, not on press.
 - Second 2s hold → everything restored, Canvas gone.
+- **No black flash on a first-ever play of a Canvas track** — hold the normal background until the
+  first frame, then crossfade. This verifies the deferred §7.4 work (§14.1h).
+- Collapse mid-wash and re-expand: no partial-alpha Canvas left behind.
 - On a no-Canvas track → silent no-op.
 - Not logged in → toast only.
 - **Audio is never interrupted** — the hard requirement from §7.2.
