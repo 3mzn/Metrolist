@@ -439,6 +439,7 @@
     <string name="log_in_to_spotify">Log in to Spotify</string>
     <string name="spotify_logged_in">Logged in</string>
     <string name="spotify_login_success">Logged in to Spotify</string>
+    <string name="canvas_login_required">Log in to Spotify to use Canvas</string>
     <string name="logging_in">Logging in…</string>
 
     <string name="scrobbling_configuration">Scrobbling configuration</string>

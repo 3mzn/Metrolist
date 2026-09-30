@@ -67,15 +67,6 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.math.abs
 
-/**
- * TEMPORARY. Phase 3 gate: the fetch runs on track change only when this is true, and it is
- * **false** in the committed state so the player behaves exactly as it did before this phase.
- * It was flipped to true only to gather the logcat evidence in spec 14.1f.
- * Phase 4 replaces this flag with the real rendering surface; Phase 5 replaces the flag with
- * the long-press gesture. Do not leave it on.
- */
-const val SPOTIFY_CANVAS_FETCH_ENABLED = false
-
 /** Spec 9.2: consecutive Spotify API failures that auto-disable the feature. */
 const val SPOTIFY_CANVAS_FAILURE_LIMIT = 3
 
@@ -128,6 +119,14 @@ class SpotifyCanvasRepository @Inject constructor(
     private val spotify = Spotify()
 
     /**
+     * One-shot login check for the Canvas long-press handler (spec §6.1).
+     *
+     * Thin delegate so the player UI needs only this repository. Reads the stored cookie —
+     * no network, no token minting.
+     */
+    suspend fun isLoggedIn(): Boolean = sessionRepository.isLoggedInNow()
+
+    /**
      * Fetches, caches and returns the Canvas for one track, or null when there is none.
      *
      * Never throws and never blocks playback: every failure path resolves to null.
@@ -139,8 +138,9 @@ class SpotifyCanvasRepository @Inject constructor(
         duration: Int,
     ): CanvasResult? =
         withContext(Dispatchers.IO) {
-            if (!SPOTIFY_CANVAS_FETCH_ENABLED) return@withContext null
-
+            // No flag gate: this runs only when called, and Phase 5 calls it solely from the
+            // completed 1s hold (spec §6.1 — no fetch before the threshold). The Phase 3
+            // track-change hook that used to call this is gone.
             cachedEntry(videoId)?.let { entry ->
                 if (entry.isConfirmedEmpty) {
                     Timber.tag(TAG).d("no canvas (cached negative) for $videoId '$title'")
@@ -244,7 +244,7 @@ class SpotifyCanvasRepository @Inject constructor(
             return Outcome.CleanNegative
         }
         Timber.tag(TAG).d(
-            "picked Spotify track $spotifyTrackId ('${track?.item?.data?.name}') for $videoId " +
+            "picked Spotify track $spotifyTrackId ('${track.item?.data?.name}') for $videoId " +
                 "'$title' out of ${items.size} candidate(s)",
         )
 
@@ -296,11 +296,9 @@ class SpotifyCanvasRepository @Inject constructor(
     /**
      * Returns an already-resolved Canvas for [videoId], or null.
      *
-     * **Read-only by design: never touches the network**, and deliberately **not** gated on
-     * [SPOTIFY_CANVAS_FETCH_ENABLED]. That flag governs fetching new Canvas data; this only reads
-     * what a previous fetch already stored. Conflating the two would mean the render layer silently
-     * renders nothing whenever fetching is off, even with a perfectly good Canvas sitting in the
-     * cache — which is what happened on the first Phase 4 run.
+     * **Read-only by design: never touches the network.** This only reads what a previous
+     * fetch already stored — which is what the first Phase 4 run proved by rendering nothing
+     * whenever fetching was off, despite a perfectly good Canvas sitting in the cache.
      *
      * Returns null both when the track has no Canvas *and* when it simply has not been looked up
      * yet. The caller cannot tell those apart, and does not need to: both mean "no Canvas to show".

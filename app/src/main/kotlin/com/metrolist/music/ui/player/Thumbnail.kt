@@ -11,6 +11,10 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
+import android.os.VibrationEffect
+import android.os.Vibrator
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
 import androidx.compose.foundation.layout.Arrangement
@@ -45,6 +49,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -60,6 +65,8 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.util.fastAll
+import androidx.compose.ui.util.fastAny
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -96,9 +103,37 @@ import com.metrolist.music.ui.component.CastButton
 import com.metrolist.music.utils.rememberEnumPreference
 import com.metrolist.music.utils.rememberPreference
 import kotlinx.coroutines.delay
+import timber.log.Timber
 
 /** Cover art center in root coordinates, updated by ThumbnailItem. */
 val LocalCoverArtCenter = staticCompositionLocalOf { Offset.Zero }
+
+/**
+ * SPEC_SPOTIFY_CANVAS Phase 5: the Canvas hold duration (spec §6.1).
+ *
+ * **1000ms — reduced from the original 2000ms at the user's request.** Invisible: no progress
+ * ring, no overlay, one haptic at the threshold and cancel on early release.
+ *
+ * The shorter window makes the "no fetch before the threshold" rule more load-bearing rather than
+ * less: a 1s hold is short enough that an accidental brush of the artwork reaches it, so the early
+ * release path carries more of the real usage. If it turns out too easy to trigger by accident,
+ * this is the single value to change — nothing else in the gesture depends on its magnitude.
+ *
+ * No fetch is issued before this window completes, whatever the value.
+ */
+private const val CANVAS_HOLD_MS = 1000L
+
+/**
+ * Log tag for the Canvas hold gesture.
+ *
+ * Deliberately kept, unlike other diagnostics. The first implementation of this gesture failed
+ * *silently and permanently* — a wrong exception type meant every press after the first was
+ * ignored with no crash and no log — and diagnosing that cost several build cycles. Timber is
+ * stripped by Metrolist's ProGuard config in release, so this costs nothing in the shipped build
+ * but leaves a trail in debug. One tag, used at both terminal paths, so "nothing happened" is never
+ * ambiguous again.
+ */
+private const val TAG_HOLD = "CanvasHold"
 
 /**
  * Pre-calculated thumbnail dimensions to avoid repeated calculations during recomposition.
@@ -216,6 +251,7 @@ fun Thumbnail(
     isLandscape: Boolean = false,
     isListenTogetherGuest: Boolean = false,
     onCoverArtCenterChanged: (Offset) -> Unit = {},
+    onCanvasHold: () -> Unit = {},
 ) {
     val playerConnection = LocalPlayerConnection.current ?: return
     val context = LocalContext.current
@@ -425,6 +461,7 @@ fun Thumbnail(
                                     coverArtCenter = it
                                     onCoverArtCenterChanged(it)
                                 },
+                                onCanvasHold = onCanvasHold,
                             )
                         }
                     }
@@ -524,6 +561,7 @@ private fun ThumbnailItem(
     currentMediaThumbnail: String? = null,
     onCoverArtCenter: (Offset) -> Unit = {},
     modifier: Modifier = Modifier,
+    onCanvasHold: () -> Unit = {},
 ) {
     val incrementalSeekSkipEnabled by rememberPreference(SeekExtraSeconds, defaultValue = false)
     var skipMultiplier by remember { mutableIntStateOf(1) }
@@ -547,6 +585,10 @@ private fun ThumbnailItem(
     )
     val isCurrentItem = item.mediaId == currentMediaId
     val pulseGated = coverPulse && useNewPlayerDesign && isCurrentItem
+
+    // SPEC_SPOTIFY_CANVAS Phase 5: the 2s Canvas hold lives on the artwork square only.
+    val latestOnCanvasHold by rememberUpdatedState(onCanvasHold)
+    val canvasVibrator = remember(context) { context.getSystemService(Vibrator::class.java) }
 
     Box(
         modifier = modifier
@@ -612,6 +654,72 @@ private fun ThumbnailItem(
                     val s = if (pulseGated) CoverBassPulse.scaleFor(pulseIntensity) else 1f
                     scaleX = s
                     scaleY = s
+                }
+                .pointerInput(isCurrentItem) {
+                    // `detectTapGestures` cannot do this job: its long-press fires at the platform
+                    // timeout (~400ms), not the 1s we want. So this is hand-rolled: hold still for the full
+                    // window with the finger down and the hold registers; lift early, drift past
+                    // touch slop, or get stolen by the carousel scroll and nothing happens.
+                    //
+                    // Current item only: a hold on a peeking neighbour must not engage the Canvas
+                    // for the centred track.
+                    if (!isCurrentItem) return@pointerInput
+                    // Consuming nothing at all is deliberate: the carousel's own drag detector must
+                    // keep winning, and Phase 5 depends on a stolen mid-hold silently cancelling
+                    // rather than the horizontal swipe breaking.
+                    awaitEachGesture {
+                        awaitFirstDown()
+                        // The hold window, written with `withTimeoutOrNull` so there is **no
+                        // exception to catch and therefore no exception type to get wrong**.
+                        //
+                        // That is deliberate, and it is a scar. The first version used `withTimeout`
+                        // in a `try`/`catch`, and it failed silently and permanently: inside a
+                        // pointerInput scope, `withTimeout` resolves to the AwaitPointerEventScope
+                        // *member*, which shadows the kotlinx import and throws
+                        // PointerEventTimeoutCancellationException — a plain CancellationException,
+                        // unrelated to kotlinx's TimeoutCancellationException. Catching the wrong one
+                        // missed forever, the exception escaped and killed this handler for good, and
+                        // every subsequent press did nothing with no crash and no log.
+                        //
+                        // `withTimeoutOrNull` returns null instead of throwing, so that whole class
+                        // of mistake cannot recur here. Read of ui 1.11.4 source
+                        // (SuspendingPointerInputFilter.kt) confirmed the contract. If this gesture
+                        // is ever moved out of a pointer scope, note that the *kotlinx*
+                        // withTimeoutOrNull has a different signature and semantics.
+                        //
+                        // No touch-slop check: a drifting finger still counts as holding (platform
+                        // long-press semantics). A real scroll is still a silent cancel, because the
+                        // carousel's consumption surfaces as isConsumed below.
+                        val reachedThreshold =
+                            withTimeoutOrNull(CANVAS_HOLD_MS) {
+                                while (true) {
+                                    val event = awaitPointerEvent()
+                                    // (changedToUp() is foundation-internal; !pressed is the
+                                    // public equivalent.)
+                                    if (event.changes.fastAll { !it.pressed }) {
+                                        // Lift before the window ends: abandoned press, costs
+                                        // nothing, and — critically — issues no fetch (spec §6.1).
+                                        return@withTimeoutOrNull
+                                    }
+                                    if (event.changes.fastAny { it.isConsumed }) {
+                                        // Stolen mid-hold (carousel scroll): nothing.
+                                        return@withTimeoutOrNull
+                                    }
+                                }
+                            } == null
+
+                        if (reachedThreshold) {
+                            // Full window elapsed with the finger still down: the hold registered.
+                            // Haptic fires here, at the threshold — never on press (spec §6.1).
+                            Timber.tag(TAG_HOLD).d("canvas hold threshold reached")
+                            canvasVibrator?.vibrate(
+                                VibrationEffect.createOneShot(50, VibrationEffect.DEFAULT_AMPLITUDE),
+                            )
+                            latestOnCanvasHold()
+                        } else {
+                            Timber.tag(TAG_HOLD).d("hold abandoned before the threshold")
+                        }
+                    }
                 }
         ) {
             if (hidePlayerThumbnail) {

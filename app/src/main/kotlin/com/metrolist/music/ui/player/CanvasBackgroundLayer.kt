@@ -59,20 +59,15 @@ import timber.log.Timber
 private const val TAG = "SpotifyCanvas"
 
 /**
- * TEMPORARY. Phase 4 renders the Canvas behind the player whenever this is true. Phase 5 replaces
- * this flag with the long-press gesture, so the committed default must be false.
- */
-const val SPOTIFY_CANVAS_RENDER_ENABLED = false
-
-/**
- * TEMPORARY. How far the player sheet must be raised before the Canvas is considered on screen.
+ * How far the player sheet must be raised before the Canvas is considered on screen.
  *
  * `BottomSheetState.isExpanded` cannot be used for this: it is `value == upperBound`, exact
  * equality against the anchor, so it stays false throughout the expand and collapse animations and
  * the Canvas would appear only after the sheet had finished moving. `progress` is continuous.
  *
  * Not zero, because below it the sheet is effectively the mini player, where a full-screen Canvas
- * layer would sit over the rest of the app. Phase 5 replaces this threshold with the gesture.
+ * layer would sit over the rest of the app. Not one either, so a collapsed sheet still gets the
+ * 800ms fade-out to play (spec §6.4) before the view goes GONE.
  */
 const val CANVAS_ACTIVE_PROGRESS_THRESHOLD = 0.35f
 
@@ -143,7 +138,7 @@ private val CANVAS_AUDIO_ATTRIBUTES: AudioAttributes =
  * decoded frame.
  *
  * The gate only becomes load-bearing once the Canvas appears *after a deliberate gesture*: spec 6.1
- * issues no fetch before the 2s hold completes, so there is a real window between the gesture and
+ * issues no fetch before the 1s hold completes, so there is a real window between the gesture and
  * the first decoded frame, and spec 7.4's crossfade-from-the-existing-background is what hides it.
  * **Phase 5 must wire this up as part of the wash** - see its verification list. Until then there is
  * a theoretical black gap on the first play of a Canvas track, which has not been observed on
@@ -159,6 +154,11 @@ private val CANVAS_AUDIO_ATTRIBUTES: AudioAttributes =
  *
  * Lifecycle: the ExoPlayer and the TextureView are released only when this composable leaves the
  * tree. Neither is stopped when the song pauses or the app is backgrounded.
+ *
+ * Phase 5: the [onFirstFrameReady] gate is now honoured by the caller, so the normal background is
+ * held until this reports a rendered frame and the 800ms crossfade begins (spec §7.4). Through
+ * Phase 4 that gate was wired but dead, and only appeared to work because the Canvas arrived on its
+ * own rather than after a gesture.
  */
 @OptIn(UnstableApi::class)
 @Composable
@@ -170,6 +170,29 @@ fun CanvasBackgroundLayer(
      * keeps its view and its decoded state but is fully transparent and takes no touches.
      */
     isActive: Boolean = canvas != null,
+    /**
+     * Animated wash value, 0..1, owned by the caller (spec §6.4 — 800ms in and out). Multiplied
+     * into the layer's own visibility alpha. Kept separate from [isActive] so the 800ms fade-out
+     * can render while the layer is still mounted: `isActive` going false collapses the view
+     * immediately, which would cut the fade dead.
+     *
+     * Named `washAlpha` and not `alpha` deliberately: inside the `graphicsLayer` block below, a
+     * parameter named `alpha` would shadow `GraphicsLayerScope.alpha` and the assignment would try
+     * to write the caller's val.
+     */
+    washAlpha: Float = 1f,
+    /**
+     * Whether the player sheet is meaningfully raised. When false the view goes GONE immediately,
+     * even mid-fade: a collapsing sheet must never leave a full-screen layer over the app, and
+     * nobody watches a crossfade on a sheet that is sliding away.
+     */
+    sheetUp: Boolean = true,
+    /**
+     * Bumped by the caller on every fresh engagement. The first-frame listener is keyed on it so
+     * that re-engaging an already-playing item — same URL, player warm, no new callback coming —
+     * still reports readiness instead of wedging the wash at 0 forever.
+     */
+    readinessKey: Any? = null,
     onFirstFrameReady: () -> Unit = {},
     onPlaybackError: () -> Unit = {},
 ) {
@@ -234,13 +257,16 @@ fun CanvasBackgroundLayer(
         exoPlayer.play()
     }
 
-    var firstFrameSeen by remember { mutableStateOf(false) }
+    // Latched per URL: a new track's video must earn its own first frame before the wash may
+    // start (spec §7.4). Without the key, a previous track's latched `true` would open the gate
+    // before the new video had decoded a single frame.
+    var firstFrameSeen by remember(canvas?.canvasUrl) { mutableStateOf(false) }
 
     // Media3 exposes no getter for the currently attached TextureView, so attachment is tracked
     // here. The surface is attached whenever the Canvas is on screen and cleared when it is not;
     // clearing is what actually removes the view from the touch dispatch while collapsed.
     var attachedTextureView by remember { mutableStateOf<TextureView?>(null) }
-    DisposableEffect(exoPlayer, canvas?.canvasUrl) {
+    DisposableEffect(exoPlayer, canvas?.canvasUrl, readinessKey) {
         if (canvas != null) {
             val listener =
                 object : Player.Listener {
@@ -253,6 +279,9 @@ fun CanvasBackgroundLayer(
                     }
                 }
             exoPlayer.addListener(listener)
+            // Already warm (re-engagement of the same URL): no new callback is coming, because the
+            // player never stopped. Report immediately instead of wedging the wash at 0.
+            if (firstFrameSeen) onFirstFrameReadyState()
             onDispose { exoPlayer.removeListener(listener) }
         } else {
             onDispose { }
@@ -281,8 +310,12 @@ fun CanvasBackgroundLayer(
     // Zero size plus GONE is the only thing that actually takes the view out of hit-testing: a
     // zero-area view contains no point, so no touch can land on it. Confirmed against
     // `dumpsys activity top`, which showed the view at `0,0-900,1600` before this change.
+    // Full-size only while genuinely on screen. Zero-size + GONE is what takes the view out of
+    // hit-testing (see the note above): `sheetUp` is part of the condition so a collapse hides the
+    // view promptly even while the 800ms fade is still running out.
+    val onScreen = isActive && canvas != null && sheetUp
     val layerModifier =
-        if (isActive && canvas != null) {
+        if (onScreen) {
             modifier
         } else {
             // `size(0.dp)` rather than `fillMaxSize`, and GONE via alpha 0 + no layout footprint.
@@ -290,7 +323,7 @@ fun CanvasBackgroundLayer(
         }
 
     AndroidView(
-        modifier = layerModifier.graphicsLayer { alpha = if (isActive && canvas != null) 1f else 0f },
+        modifier = layerModifier.graphicsLayer { alpha = if (onScreen) washAlpha.coerceIn(0f, 1f) else 0f },
         factory = { ctx ->
             // Named rather than using `apply`, because the listener needs a reference to the
             // TextureView itself and `this` inside the anonymous object is the listener.
@@ -327,7 +360,9 @@ fun CanvasBackgroundLayer(
         // the sheet is collapsed. `isEnabled` is belt and braces for the case where the view
         // override is ever lost.
         update = { view ->
-            val shouldShow = isActive && canvas != null
+            // Same condition as the modifier above: the view must be gone from hit-testing the
+            // moment the sheet drops, fade or no fade.
+            val shouldShow = isActive && canvas != null && sheetUp
             // Hidden and zero-sized while inactive, so it is not merely transparent but genuinely
             // absent from hit-testing. See the note above the AndroidView.
             view.visibility = if (shouldShow) View.VISIBLE else View.GONE

@@ -302,9 +302,6 @@ class MusicService :
     lateinit var playbackProgressTracker: com.metrolist.music.playback.PlaybackProgressTracker
 
     @Inject
-    lateinit var spotifyCanvasRepository: com.metrolist.music.utils.spotify.SpotifyCanvasRepository
-
-    @Inject
     lateinit var songSharingRepository: com.metrolist.music.social.SongSharingRepository
 
     @Inject
@@ -2755,23 +2752,9 @@ class MusicService :
         }
         lastTransitionedMediaId = mediaItem?.mediaId
 
-        // TEMPORARY - SPEC_SPOTIFY_CANVAS Phase 3. Off in the committed state via
-        // SPOTIFY_CANVAS_FETCH_ENABLED; nothing here touches playback either way.
-        if (com.metrolist.music.utils.spotify.SPOTIFY_CANVAS_FETCH_ENABLED) {
-            val metadata = mediaItem?.metadata
-            if (metadata != null) {
-                scope.launch(Dispatchers.IO) {
-                    runCatching {
-                        spotifyCanvasRepository.getCanvas(
-                            videoId = metadata.id,
-                            title = metadata.title,
-                            artist = metadata.artists.firstOrNull()?.name.orEmpty(),
-                            duration = metadata.duration,
-                        )
-                    }.onFailure { Timber.tag("SpotifyCanvas").w(it, "canvas fetch threw") }
-                }
-            }
-        }
+        // SPEC_SPOTIFY_CANVAS Phase 5 retired the track-change prefetch: spec §6.1 forbids any
+        // network fetch before a completed 1s hold, so fetching moved to the long-press handler
+        // in the player UI. Nothing here touches Canvas either way.
 
         // A real track change invalidates any pre-warmed incoming player. The
         // swap-time manual call always finds it already consumed, so this is a

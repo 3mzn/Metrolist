@@ -188,8 +188,8 @@ fourth state, and never coexist with the Canvas.
 
 | State | Background | Particles | Artwork | Entered by |
 |---|---|---|---|---|
-| **Normal** | gradient / blur / theme | **yes** | opaque | default, or 2s long-press to dismiss Canvas |
-| **Canvas on** | Canvas video | **no** | opaque | 2s long-press |
+| **Normal** | gradient / blur / theme | **yes** | opaque | default, or 1s long-press to dismiss Canvas |
+| **Canvas on** | Canvas video | **no** | opaque | 1s long-press |
 | **Canvas revealed** | Canvas video | **no** | transparent | swipe up on artwork |
 
 **Invariants**
@@ -233,19 +233,23 @@ artwork and `AnimatedContent` has replaced it.
 
 ### 6.1 Long-press — engage Canvas
 
-- **Duration: 2000ms**, **invisible**: no progress ring, no overlay, no visual affordance.
-- **Haptic: one short vibration at the moment the 2s threshold is met** — not on press.
+- **Duration: 1000ms**, **invisible**: no progress ring, no overlay, no visual affordance.
+  - **Changed from 2000ms by user decision during Phase 5.** A shorter window makes it
+    easier to trigger by accident, so the early-release path carries more of the real
+    usage than the original design assumed. The single value is `CANVAS_HOLD_MS` in
+    `Thumbnail.kt`; nothing else in the gesture depends on its magnitude.
+- **Haptic: one short vibration at the moment the 1s threshold is met** — not on press.
   Rationale: the app is for the user and one other person; discoverability aids are not wanted.
   The vibration is the sole confirmation that the hold registered.
-- **Cancel on early release.** Releasing before 2000ms does nothing.
-- **No network fetch until 2000ms is actually held.** The fetch starts at the threshold, so an
+- **Cancel on early release.** Releasing before 1000ms does nothing.
+- **No network fetch until 1000ms is actually held.** The fetch starts at the threshold, so an
   abandoned press costs nothing.
 - Works in all layouts (portrait, landscape, fullscreen, tablet).
 - Unavailable on the lyrics view.
 
 ### 6.2 Long-press — dismiss Canvas
 
-A second 2s long-press dismisses. Background, particles, and artwork all return over **800ms**
+A second 1s long-press dismisses. Background, particles, and artwork all return over **800ms**
 (symmetric with the wash-in). See §6.4 for the artwork's separate 400ms fade.
 
 ### 6.3 Swipe up on artwork
@@ -446,13 +450,13 @@ handled locally resolves to: leave the player alone, restore the normal backgrou
 
 Must all pass:
 
-1. Long-press 2s on artwork, logged in, track **with** a Canvas → background washes to Canvas
+1. Long-press 1s on artwork, logged in, track **with** a Canvas → background washes to Canvas
    over 800ms, particles gone, no black flash.
 2. Music plays perfectly throughout, uninterrupted, unaffected by Canvas.
 3. One short swipe up on artwork → artwork fades to transparent over 400ms fixed; Canvas
    visible, particles still absent.
 4. Swipe up again → artwork fades back to fully opaque over 400ms.
-5. Second long-press 2s → Canvas dismissed, background + particles + opaque artwork all
+5. Second long-press 1s → Canvas dismissed, background + particles + opaque artwork all
    restored over 800ms / 400ms.
 6. Track with **no** Canvas → long-press does nothing, silently. Music unaffected.
 7. Spotify not logged in → tap on the greyed switch navigates to login + shows a toast.
@@ -464,7 +468,8 @@ Must all pass:
     one toast.
 12. Landscape, `isFullScreen`, and tablet → identical behaviour, Canvas fills the screen with
     no black bars.
-13. Early release at 1.5s → nothing happens, no network request, no vibration.
+13. Early release at ~0.5s — half the hold window — nothing happens, no network request,
+    no vibration. (This was 1.5s against the original 2s window; the ratio is what matters.)
 
 ### 11.3 Gates
 
@@ -1077,7 +1082,7 @@ so attachment is tracked locally.
 The background is swapped when the Canvas becomes active, not when its first frame is ready.
 
 This is on purpose, not an oversight. The gate only matters once the Canvas appears **after a
-deliberate gesture** — spec §6.1 issues no fetch before the 2s hold completes, so there is a real
+deliberate gesture** — spec §6.1 issues no fetch before the 1s hold completes, so there is a real
 window before the first decoded frame, and §7.4's crossfade is what hides it. Today the Canvas
 appears on its own for any track that has one and the surface already holds a frame, so there is
 nothing to hide. Wiring it now would gate a swap that already looks instant and could not be tested
@@ -1403,7 +1408,7 @@ the commit is clean.
 >
 > It has not mattered yet: the Canvas currently appears on its own for any track that has one, and
 > by then the surface already holds a decoded frame. The gate only becomes load-bearing once the
-> Canvas appears **after a deliberate gesture**, because spec §6.1 issues no fetch before the 2s hold
+> Canvas appears **after a deliberate gesture**, because spec §6.1 issues no fetch before the 1s hold
 > completes — that leaves a real window between the gesture and the first decoded frame, and
 > §7.4's crossfade-from-the-existing-background is precisely what hides it. Wiring it now would
 > gate a swap that already looks instant, and it could not be tested until the gesture exists.
@@ -1429,16 +1434,17 @@ the commit is clean.
 
 **Status:** ⏳ **PENDING**
 
-**Goal:** the 2s long-press engages and dismisses the Canvas. First real user-facing phase.
+**Goal:** the 1s long-press engages and dismisses the Canvas. First real user-facing phase.
 
 **In:**
-- Invisible 2s long-press on the artwork square (phase gate: was the flag).
-- Haptic **only** at the 2000ms threshold.
-- Cancel on early release; **no fetch issued before 2000ms**.
+- Invisible 1s long-press on the artwork square (phase gate: was the flag).
+- Haptic **only** at the 1000ms threshold.
+- Cancel on early release; **no fetch issued before 1000ms**. Beware: a shorter window is 
+  easier to hit by accident, so the early-release path carries more of the real usage.
 - First engagement sets the phase gate to the real gesture and **retires the temporary flag**.
 - 800ms wash in; 800ms restore on dismissal, 400ms artwork return to opaque.
 - **⚠ Implement spec §7.4 here, not before** — Phase 4 deferred it. The Canvas only appears
-  after the 2s hold completes and no fetch was issued before it, so there is a genuine window
+  after the 1s hold completes and no fetch was issued before it, so there is a genuine window
   between the gesture and the first decoded frame. Hold the existing background until
   `onFirstFrameReady`, then crossfade over 800ms. This is the one thing that makes the no-black-flash
   guarantee true rather than incidental.
@@ -1448,10 +1454,11 @@ the commit is clean.
 **Gate:** compile + 132 tests.
 
 **Verification:**
-- Hold 2s on a known-Canvas track → background washes, no black flash, particles gone.
-- Release at 1.5s → nothing happens, **and no network request** (check the log).
-- Haptic fires at 2s, not on press.
-- Second 2s hold → everything restored, Canvas gone.
+- Hold 1s on a known-Canvas track → background washes, no black flash, particles gone.
+- Release at ~0.5s (half the window) → nothing happens, **and no network request** (check the
+  log). Verified at the 2s setting; the behaviour is threshold-relative, not time-relative.
+- Haptic fires at the threshold, not on press.
+- Second 1s hold → everything restored, Canvas gone.
 - **Landscape** — the one check Phase 4 never got to. Canvas fills the screen, cropped hard, no
   letterboxing and no black bars (§5.2).
 - **No black flash on a first-ever play of a Canvas track** — hold the normal background until the
@@ -1917,6 +1924,32 @@ gesture itself is not the problem. Playback architecture is.
 
 ### 16.9 🔧 Build and device gotchas (learned the hard way — do not repeat)
 
+> **⚠ Compose gesture timeout — silent, permanent, and invisible to the compiler.**
+>
+> Inside a `pointerInput` block, `withTimeout` resolves to the **`AwaitPointerEventScope` member**,
+> not the kotlinx import. The member shadows the import, and on timeout it throws
+> **`PointerEventTimeoutCancellationException`**, which extends plain `CancellationException` — it is
+> **not** a subclass of kotlinx's `TimeoutCancellationException`.
+>
+> Catching the kotlinx type therefore never matches. The exception escapes, the `pointerInput`
+> handler dies **for good**, and every later press is ignored with **no crash and no log**. The
+> symptom is indistinguishable from "the gesture was never wired up", which is why diagnosing it
+> cost several build cycles. Confirmed by reading `SuspendingPointerInputFilter.kt` in
+> compose-ui **1.11.4** (`awaitPointerEventScope`'s `withTimeout` / `withTimeoutOrNull`).
+>
+> **How this project avoids it:** the Canvas hold uses **`withTimeoutOrNull`** and tests for `null`,
+> so there is no exception to catch and no type to get wrong. If you add a timed gesture (spec §6.3's
+> swipe is the next one), use the same shape. Two further traps in the same area:
+> - **Never broaden the catch** to `CancellationException`; a carousel stealing the gesture must
+>   still propagate or the scroll breaks.
+> - **`awaitTouchSlopOrCancellation` suspends indefinitely here** and never delivered a `down` at
+>   all. The framework's own `waitForLongPress` uses a raw `awaitPointerEvent` loop instead; so
+>   does this one.
+>
+> **`CanvasHold` log tag is kept on purpose.** Because the failure above is silent, one Timber line
+> per terminal path is retained. Metrolist's ProGuard config strips Timber in release, so it costs
+> nothing in the shipped build, but "nothing happened" is never ambiguous again.
+
 **SimpMusic (reference build):**
 - Task is **`:androidApp:assembleDebug`**, NOT `assembleFossDebug`. SimpMusic has **no product
   flavours**; FOSS vs full is chosen by the `isFullBuild` Gradle property (currently `true`).
@@ -2008,8 +2041,8 @@ networking for one module. Accept 3.5.2.
 
 | State | Background | Particles | Artwork | Entered by |
 |---|---|---|---|---|
-**Normal** | gradient / blur / theme | **yes** | opaque | default, or 2s long-press to dismiss Canvas |
-**Canvas on** | Canvas video | **no** | opaque | 2s long-press |
+**Normal** | gradient / blur / theme | **yes** | opaque | default, or 1s long-press to dismiss Canvas |
+**Canvas on** | Canvas video | **no** | opaque | 1s long-press |
 **Canvas revealed** | Canvas video | **no** | transparent | swipe up on artwork |
 
 **Invariants:**
@@ -2024,9 +2057,9 @@ networking for one module. Accept 3.5.2.
 
 | Gesture | Value |
 |---|---|
-Long-press duration | **2000ms**, **invisible** (no ring, no overlay) |
-Long-press haptic | **One short vibration at the 2000ms threshold** — NOT on press |
-Long-press cancel | Early release does nothing; **no network fetch before 2000ms** |
+Long-press duration | **1000ms**, **invisible** (no ring, no overlay) |
+Long-press haptic | **One short vibration at the 1000ms threshold** — NOT on press |
+Long-press cancel | Early release does nothing; **no network fetch before 1000ms** |
 Swipe direction | **Up only**, 60dp threshold, artwork square hit zone only |
 Swipe tracking | **NOT finger-tracked** — fixed animation |
 Artwork fade duration | **400ms** (both directions) |
@@ -2132,7 +2165,7 @@ writes — main DB was 598 KB, WAL 4.1 MB), then
 persists a 211-char `sp_dc`, and `:spotify:connectedDebugAndroidTest` passes **4/4 with 0
 skipped** against that cookie, including `isAnonymous == false`.
 
-**Phase 5 is next** — the 2s long-press gesture. Everything the risky phases needed is proven:
+**Phase 5 is next** — the 1s long-press gesture. Everything the risky phases needed is proven:
 the login works end to end, the fetch and both caches are correct, the Canvas renders, and the
 Spotify chain has never once interrupted playback.
 

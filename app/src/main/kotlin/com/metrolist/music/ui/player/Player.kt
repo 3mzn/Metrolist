@@ -770,6 +770,89 @@ fun BottomSheetPlayer(
     }
 
     val scope = rememberCoroutineScope()
+
+    // ---- Spotify Canvas engagement (SPEC_SPOTIFY_CANVAS Phase 5). ------------------
+    // Player-level state: the Thumbnail gesture sites below call onCanvasHoldToggle(),
+    // so the handler must live at function scope, not inside the background lambda.
+    // Only sheet-derived values stay in the background lambda.
+    // Gesture-driven engagement: the 1s long-press on the artwork (Thumbnail) toggles
+    // `canvasEngaged`. Both temporary flags are retired — no flag remains anywhere in this
+    // project. With no engagement, or when the track has no Canvas, every value below stays
+    // at its Normal-state default and the player behaves exactly as before.
+    val canvasRepository =
+        remember(context) {
+            EntryPointAccessors
+                .fromApplication(context.applicationContext, SpotifyCanvasEntryPoint::class.java)
+                .spotifyCanvasRepository()
+        }
+    var canvasResult by remember { mutableStateOf<CanvasResult?>(null) }
+    // User intent: set by a completed 1s hold, cleared by a second hold or a track change.
+    var canvasEngaged by remember { mutableStateOf(false) }
+    // Counts engagements so the layer re-reports readiness for an already-warm player
+    // instead of wedging the wash at 0 (same URL, no new frame callback coming).
+    var canvasEngagementId by remember { mutableIntStateOf(0) }
+    // Guards against two overlapping fetches if the user holds again mid-fetch.
+    var canvasLoading by remember { mutableStateOf(false) }
+    // Spec §7.4, implemented here per the Phase 4 deferral: the existing background is held
+    // until the Canvas reports a rendered frame, then the 800ms crossfade begins.
+    var canvasFirstFrameReady by remember { mutableStateOf(false) }
+
+    // Track change: tear down and rebuild (spec 7.3). Engagement never carries over — a
+    // fresh long-press is required per track.
+    LaunchedEffect(mediaMetadata?.id) {
+        canvasEngaged = false
+        canvasLoading = false
+        canvasFirstFrameReady = false
+        canvasResult = null
+    }
+
+    fun onCanvasHoldToggle() {
+        scope.launch {
+            if (canvasEngaged) {
+                // Second hold: dismiss. The wash retargets to 0 and the background restores
+                // over 800ms. Artwork is already opaque in Phase 5 (no swipe yet), so there
+                // is nothing to fade back.
+                canvasEngaged = false
+                return@launch
+            }
+            if (canvasLoading) return@launch
+            if (!canvasRepository.isLoggedIn()) {
+                Toast.makeText(context, R.string.canvas_login_required, Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            val meta = mediaMetadata ?: return@launch
+            // Cache first (free), network only on a miss — and only now that the hold has
+            // completed. Nothing before the 1000ms threshold, ever (spec §6.1).
+            val cached = canvasRepository.cachedCanvas(meta.id)
+            if (cached != null) {
+                // Track may have changed during the read; never engage a stale result.
+                if (mediaMetadata?.id != meta.id) return@launch
+                canvasResult = cached
+            } else {
+                canvasLoading = true
+                try {
+                    val fetched =
+                        canvasRepository.getCanvas(
+                            videoId = meta.id,
+                            title = meta.title,
+                            artist = meta.artists.firstOrNull()?.name.orEmpty(),
+                            duration = meta.duration,
+                        ) ?: return@launch // silent no-op: no canvas, or transport failure
+                    // Same guard: the fetch may have outlived the track.
+                    if (mediaMetadata?.id != meta.id) return@launch
+                    canvasResult = fetched
+                } finally {
+                    canvasLoading = false
+                }
+            }
+            // Gate on the first frame: the layer reports immediately when the player is
+            // already warm (re-engagement), or on the first decoded frame otherwise.
+            canvasFirstFrameReady = false
+            canvasEngagementId++
+            canvasEngaged = true
+        }
+    }
+
     var showSleepTimerDialog by remember {
         mutableStateOf(false)
     }
@@ -994,40 +1077,8 @@ fun BottomSheetPlayer(
         state = state,
         modifier = modifier,
         background = {
-            // ---- Spotify Canvas, SPEC_SPOTIFY_CANVAS Phase 4. ---------------------------
-            // TEMPORARY: the flag stands in for the long-press gesture, which arrives in Phase 5.
-            //
-            // How far the sheet must be up before the Canvas is shown. Low enough that the Canvas
-            // is already visible during the expand animation, high enough that at the mini player
-            // no full-screen layer sits over the app. Phase 5 replaces this with the gesture.
-            // With the flag off, or when the track has no Canvas, every value below stays at its
-            // Normal-state default and the player behaves exactly as it did before this project.
-            val canvasRepository =
-                remember(context) {
-                    EntryPointAccessors
-                        .fromApplication(context.applicationContext, SpotifyCanvasEntryPoint::class.java)
-                        .spotifyCanvasRepository()
-                }
-            var canvasResult by remember { mutableStateOf<CanvasResult?>(null) }
-            // Stays false until the Canvas reports a rendered frame, so the existing background is
-            // held in place and there is no black flash (spec 7.4).
-            var canvasFirstFrameReady by remember { mutableStateOf(false) }
 
-            // Phase 3 already fetched and cached the Canvas on track change, so this is normally a
-            // cache read rather than a network call.
-            LaunchedEffect(mediaMetadata?.id, SPOTIFY_CANVAS_RENDER_ENABLED) {
-                if (!SPOTIFY_CANVAS_RENDER_ENABLED) {
-                    canvasResult = null
-                    canvasFirstFrameReady = false
-                    return@LaunchedEffect
-                }
-                val meta = mediaMetadata ?: return@LaunchedEffect
-                canvasFirstFrameReady = false
-                canvasResult = canvasRepository.cachedCanvas(meta.id)
-            }
-
-            // TEMPORARY Phase 4. Gated on the sheet's continuous `progress`, NOT on
-            // `state.isExpanded`.
+            // Gated on the sheet's continuous `progress`, NOT on `state.isExpanded`.
             //
             // `isExpanded` is `value == upperBound` - exact equality against the anchor - so it is
             // false for the whole of the expand and the collapse. Gating on it made the Canvas pop
@@ -1037,10 +1088,23 @@ fun BottomSheetPlayer(
             // `progress` runs continuously from 0 (collapsed) to 1 (expanded), so the Canvas
             // appears as the sheet rises and hides as it falls, animations included.
             val sheetProgress by remember(state) { derivedStateOf { state.progress } }
-            val canvasActive =
-                SPOTIFY_CANVAS_RENDER_ENABLED &&
-                    canvasResult != null &&
-                    sheetProgress > CANVAS_ACTIVE_PROGRESS_THRESHOLD
+            val sheetUp = sheetProgress > CANVAS_ACTIVE_PROGRESS_THRESHOLD
+            val canvasActive = canvasEngaged && canvasResult != null && sheetUp
+            // The wash target: the normal background stays up until the first frame is ready, then
+            // the Canvas crossfades in over 800ms (spec §6.4, §7.4). Derived — never assigned — so
+            // a mid-wash collapse or re-expand cannot leave a partial alpha behind.
+            // `canvasRevealed` is also what suppresses the old background below: the existing
+            // background, wash and particles stay visible until the first frame, never black.
+            val canvasRevealed = canvasActive && canvasFirstFrameReady
+            val canvasWashAlpha by animateFloatAsState(
+                targetValue = if (canvasRevealed) 1f else 0f,
+                animationSpec = tween(800),
+                label = "canvasWash",
+            )
+            // Stays true through the 800ms fade-out so the restore wash can render; the layer
+            // itself still goes GONE the moment the sheet drops (via `sheetUp`).
+            val layerLive = canvasActive || canvasWashAlpha > 0.001f
+
 
             Box(
                 modifier =
@@ -1054,7 +1118,10 @@ fun BottomSheetPlayer(
                 // controls). Drawn last it painted over the "Now Playing" header instead.
                 CanvasBackgroundLayer(
                     canvas = canvasResult,
-                    isActive = canvasActive,
+                    isActive = layerLive,
+                    washAlpha = canvasWashAlpha,
+                    sheetUp = sheetUp,
+                    readinessKey = canvasEngagementId,
                     modifier = Modifier.fillMaxSize(),
                     onFirstFrameReady = { canvasFirstFrameReady = true },
                     onPlaybackError = { canvasResult = null },
@@ -1063,7 +1130,7 @@ fun BottomSheetPlayer(
                 when (playerBackground) {
                     // While the Canvas is up it replaces the background entirely (spec 5). The
                     // crossfade between them is Phase 5, where the gesture provides the timing.
-                    PlayerBackgroundStyle.BLUR -> if (!canvasActive) {
+                    PlayerBackgroundStyle.BLUR -> if (!canvasRevealed) {
                         // Single AsyncImage with Coil crossfade — no AnimatedContent snap.
                         // Coil keeps the old image visible while loading the new one, then
                         // crossfades between them. No gap, no flash.
@@ -1104,7 +1171,7 @@ fun BottomSheetPlayer(
                         }
                     }
 
-                    PlayerBackgroundStyle.GRADIENT -> if (!canvasActive) {
+                    PlayerBackgroundStyle.GRADIENT -> if (!canvasRevealed) {
                         AnimatedContent(
                             targetState = gradientColors,
                             transitionSpec = {
@@ -1138,7 +1205,7 @@ fun BottomSheetPlayer(
                         }
                     }
 
-                    else -> if (!canvasActive) {
+                    else -> if (!canvasRevealed) {
                         PlayerBackgroundStyle.DEFAULT
                     }
                 }
@@ -1146,7 +1213,7 @@ fun BottomSheetPlayer(
                 // Track-change color wash — always rendered so animation stays alive across
                 // recompositions. Suppressed while a Canvas renders: particles and the wash belong
                 // to the normal background, and spec 5 forbids either over a Canvas.
-                if (!canvasActive) {
+                if (!canvasRevealed) {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
@@ -1156,7 +1223,7 @@ fun BottomSheetPlayer(
 
                 // Bass-reactive particles — full screen behind everything. Never drawn over a
                 // Canvas; they return only when the Canvas itself is dismissed (spec 5).
-                if (useNewPlayerDesign && !canvasActive) {
+                if (useNewPlayerDesign && !canvasRevealed) {
                     PlayerParticles(
                         modifier = Modifier.fillMaxSize(),
                         baseColor = TextBackgroundColor,
@@ -2142,6 +2209,7 @@ fun BottomSheetPlayer(
                                     isLandscape = true,
                                     isListenTogetherGuest = isListenTogetherGuest,
                                     onCoverArtCenterChanged = { coverArtCenter = it },
+                                    onCanvasHold = { onCanvasHoldToggle() },
                                 )
                             }
                         }
@@ -2205,6 +2273,7 @@ fun BottomSheetPlayer(
                                     isPlayerExpanded = isExpandedProvider,
                                     isListenTogetherGuest = isListenTogetherGuest,
                                     onCoverArtCenterChanged = { coverArtCenter = it },
+                                    onCanvasHold = { onCanvasHoldToggle() },
                                 )
                             }
                         }

@@ -69,6 +69,14 @@ class SpotifySessionRepository @Inject constructor(
 
     val isLoggedIn: Flow<Boolean> = spdc.map { it.isNotBlank() }
 
+    /**
+     * One-shot login check for the Canvas long-press handler (spec §6.1).
+     *
+     * The gesture fires from a coroutine that needs an immediate answer, not a collected Flow.
+     * Reads the stored cookie only — no network, no token minting.
+     */
+    suspend fun isLoggedInNow(): Boolean = isLoggedIn.first()
+
     /** Milliseconds epoch, or 0 when never stored. */
     private val personalTokenExpires: Flow<Long> =
         context.dataStore.data.map { it[SpotifyPersonalTokenExpiresKey] ?: 0L }
