@@ -211,6 +211,10 @@ Canvas fills the entire screen. **No letterboxing, no black bars** — centre-cr
 (`ContentScale.Crop`). A Canvas is a 9:16 vertical video; in landscape this crops heavily,
 which is accepted rather than letterboxed.
 
+> **⚠ The crop is correct; the resampling is not.** Implemented with
+> `VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING`, which is Media3's **nearest-neighbour** path —
+> upscaling is visibly soft. Accepted for now; see **§14.2a**.
+
 ### 5.3 Controls
 
 Controls (title, seekbar, transport row, bottom button row) remain **fully readable with no
@@ -1555,6 +1559,42 @@ Nine phases in total, not eight.
 - `SPEC_SPOTIFY_CANVAS.md` is updated as each phase completes, marking it done with its commit
   hash — this file is the running record.
 
+### 14.2 Deferred improvements (not blocking)
+
+#### 14.2a ⚠ Canvas upscaling is nearest-neighbour — visibly soft on low-resolution Canvases
+
+**Found by the user during Phase 4, on device. Deferred by user decision. Not a bug in the fetch,
+the cache or the Canvas file — it is purely how the video is scaled to fill the screen.**
+
+`CanvasBackgroundLayer` sets `C.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING` (2). Media3 1.10.1
+offers **only two** modes:
+
+| Mode | Behaviour |
+|---|---|
+| `VIDEO_SCALING_MODE_SCALE_TO_FIT` (1) | Letterboxes |
+| `VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING` (2) | **Nearest-neighbour** resample |
+
+There is no filtered-scaling option; Media3 dropped it. Mode 2 magnifies per texel, so a 9:16 Canvas
+upscaled to a 900×1600 screen shows blocky, aliased edges. **Why some tracks look worse than others
+is the source resolution**, not the code path: a lower-resolution Canvas is magnified harder.
+
+Mode 1 was rejected because spec §5.2 requires full-screen with no black bars. **The crop itself was
+right; only the resampling is wrong.**
+
+**The fix, when it is picked up:** do the crop in Compose instead of in the player — render the view
+at the video's native aspect, centre it, and let it overflow a `clipToBounds()` container. The
+compositor then does the scaling with proper filtering, still with no letterbox. Self-contained in
+`CanvasBackgroundLayer.kt`, no spec change, no gesture interaction.
+
+**Not yet verified:** the actual native resolution of the cached Canvas files has never been read. If
+they are already at or above screen resolution this is far less visible than assumed, and the cheap
+first step is to measure before doing any work.
+
+**How it got here, because it is a repeatable mistake:** mode 2 was chosen for its *geometry*
+behaviour (no letterbox) and its *rendering* cost was not checked. Same shape as the §14.1d
+`layoutParams` defect — taking a line at face value for what it appears to do rather than what it
+actually does.
+
 ---
 
 ## 15. Implementation soundness audit
@@ -2092,12 +2132,17 @@ writes — main DB was 598 KB, WAL 4.1 MB), then
 persists a 211-char `sp_dc`, and `:spotify:connectedDebugAndroidTest` passes **4/4 with 0
 skipped** against that cookie, including `isAnonymous == false`.
 
-**Phase 4 is next** — the TextureView surface, behind the same temporary flag. Everything the
-risky phases needed is proven: the login works end to end, the fetch and both caches are correct,
-and the Spotify chain has never once interrupted playback.
+**Phase 5 is next** — the 2s long-press gesture. Everything the risky phases needed is proven:
+the login works end to end, the fetch and both caches are correct, the Canvas renders, and the
+Spotify chain has never once interrupted playback.
 
-**`SPOTIFY_CANVAS_FETCH_ENABLED` is `false` in the committed state.** Phase 4 turns the Canvas on
-for the first time on screen, so it should expect to set that flag.
+**Both Phase 4 flags are `false` in the committed state.** Phase 5 replaces the flag with the real
+gesture, and is the first phase where the user can trigger a Canvas at all.
+
+**Two deferred items are recorded and must not be quietly dropped:**
+- **§7.4 first-frame gate** — wired but not gating. Required in Phase 5 as part of the wash.
+- **§14.2a** — Canvas upscaling is nearest-neighbour, so low-resolution Canvases look soft.
+  Deferred by user decision; the native resolution has not even been measured yet.
 
 **The one thing most likely to bite again:** classloading order. A transitive dependency can be
 present and correct and still lose to a platform stub (§14.1f). Anything verified only in a module's
