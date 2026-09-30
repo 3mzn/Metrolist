@@ -487,9 +487,8 @@ handled locally resolves to: leave the player alone, restore the normal backgrou
 
 ### 11.2 Acceptance criteria
 
-**12 of 13 pass.** #12 (landscape / `isFullScreen` / tablet) was verified by the user and closed
-after Phase 7 — see §14.1n. #11's *notification* half was implemented but never observed firing,
-because it needs an outage; that one check stays open by user decision — see §14.1o.
+**All 13 pass.** #12 (landscape / `isFullScreen` / tablet) was closed by the user after Phase 7
+(§14.1n), and #11's notification half was verified on device with a dead proxy (§14.1o).
 
 Must all pass:
 
@@ -508,7 +507,7 @@ restored over 2000ms / 1000ms.
 9. Collapse to mini player → Canvas not rendered; re-expand → Canvas present, no black flash.
 10. Lyrics view → Canvas visible behind, lyrics readable, long-press unavailable.
 11. Spotify API failing — silent fallback; after 3 consecutive failures, one high-priority
-    notification naming the cause, and **the feature is NOT disabled**.
+    notification naming the cause, and **the feature is NOT disabled**. ✅ **PASSED**
 12. Landscape, `isFullScreen`, and tablet → identical behaviour, Canvas fills the screen with
     no black bars. ✅ **PASSED** — closed by user decision after Phase 7 (see §14.1n).
 13. Early release at ~0.5s — half the hold window — nothing happens, no network request,
@@ -1630,7 +1629,7 @@ the commit is clean.
 **Out:** nothing. Feature complete.
 
 **Gate:** compile + **full 144-test suite green** (139 + 5 added here), plus all of §11.2
-**all 13 criteria** — §11.2 #12 was closed by user decision after the fact (§14.1n).
+**all 13 criteria** of §11.2 — #12 in §14.1n, #11's notification in §14.1o.
 
 **Verification:** re-run the §11.2 acceptance list end to end, item by item, with logcat
 evidence. This is the only phase that verifies the whole specification. Landscape (#12) is
@@ -2358,8 +2357,8 @@ in `CanvasFailureCauseTest`).
 
 Verified on device (emulator-5556): switch present and first in the Player group, toggling off
 suppresses the Canvas entirely, logged-out greying and login navigation, and no Canvas-related
-rows on the separate "Player and audio" screen. The failure notification itself was **not**
-observed - it needs an outage or a dead token.
+rows on the separate "Player and audio" screen. The failure notification was subsequently
+verified separately with a dead proxy — see §14.1o.
 
 README: credit row added to "Main Inspirations" for maxrave-dev and spotify_monitor, the latter
 being the source of the TOTP logic credited in `SpotifyTotp.kt`.
@@ -2380,23 +2379,37 @@ sites in `Player.kt` carry the swipe plumbing, and `CanvasBackgroundLayer` fills
 argument, not a test, and the deferral existed precisely because build-time reasoning had already
 missed one real defect (§14.1d's `layoutParams`).
 
-#### 14.1o OPEN — the failure notification has never been observed firing
+#### 14.1o — the failure notification, verified end to end
 
-Left open by user decision, deliberately. §11.2 #11 splits into two halves: the *fallback* half
-("silent fallback" on a failed fetch) has been exercised throughout Phases 3–7, while the
-*notification* half has never fired in front of anyone.
+§11.2 #11 splits into two halves, and both have now been seen on a device:
 
-It cannot fire from a normal session. `failures == SPOTIFY_CANVAS_FAILURE_LIMIT` requires three
-consecutive Spotify failures, and the simplest way to produce them — killing the network and
-long-pressing three times — is also the one that most obviously tests a path already known to
-work. It would take about a minute with a dead HTTP proxy:
+| Half | Result |
+|---|---|
+| Silent fallback on a failed fetch | Exercised throughout Phases 3–7 |
+| High-priority notification after 3 failures | **Verified** — user-tested on device |
+
+Verified with the dead-proxy technique (offline without taking the emulator's own adb connection
+down, unlike `cmd connectivity airplane-mode`):
 
     adb shell settings put global http_proxy 127.0.0.1:1
 
-then three long-presses on a known-Canvas track. Recorded here so the gap is visible rather than
-silently folded into "Phase 7 done".
+then three long-presses on a known-Canvas track. Two things confirmed at once:
 
-**Also worth noting for anyone revisiting:** `AUTH_EXPIRED` is inferred from a 401/403 or a stale
-`sp_dc` cookie, and `SERVER_ERROR` from any other non-2xx. Only the `UNREACHABLE` path has been
-reasoned through against the code; the other two rest on the status check in §14.1l and have
-never been seen on a real response.
+1. **The notification fires** — once, not three times. That is the `failures == LIMIT` rather than
+   `>=` distinction from §14.1l doing its job under real conditions, with the counter incrementing
+   one failure at a time.
+2. **Nothing is cached as a failure while Spotify is unreachable.** This is the more important
+   result, and it is the §9.2 guarantee that the §14.1l status check exists to protect: an outage
+   produces `UNREACHABLE`, which moves only the consecutive-failure counter and never
+   `noCanvasAttempts`. A track's Canvas verdict is untouched by an outage, so the Canvas is still
+   there when Spotify comes back.
+
+Point 2 is worth stating plainly because it was the defect the status check was added to close.
+Before it, a dead network could decode as an empty response and become a cached "no Canvas" after
+three attempts — permanent, with no recovery short of clearing the cache. That is now demonstrably
+not happening.
+
+**Still reasoned about rather than observed:** `AUTH_EXPIRED` (a 401/403 or a stale `sp_dc` cookie)
+and `SERVER_ERROR` (any other non-2xx). Only `UNREACHABLE` has met a real response. The other two
+share the same status check and the same code path — the notification is the same, only the
+message differs — so the untested part is the classification, not the delivery.
