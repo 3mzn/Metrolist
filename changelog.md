@@ -1,3 +1,8 @@
+---v14.0.0
+- Spotify Canvas: long-press the album art to show the track's animated artwork behind the player, swipe up to reveal it fully
+- New Canvas switch in Settings → Appearance → Player (on by default), with a login prompt when you're signed out
+- Canvas problems now notify you once instead of failing silently, and a bad network can never erase a track's artwork
+
 ---v13.11.0
 - Spotify tracking: songs that can't be matched now show in a review list inside the playlist (banner count, retry/remove per song, removed songs stay hidden on both phones)
 - Matching is stricter — right singer and right title required, so covers and karaoke versions no longer slip into tracked playlists
