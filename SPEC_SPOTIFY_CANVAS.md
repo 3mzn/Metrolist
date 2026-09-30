@@ -487,6 +487,10 @@ handled locally resolves to: leave the player alone, restore the normal backgrou
 
 ### 11.2 Acceptance criteria
 
+**12 of 13 pass.** #12 (landscape / `isFullScreen` / tablet) was verified by the user and closed
+after Phase 7 — see §14.1n. #11's *notification* half was implemented but never observed firing,
+because it needs an outage; that one check stays open by user decision — see §14.1o.
+
 Must all pass:
 
 1. Long-press 1s on artwork, logged in, track **with** a Canvas → background washes to Canvas
@@ -506,7 +510,7 @@ restored over 2000ms / 1000ms.
 11. Spotify API failing — silent fallback; after 3 consecutive failures, one high-priority
     notification naming the cause, and **the feature is NOT disabled**.
 12. Landscape, `isFullScreen`, and tablet → identical behaviour, Canvas fills the screen with
-    no black bars.
+    no black bars. ✅ **PASSED** — closed by user decision after Phase 7 (see §14.1n).
 13. Early release at ~0.5s — half the hold window — nothing happens, no network request,
     no vibration. (This was 1.5s against the original 2s window; the ratio is what matters.)
 
@@ -1626,7 +1630,7 @@ the commit is clean.
 **Out:** nothing. Feature complete.
 
 **Gate:** compile + **full 144-test suite green** (139 + 5 added here), plus all of §11.2
-**except #12**, which is deferred by user decision and remains unverified.
+**all 13 criteria** — §11.2 #12 was closed by user decision after the fact (§14.1n).
 
 **Verification:** re-run the §11.2 acceptance list end to end, item by item, with logcat
 evidence. This is the only phase that verifies the whole specification. Landscape (#12) is
@@ -1676,10 +1680,11 @@ Nine phases in total, not eight.
 
 ### 14.2 Deferred improvements (not blocking)
 
-#### 14.2a ⚠ Canvas upscaling is nearest-neighbour — visibly soft on low-resolution Canvases
+#### 14.2a CLOSED — Canvas upscaling softness. Accepted as-is; no code change was made.
 
-**Found by the user during Phase 4, on device. Deferred by user decision. Not a bug in the fetch,
-the cache or the Canvas file — it is purely how the video is scaled to fill the screen.**
+**Found by the user during Phase 4, on device. CLOSED after Phase 7 by user decision — accepted
+as-is, will not fix.** No code change was made, so **the behaviour below is still exactly as
+described.** This section is kept as the record of a known limitation, not as a fix.
 
 `CanvasBackgroundLayer` sets `C.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING` (2). Media3 1.10.1
 offers **only two** modes:
@@ -2361,3 +2366,37 @@ being the source of the TOTP logic credited in `SpotifyTotp.kt`.
 
 Still open, and deliberately so: **§11.2 #12, landscape / `isFullScreen` / tablet**, deferred by
 user decision. The Phase 7 gate is amended to exclude it, because otherwise it could never pass.
+
+
+#### 14.1n Landscape closed as PASSED
+
+Closed by user decision after Phase 7, following on-device verification. This is the last item
+that had never been exercised — every other §11.2 criterion had at some point been run by hand.
+
+Phase 5 had noted landscape as "the one check Phase 4 never got to", and it stayed unverified
+through Phases 5 and 6 because it was deferred twice by user decision. Both `Thumbnail` call
+sites in `Player.kt` carry the swipe plumbing, and `CanvasBackgroundLayer` fills `Modifier
+.fillMaxSize()` with cropping, so the geometry was never at particular risk — but that is an
+argument, not a test, and the deferral existed precisely because build-time reasoning had already
+missed one real defect (§14.1d's `layoutParams`).
+
+#### 14.1o OPEN — the failure notification has never been observed firing
+
+Left open by user decision, deliberately. §11.2 #11 splits into two halves: the *fallback* half
+("silent fallback" on a failed fetch) has been exercised throughout Phases 3–7, while the
+*notification* half has never fired in front of anyone.
+
+It cannot fire from a normal session. `failures == SPOTIFY_CANVAS_FAILURE_LIMIT` requires three
+consecutive Spotify failures, and the simplest way to produce them — killing the network and
+long-pressing three times — is also the one that most obviously tests a path already known to
+work. It would take about a minute with a dead HTTP proxy:
+
+    adb shell settings put global http_proxy 127.0.0.1:1
+
+then three long-presses on a known-Canvas track. Recorded here so the gap is visible rather than
+silently folded into "Phase 7 done".
+
+**Also worth noting for anyone revisiting:** `AUTH_EXPIRED` is inferred from a 401/403 or a stale
+`sp_dc` cookie, and `SERVER_ERROR` from any other non-2xx. Only the `UNREACHABLE` path has been
+reasoned through against the code; the other two rest on the status check in §14.1l and have
+never been seen on a real response.
