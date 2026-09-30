@@ -261,6 +261,10 @@
       <td align="center"><strong>OuterTune</strong></td>
       <td align="center"><a href="https://github.com/DD3Boh">Davide Garberi</a> · <a href="https://github.com/mikooomich">Michael Zh</a></td>
     </tr>
+    <tr>
+      <td align="center"><strong>SimpMusic</strong></td>
+      <td align="center"><a href="https://github.com/maxrave-dev">maxrave-dev</a> · <a href="https://github.com/misiektoja/spotify_monitor">spotify_monitor</a></td>
+    </tr>
   </tbody>
 </table>
 

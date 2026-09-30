@@ -445,9 +445,11 @@ A transient failure must never permanently disable a Canvas the user actually wa
 failure counter tracks consecutive hard failures and **resets on any successful load** —
 otherwise three failures spread across a week would trip it.
 
-**Auto-disable threshold: N = 3 consecutive track-level failures.**
+**Notification threshold: N = 3 consecutive track-level failures.**
 On trip: the feature turns itself off, the user gets **one** toast —
-"Canvas disabled — Spotify isn't responding. Re-enable in settings." — and the feature
+On trip: a **high-priority notification** saying why — "can't reach Spotify", "your session
+expired, log in again", or "Spotify is having trouble". **The feature is NOT disabled** and
+nothing re-arms automatically; the settings switch is the manual control.
 **stays off** until manually re-enabled. No automatic retry/cooldown.
 
 ### 9.3 Login gating recap
@@ -466,7 +468,7 @@ manual token path (`saveDiscordToken`); Spotify deliberately will not.
 Spotify not logged in, user long-presses | Toast only. Nothing else happens. |
 Track has no Canvas | **Silent.** No toast, no visual change. (Canvas is sparse; a toast on every track would be maddening.) |
 API failure on one track | Silent fallback to the normal background |
-3 consecutive failures | Auto-disable + one toast, then stay off |
+3 consecutive failures | High-priority notification naming the cause, once per outage. **Nothing is disabled** |
 Video decode failure | Silent fallback; does not count toward the failure threshold |
 
 The music must never be interrupted by any Canvas problem. Any error path that cannot be
@@ -501,8 +503,8 @@ restored over 2000ms / 1000ms.
 8. Pause the song → Canvas keeps looping.
 9. Collapse to mini player → Canvas not rendered; re-expand → Canvas present, no black flash.
 10. Lyrics view → Canvas visible behind, lyrics readable, long-press unavailable.
-11. Spotify API failing → silent fallback; after 3 consecutive failures, auto-disables with
-    one toast.
+11. Spotify API failing — silent fallback; after 3 consecutive failures, one high-priority
+    notification naming the cause, and **the feature is NOT disabled**.
 12. Landscape, `isFullScreen`, and tablet → identical behaviour, Canvas fills the screen with
     no black bars.
 13. Early release at ~0.5s — half the hold window — nothing happens, no network request,
@@ -543,7 +545,7 @@ DataStore preferences.
 
 | Risk | Likelihood | Mitigation |
 |---|---|---|
-Spotify bumps the client version; TOTP flow breaks | **High** — has happened to such clients before | Module isolation; auto-disable; one place to fix |
+Spotify bumps the client version; TOTP flow breaks | **High** - has happened to such clients before | Module isolation; user-visible notification; one place to fix |
 Secrets repo `xyloflake/spot-secrets-go` goes down | Medium | Same; login degrades, music unaffected |
 Canvas video fails to decode on some device | Low | Silent fallback to normal background |
 TextureView memory cost | Low | Accepted by user; Canvas is small and short |
@@ -1177,7 +1179,7 @@ Simulated offline by pointing the system proxy at a dead port (`settings put glo
 SpotifyCanvas: search failed for 20E0yY4LcLI   ->  consecutive Spotify failures: 1/3
 SpotifyCanvas: search failed for uVfsRZI7XvM   ->  consecutive Spotify failures: 2/3
 SpotifyCanvas: search failed for TsjAJJnkHOI   ->  consecutive Spotify failures: 3/3
-SpotifyCanvas: failure limit reached - Phase 7 auto-disables here
+SpotifyCanvas: failure limit reached - Phase 7 auto-disables here   # Phase 3 log; superseded by the Phase 7 notification
 ```
 
 **Zero `clean negative` lines across three different tracks.** The index was then diffed
@@ -1202,8 +1204,8 @@ Found while setting up Check 2, and it was a real defect in the first draft of t
 
 The counter originally reset **only when a Canvas was actually found**. But most tracks have no
 Canvas, so that is the *rare* case. Three transient network blips across a week — on tracks that
-legitimately have no Canvas — would therefore never reset the counter, and the feature would
-auto-disable itself in Phase 7 with no way back. Spec 9.2's own wording is *"resets on any
+legitimately have no Canvas — would therefore never reset the counter, so the Phase 7 response
+would fire on three blips spread across a week. Spec 9.2's own wording is *"resets on any
 successful load"*, and a confirmed-empty answer **is** a successful load: Spotify answered.
 
 Fixed, and pinned by `CanvasCachePolicyTest`:
@@ -1601,7 +1603,7 @@ the commit is clean.
 
 ### Phase 7 — Settings, failure handling, credits
 
-**Status:** ⏳ **PENDING**
+**Status:** ✅ **DONE — commit `HASH`** (results in §14.1l, §14.1m)
 
 **Goal:** the feature is complete, controllable, and correctly attributed.
 
@@ -1611,17 +1613,24 @@ the commit is clean.
   - When logged out: **visible, greyed, subtitle "Log in to Spotify to enable"** — tapping
     still navigates to login and toasts (§8.2).
   - After login: return to Player settings, switch now enabled.
-- **Auto-disable at N=3** with the one-shot toast (§9.2), feature stays off until
+- **High-priority notification on repeated Spotify failures** — outage, expired session, or
+  5xx. Replaces the planned auto-disable by user decision: permanently disabling a setting on
+  the user's behalf is the more surprising of the two behaviours, and the settings switch is
+  already a manual kill-switch. Fires exactly once per run of failures (see §14.1l).
   manually re-enabled.
-- Silent-fallback wiring for decode failures, which do not count toward the threshold (§10).
+- Silent-fallback wiring for decode failures. These are NOT Spotify failures — the network and
+  the session were both fine — so they never move the failure counter or raise the notification.
 - **README credit row** for maxrave-dev and `spotify_monitor` (user-approved).
 - Final string pass in `metrolist_strings.xml`.
 
 **Out:** nothing. Feature complete.
 
-**Gate:** compile + **full 139-test suite green**, plus all of §11.2.
+**Gate:** compile + **full 144-test suite green** (139 + 5 added here), plus all of §11.2
+**except #12**, which is deferred by user decision and remains unverified.
 
-**Verification:** re-run the complete §11.2 acceptance list end to end, item by item, with
+**Verification:** re-run the §11.2 acceptance list end to end, item by item, with logcat
+evidence. This is the only phase that verifies the whole specification. Landscape (#12) is
+excluded and stays open.
 logcat evidence. This is the only phase that verifies the whole specification.
 
 **Rollback:** the switch is off by default at this point, so reverting leaves a working app
@@ -1641,7 +1650,7 @@ with no Canvas and no orphaned UI.
 | 4 | Video surface | **medium** | **yes** | ✅ **DONE** `8cba7cc2d` — device results in §14.1h |
 | 5 | Long-press | medium | yes | ✅ **DONE** `6e7f2df59` — results in §14.1i |
 | 6 | Swipe | low | yes | ✅ **DONE** `29e52c29d` — results in §14.1j |
-| 7 | Settings + credits | low | yes | needs all |
+| 7 | Settings + credits | low | yes | ✅ **DONE** `HASH` — results in §14.1l, §14.1m |
 
 **Post-Phase-6 fix, not its own phase:** the Canvas wash was animating only one side of the
 crossfade — the normal background was hard-cut the instant the first frame landed, so nothing was
@@ -2185,10 +2194,10 @@ Discoverability aids | **None** — the app is for the user and one other person
 - Negative: **cached only after 3 attempts** ("100% sure"), and **only clean negatives** —
   a 404 or a confirmed-empty response. **Never** cache a timeout, 5xx, or 401/403 as "no canvas".
 - Consecutive-failure counter **resets on any success** (otherwise 3 failures across a week trip it).
-- **N = 3** consecutive track-level failures → auto-disable + **one** toast:
-  *"Canvas disabled — Spotify isn't responding. Re-enable in settings."* Stays off until
-  manually re-enabled. No cooldown retry.
-- Decode failures fall back silently and do **not** count toward the threshold.
+- **N = 3** consecutive track-level failures → a **high-priority notification** naming the
+  cause, **once per run of failures**. The feature is **NOT disabled** and nothing re-arms
+  automatically; the settings switch is the manual control. *(Originally specified as
+  auto-disable + one toast. Changed by user decision in Phase 7 — see §14.1m.)*
 
 ### 16.15 Phase plan (full text in §14)
 
@@ -2283,3 +2292,72 @@ own test APK is **not** verified.
 **Phases 0, 1, 1.5, 2 and 3 are committed** — `97107e2e`, `42aaa9f8`, `b393250d`, `e65881a55`, `42eccd38c`. The Spotify chain is proven end to end against the live
 API (§14.1c) and the login screen renders (§14.1d). **Phase 3 — Canvas fetch and cache —
 is next**, the highest-risk phase, and it runs with no UI at all behind a temporary flag.
+
+#### 14.1l Phase 7 - the settings switch, and the one deliberate port deviation
+
+Commit `HASH`.
+
+**The settings switch** is in `AppearanceSettings.kt`, first row of that screen's **Player**
+group. Not `PlayerSettings.kt`: the two screens are separate files that both contain a group
+titled "Player", and the wrong one was chosen first. The user found it - twice - before the
+placement was right. Worth recording because the failure was not a coding mistake but a
+lookup mistake: the route string `settings/player` was searched, only `PlayerSettings.kt` was
+found, and the conclusion drawn was that no such row existed. `AppearanceSettings.kt` was never
+opened. Read the file you are changing, not the string you expect to find in it.
+
+The switch gates the **fetch**, not the display: a disabled Canvas issues no network request at
+all, so §6.1's rule that nothing is fetched until a completed hold survives the switch being off.
+
+**The port deviation.** `SpotifyClient.kt` sets `expectSuccess = false`, so Ktor does not throw
+on a 401/403 or 5xx - it returns an ordinary response whose body is Spotify's protobuf *error*,
+not a `CanvasResponse`. `getSpotifyCanvas` therefore did:
+
+    runCatching { spotify.getSpotifyCanvas(...).body<CanvasResponse>() }
+
+which cannot distinguish "this request failed" from "this track has no Canvas". The body was
+decoded blind. Both possible outcomes are bad: either it throws (status lost, misreported as a
+transport failure) or it decodes to an empty response, which becomes a `CleanNegative` and is
+cached as a permanent "no Canvas" verdict after three attempts. **An outage could therefore
+silently mark tracks as having no artwork, with no recovery.**
+
+Fixed in `Spotify.kt` by rejecting the status before the body is touched:
+
+    if (!response.status.isSuccess()) throw SpotifyHttpException(response.status.value)
+    response.body<CanvasResponse>()
+
+This is the **only** deliberate deviation from the as-ported networking, approved by user
+decision, and it changes nothing on a successful fetch. It is what makes §9.2's stated
+taxonomy enforceable rather than accidental: with a status in hand, 401/403, 5xx and a genuine
+empty answer are three different things.
+
+**The notification replaces the auto-disable**, also by user decision. §9.2 originally said
+three consecutive failures would disable the feature until manually re-enabled. Permanently
+disabling a setting on the user's behalf is the more surprising behaviour, and the Phase 7
+settings switch is already a manual kill-switch - so the app now says what went wrong instead.
+`IMPORTANCE_HIGH`, and **once per run of failures**: the trigger is `failures == LIMIT`, not
+`>=`, because the counter increments one at a time and resets on any success. `>=` would notify
+again on every further failure through a long outage. Pinned by `CanvasFailureCauseTest`.
+
+Three distinct messages, from `FailureCause`: `UNREACHABLE`, `AUTH_EXPIRED` (401/403, or a stale
+`sp_dc` cookie), `SERVER_ERROR`. `FailureCause` is deliberately **not** consulted by
+`CanvasCachePolicy` - §9.2 groups all three together for caching, and only the user-facing message
+distinguishes them. The policy and its 7 tests are untouched.
+
+**Decode failure** falls back silently and explicitly does **not** move the failure counter: the
+network and the session were both fine, so counting it would report a Spotify problem that does
+not exist. It also clears `canvasArtworkRevealed` and `canvasFirstFrameReady`, because a
+transparent artwork must never be left over a normal background.
+
+Gates: :app:compileFossDebugKotlin clean, :app:testFossDebugUnitTest **144/144** (139 + 5 added
+in `CanvasFailureCauseTest`).
+
+Verified on device (emulator-5556): switch present and first in the Player group, toggling off
+suppresses the Canvas entirely, logged-out greying and login navigation, and no Canvas-related
+rows on the separate "Player and audio" screen. The failure notification itself was **not**
+observed - it needs an outage or a dead token.
+
+README: credit row added to "Main Inspirations" for maxrave-dev and spotify_monitor, the latter
+being the source of the TOTP logic credited in `SpotifyTotp.kt`.
+
+Still open, and deliberately so: **§11.2 #12, landscape / `isFullScreen` / tablet**, deferred by
+user decision. The Phase 7 gate is amended to exclude it, because otherwise it could never pass.

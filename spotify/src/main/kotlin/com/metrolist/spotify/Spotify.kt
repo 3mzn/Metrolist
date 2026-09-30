@@ -39,6 +39,7 @@ import com.metrolist.spotify.model.response.spotify.search.SpotifySearchResponse
 import io.ktor.client.call.body
 import io.ktor.client.engine.ProxyBuilder
 import io.ktor.client.engine.http
+import io.ktor.http.isSuccess
 
 class Spotify {
     private val spotifyClient = SpotifyClient()
@@ -122,7 +123,28 @@ class Spotify {
         trackId: String,
         token: String,
         clientToken: String,
-    ) = runCatching {
-        spotifyClient.getSpotifyCanvas(trackId, token, clientToken).body<CanvasResponse>()
+    ): Result<CanvasResponse> = runCatching {
+        val response = spotifyClient.getSpotifyCanvas(trackId, token, clientToken)
+        // `expectSuccess = false` (SpotifyClient.kt), so a 401/403 or 5xx arrives here as an
+        // ordinary response whose body is Spotify's protobuf *error*, not a CanvasResponse.
+        // Decoding it blind cannot tell "this request failed" apart from "this track has no
+        // Canvas", and for Canvas that difference is not cosmetic: a misread error becomes a
+        // cached "no Canvas" verdict that outlives the outage which caused it.
+        //
+        // This is the only deliberate deviation from the SimpMusic port, and it changes nothing
+        // on a successful fetch. See SPEC_SPOTIFY_CANVAS.md 14.1l.
+        if (!response.status.isSuccess()) throw SpotifyHttpException(response.status.value)
+        response.body<CanvasResponse>()
     }
 }
+
+/**
+ * A non-2xx response from Spotify, carrying the status code.
+ *
+ * Metrolist addition - SimpMusic has no equivalent. It exists solely because the client is
+ * configured with `expectSuccess = false`, so an error would otherwise be silently decoded as if
+ * it were a valid payload.
+ *
+ * @param status the HTTP status code
+ */
+class SpotifyHttpException(val status: Int) : Exception("Spotify returned HTTP $status")

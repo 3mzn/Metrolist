@@ -166,6 +166,7 @@ import com.metrolist.music.constants.SleepTimerFadeOutKey
 import com.metrolist.music.constants.SleepTimerStopAfterCurrentSongKey
 import com.metrolist.music.constants.SliderStyle
 import com.metrolist.music.constants.SliderStyleKey
+import com.metrolist.music.constants.SpotifyCanvasEnabledKey
 import com.metrolist.music.constants.SquigglySliderKey
 import com.metrolist.music.constants.ThumbnailCornerRadius
 import com.metrolist.music.constants.UseNewPlayerDesignKey
@@ -814,6 +815,12 @@ fun BottomSheetPlayer(
         canvasResult = null
     }
 
+    // Spec §8.3: ON by default. Read here rather than in Thumbnail so the switch gates the
+    // fetch itself — a disabled Canvas must issue no network request at all, not merely hide
+    // the result (spec §6.1's rule that nothing is fetched until a completed hold applies to
+    // a completed hold that the user was allowed to make).
+    val canvasEnabled by rememberPreference(SpotifyCanvasEnabledKey, true)
+
     fun onCanvasHoldToggle() {
         scope.launch {
             if (canvasEngaged) {
@@ -825,6 +832,10 @@ fun BottomSheetPlayer(
                 return@launch
             }
             if (canvasLoading) return@launch
+            // Spec §8.2: the settings switch is the only way to turn the Canvas off. Checked
+            // after the login test so a signed-out user still gets the "log in" toast rather
+            // than silence, which would look like the hold had simply stopped working.
+            if (!canvasEnabled) return@launch
             if (!canvasRepository.isLoggedIn()) {
                 Toast.makeText(context, R.string.canvas_login_required, Toast.LENGTH_SHORT).show()
                 return@launch
@@ -1160,7 +1171,15 @@ fun BottomSheetPlayer(
                     readinessKey = canvasEngagementId,
                     modifier = Modifier.fillMaxSize(),
                     onFirstFrameReady = { canvasFirstFrameReady = true },
-                    onPlaybackError = { canvasResult = null },
+                    // Spec §10: a decode failure falls back silently to the normal background and
+                    // is NOT a Spotify failure — the network and the session were both fine, so it
+                    // must not move the consecutive-failure counter or raise the §9.2 notification.
+                    // A second long-press re-fetches, so a transient decode fault self-heals.
+                    onPlaybackError = {
+                        canvasResult = null
+                        canvasFirstFrameReady = false
+                        canvasArtworkRevealed = false
+                    },
                 )
 
                 when (playerBackground) {

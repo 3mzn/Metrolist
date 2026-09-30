@@ -55,6 +55,7 @@ import com.metrolist.music.di.CanvasCache
 import com.metrolist.music.utils.dataStore
 import com.metrolist.music.utils.safeDataStoreEdit
 import com.metrolist.spotify.Spotify
+import com.metrolist.spotify.SpotifyHttpException
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -96,8 +97,14 @@ private sealed interface Outcome {
     /** Spotify answered normally and there is genuinely no Canvas for this track. */
     data object CleanNegative : Outcome
 
-    /** Spotify was unreachable, timed out, 5xx, or rejected the token. Never a negative. */
-    data object TransportFailure : Outcome
+    /**
+     * The lookup never got a usable answer. Never a negative, whatever the cause.
+     *
+     * [cause] exists only so the user-facing notification can say something actionable. It does
+     * **not** affect caching: spec 9.2 groups an outage, a timeout and an expired token together,
+     * because all three prove nothing about whether this track has a Canvas.
+     */
+    data class Failure(val cause: FailureCause) : Outcome
 
     /** Maps to the shared enum so the tested policy is the one that runs. */
     val kind: OutcomeKind
@@ -105,8 +112,20 @@ private sealed interface Outcome {
             when (this) {
                 is Success -> OutcomeKind.SUCCESS
                 is CleanNegative -> OutcomeKind.CLEAN_NEGATIVE
-                is TransportFailure -> OutcomeKind.TRANSPORT_FAILURE
+                is Failure -> OutcomeKind.TRANSPORT_FAILURE
             }
+}
+
+/** Why a Canvas lookup failed. None of these is evidence about the track itself. */
+internal enum class FailureCause {
+    /** No usable route to Spotify: offline, DNS failure, timeout, connection reset. */
+    UNREACHABLE,
+
+    /** Spotify answered and rejected us. The stored session or token has expired. */
+    AUTH_EXPIRED,
+
+    /** Spotify answered with a server-side error. */
+    SERVER_ERROR,
 }
 
 @Singleton
@@ -163,7 +182,7 @@ class SpotifyCanvasRepository @Inject constructor(
                     null
                 }
 
-                is Outcome.TransportFailure -> {
+                is Outcome.Failure -> {
                     applyOutcome(videoId, outcome)
                     null
                 }
@@ -181,7 +200,7 @@ class SpotifyCanvasRepository @Inject constructor(
             sessionRepository.validTokens()
                 ?: run {
                     Timber.tag(TAG).w("no valid Spotify tokens for $videoId - not logged in, or cookie is stale")
-                    return Outcome.TransportFailure
+                    return Outcome.Failure(FailureCause.AUTH_EXPIRED)
                 }
 
         // Ported verbatim from SimpMusic. The scrub is what makes the search match at all.
@@ -204,7 +223,7 @@ class SpotifyCanvasRepository @Inject constructor(
                 .searchSpotifyTrack(q, tokens.personal, tokens.client)
                 .getOrElse {
                     Timber.tag(TAG).w(it, "search failed for $videoId")
-                    return Outcome.TransportFailure
+                    return Outcome.Failure(FailureCause.UNREACHABLE)
                 }
 
         val items = search.data?.searchV2?.tracksV2?.items
@@ -251,9 +270,22 @@ class SpotifyCanvasRepository @Inject constructor(
         val canvas =
             spotify
                 .getSpotifyCanvas(spotifyTrackId, tokens.personal, tokens.client)
-                .getOrElse {
-                    Timber.tag(TAG).w(it, "canvas fetch failed for $spotifyTrackId")
-                    return Outcome.TransportFailure
+                .getOrElse { error ->
+                    // The status is only reachable because `getSpotifyCanvas` rejects non-2xx
+                    // before decoding. Without that, an error body is decoded as if it were a
+                    // payload and a dead Spotify looks exactly like an empty track.
+                    val cause =
+                        when (error) {
+                            is SpotifyHttpException ->
+                                when (error.status) {
+                                    401, 403 -> FailureCause.AUTH_EXPIRED
+                                    else -> FailureCause.SERVER_ERROR
+                                }
+
+                            else -> FailureCause.UNREACHABLE
+                        }
+                    Timber.tag(TAG).w(error, "canvas fetch failed for $spotifyTrackId ($cause)")
+                    return Outcome.Failure(cause)
                 }
 
         val result =
@@ -362,10 +394,13 @@ class SpotifyCanvasRepository @Inject constructor(
             val failures = (context.dataStore.data.first()[SpotifyCanvasFailureCountKey] ?: 0) + decision.failuresDelta
             context.safeDataStoreEdit { it[SpotifyCanvasFailureCountKey] = failures }
             Timber.tag(TAG).w("consecutive Spotify failures: $failures/$SPOTIFY_CANVAS_FAILURE_LIMIT")
-            if (failures >= SPOTIFY_CANVAS_FAILURE_LIMIT) {
-                // Phase 3 records the trip only. The auto-disable and its one-shot toast are Phase 7,
-                // so this log line is the trigger point that phase hooks into.
-                Timber.tag(TAG).w("failure limit reached - Phase 7 auto-disables here")
+            if (failures == SPOTIFY_CANVAS_FAILURE_LIMIT) {
+                // Exactly on the threshold, not `>=`: the counter is only ever incremented one
+                // failure at a time and resets on the next successful answer, so `>=` would
+                // re-notify on every further failure during a long outage. The spec's original
+                // wording was "one toast", so the same has to be true here - see 14.1l.
+                val cause = (outcome as? Outcome.Failure)?.cause ?: FailureCause.UNREACHABLE
+                SpotifyCanvasFailureNotifier.notify(context, cause)
             }
         } else if (decision.resetFailures) {
             val failures = context.dataStore.data.first()[SpotifyCanvasFailureCountKey] ?: 0

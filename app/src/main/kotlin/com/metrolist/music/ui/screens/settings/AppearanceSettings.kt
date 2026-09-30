@@ -114,6 +114,8 @@ import com.metrolist.music.constants.SwipeSensitivityKey
 import com.metrolist.music.constants.SwipeThumbnailKey
 import com.metrolist.music.constants.SwipeToRemoveSongKey
 import com.metrolist.music.constants.SwipeToSongKey
+import com.metrolist.music.constants.SpotifyCanvasEnabledKey
+import com.metrolist.music.constants.SpotifySpdcKey
 import com.metrolist.music.constants.UseNewMiniPlayerDesignKey
 import com.metrolist.music.constants.UseNewPlayerDesignKey
 import com.metrolist.music.ui.component.DefaultDialog
@@ -313,6 +315,16 @@ fun AppearanceSettings(
             SwipeThumbnailKey,
             defaultValue = true,
         )
+    // SPEC_SPOTIFY_CANVAS spec 8.3: on by default, so the Canvas works with no settings visit.
+    val (canvasEnabled, onCanvasEnabledChange) =
+        rememberPreference(
+            SpotifyCanvasEnabledKey,
+            defaultValue = true,
+        )
+    // The same signal the Spotify settings screen uses for "Logged in". Read directly because
+    // the repository's check is a suspend call and this gates a composable synchronously.
+    val spotifySpdc by rememberPreference(SpotifySpdcKey, "")
+    val spotifyLoggedIn = spotifySpdc.isNotBlank()
     val (swipeSensitivity, onSwipeSensitivityChange) =
         rememberPreference(
             SwipeSensitivityKey,
@@ -1443,6 +1455,54 @@ fun AppearanceSettings(
             title = stringResource(R.string.player),
             items =
                 listOf(
+                    // SPEC_SPOTIFY_CANVAS spec 8.3: first row of the Player group, by user
+                    // decision. This is the group the user named when placing the switch, so it
+                    // lives here and not in the separate "Player and audio" screen.
+                    Material3SettingsItem(
+                        icon = painterResource(R.drawable.graphic_eq),
+                        title = { Text(stringResource(R.string.canvas_enable)) },
+                        description = {
+                            Text(
+                                stringResource(
+                                    if (spotifyLoggedIn) {
+                                        R.string.canvas_enable_description
+                                    } else {
+                                        R.string.canvas_login_required_subtitle
+                                    },
+                                ),
+                            )
+                        },
+                        trailingContent = {
+                            Switch(
+                                // Greyed rather than hidden (spec 8.2): a switch you cannot find
+                                // gives no reason, whereas a visible-but-disabled one plus a
+                                // subtitle says exactly what is missing and why.
+                                enabled = spotifyLoggedIn,
+                                checked = canvasEnabled,
+                                onCheckedChange = onCanvasEnabledChange,
+                                thumbContent = {
+                                    Icon(
+                                        painter =
+                                            painterResource(
+                                                id = if (canvasEnabled) R.drawable.check else R.drawable.close,
+                                            ),
+                                        contentDescription = null,
+                                        modifier = Modifier.size(SwitchDefaults.IconSize),
+                                    )
+                                },
+                            )
+                        },
+                        // Tappable even when disabled, and it navigates to login (spec 8.2): the
+                        // only way to fix a greyed switch is to log in, so the row is the way
+                        // there rather than a dead end.
+                        onClick = {
+                            if (spotifyLoggedIn) {
+                                onCanvasEnabledChange(!canvasEnabled)
+                            } else {
+                                navController.navigate("settings/integrations/spotify")
+                            }
+                        },
+                    ),
                     Material3SettingsItem(
                         icon = painterResource(R.drawable.palette),
                         title = { Text(stringResource(R.string.new_player_design)) },

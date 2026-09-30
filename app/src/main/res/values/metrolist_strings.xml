@@ -442,6 +442,17 @@
     <string name="canvas_login_required">Log in to Spotify to use Canvas</string>
     <string name="logging_in">Logging in…</string>
 
+    <!-- Canvas failure notification. Phase 7, spec 9.2. -->
+    <string name="canvas_feature_name">Spotify Canvas</string>
+    <string name="canvas_enable">Canvas</string>
+    <string name="canvas_enable_description">Show the animated artwork Spotify provides behind the player</string>
+    <string name="canvas_login_required_subtitle">Log in to Spotify to enable</string>
+    <string name="canvas_failure_channel_name">Canvas problems</string>
+    <string name="canvas_failure_channel_description">Tells you when Canvas can\'t load because of a Spotify outage or an expired login</string>
+    <string name="canvas_error_unreachable">Can\'t reach Spotify right now, so Canvas isn\'t loading.</string>
+    <string name="canvas_error_auth_expired">Your Spotify session expired. Log in again to keep using Canvas.</string>
+    <string name="canvas_error_server">Spotify is having trouble, so Canvas isn\'t loading.</string>
+
     <string name="scrobbling_configuration">Scrobbling configuration</string>
     <string name="scrobble_min_track_duration">Scrobble songs longer than (seconds)</string>
     <string name="scrobble_delay_percent">Scrobble delay (percentage)</string>

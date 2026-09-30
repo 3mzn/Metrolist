@@ -218,7 +218,7 @@ fun PlayerSettings(
         KeepScreenOn,
         defaultValue = false
     )
-    val (historyDuration, onHistoryDurationChange) = rememberPreference(
+        val (historyDuration, onHistoryDurationChange) = rememberPreference(
         HistoryDuration,
         defaultValue = 30f
     )

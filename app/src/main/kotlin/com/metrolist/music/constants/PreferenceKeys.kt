@@ -239,7 +239,13 @@ val SpotifyClientTokenKey = stringPreferencesKey("spotifyClientToken")
 val SpotifyClientTokenExpiresKey = longPreferencesKey("spotifyClientTokenExpires")
 
 // Master switch for the Canvas background, and the consecutive-failure counter
-// that auto-disables it (N = 3, see spec 9.2).
+// behind the spec 9.2 notification.
+//
+// The counter does NOT disable anything. Spec 9.2 originally had it auto-disable the feature
+// after three failures; that was replaced by user decision with a high-priority notification,
+// because permanently switching off a setting on the user's behalf is the more surprising of the
+// two behaviours. It still counts, because "exactly three" is what makes the notification fire
+// once per run of failures instead of once per attempt.
 val SpotifyCanvasEnabledKey = booleanPreferencesKey("spotifyCanvasEnabled")
 val SpotifyCanvasFailureCountKey = intPreferencesKey("spotifyCanvasFailureCount")
 
