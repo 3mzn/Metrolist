@@ -996,7 +996,9 @@ TOTP is produced, and Spotify returns `isAnonymous=false`. The fix is not theore
 
 #### 14.1g Phase 3 — safety checks, and a second real bug they caught
 
-Implemented and device-verified. **Not yet committed** pending authorisation:
+**Status: DONE — commit `42eccd38c`**
+
+Implemented and device-verified:
 
 - `SpotifyCanvasRepository` — the ported `getCanvas`, the cache index, the failure taxonomy
 - `CanvasCachePolicy.kt` — spec 9.2's taxonomy as pure, testable logic
@@ -1221,7 +1223,7 @@ than SimpMusic's.
 
 ### Phase 3 — Canvas fetch and caching
 
-**Status:** ⏳ **PENDING**
+**Status:** ✅ **DONE — commit `42eccd38c`** (results in §14.1f, §14.1g)
 
 > **⚑ COPY, DON'T REWRITE.** Port `Spotify.kt`'s `getCanvas` and SimpMusic's
 > `LyricsCanvasRepositoryImpl.getCanvas` **as they are**. SimpMusic already has a working
@@ -1412,7 +1414,7 @@ with no Canvas and no orphaned UI.
 | 1 | `:spotify` module | none | no | **✅ DONE** `42aaa9f8` |
 | **1.5** | **Headless chain proof (inserted)** | **none** | **yes** | **✅ DONE** `b393250d` |
 | 2 | Login + tokens | low | **yes — real login** | **✅ DONE + verified** `e65881a55` |
-| 3 | Fetch + cache | **none** | **yes — the risky one** | **yes — headless** |
+| 3 | Fetch + cache | **none** | **yes — the risky one** | **✅ DONE** `42eccd38c` |
 | 4 | Video surface | **medium** | **yes** | yes — flag-driven |
 | 5 | Long-press | medium | yes | needs 4 |
 | 6 | Swipe | low | yes | needs 4 |
@@ -1548,7 +1550,7 @@ single most important thing to understand before writing code.**
 |---|---|
 Working repo | `C:\musicapp\metrolist` |
 Branch | `testing` |
-HEAD | `e65881a55` - *"feat(spotify): add Spotify login and token storage"* |
+HEAD | `42eccd38c` - *"feat(spotify): fetch and cache Canvas behind a temporary flag"* |
 Working tree | **Clean** |
 Remotes | `origin` = MetrolistGroup/metrolist, `personal` = 3mzn/Metrolist. **Never push.** |
 Protected tag | `rollback/pre-video` → `1e4bf4618` — **must stay intact** |
@@ -1912,11 +1914,11 @@ flag**, not a gesture. **Phases 0–4 are complete without a single gesture exis
 are layered on last.
 
 Each phase: one commit, `testing`, explicit user authorisation required.
-Current status: **Phases 0, 1, 1.5 and 2 are committed** — `97107e2e`, `42aaa9f8`,
-`b393250d`, `883d3cdd` (spec fold), `e65881a55`. **Phase 3 — Canvas fetch and cache — is next**, and is
-the highest-risk phase in the project. Phase 2’s verification is closed (§14.1d): our own login
-persists a real cookie and the Phase 1.5 suite passes 4/4 against it.
-
+Current status: **Phases 0, 1, 1.5, 2 and 3 are committed** — `97107e2e`, `42aaa9f8`,
+`b393250d`, `e65881a55`, `42eccd38c`.
+**Phase 4 — the Canvas video surface — is next.** Phases 0-4 are the ones that run
+before any gesture exists, and Phase 4 is the last of them: it makes the Canvas actually
+visible behind the player, still behind the temporary flag rather than the long-press.
 ### 16.16 If you are resuming
 
 1. Re-read §16.8 (the previous failure) before writing any playback code.
@@ -1926,8 +1928,9 @@ persists a real cookie and the Phase 1.5 suite passes 4/4 against it.
    misleading experiments that preceded it, so neither is repeated.
 4. Confirm `git status` — clean once Phase 2 is committed.
 5. Confirm `adb devices` shows `emulator-5556`.
-6. **Phase 2 is fully verified — §14.1d is closed.** No outstanding items remain
-   before Phase 3.
+6. **Phases 2 and 3 are fully verified** — §14.1d and §14.1g. No outstanding items.
+7. Read **§14.1f** before touching the manifest. It records why the
+   `org.apache.http.legacy` `<uses-library>` had to go and must not be re-added.
    user to complete a real Spotify login, then a DataStore read, then a re-run of the
    Phase 1.5 suite against the cookie our own login stored.
 7. **If the `sp_dc` cookie has gone stale**, the symptom is `isAnonymous=true` rather than an
@@ -1972,14 +1975,17 @@ writes — main DB was 598 KB, WAL 4.1 MB), then
 persists a 211-char `sp_dc`, and `:spotify:connectedDebugAndroidTest` passes **4/4 with 0
 skipped** against that cookie, including `isAnonymous == false`.
 
-**Phase 3 is implemented and fully device-verified but uncommitted** (§14.1g). Both safety
-checks passed, and they caught a real defect in the failure-counter reset, now fixed and pinned by
-7 unit tests. `:app` test count is **139**, not 132.
+**Phase 4 is next** — the TextureView surface, behind the same temporary flag. Everything the
+risky phases needed is proven: the login works end to end, the fetch and both caches are correct,
+and the Spotify chain has never once interrupted playback.
+
+**`SPOTIFY_CANVAS_FETCH_ENABLED` is `false` in the committed state.** Phase 4 turns the Canvas on
+for the first time on screen, so it should expect to set that flag.
 
 **The one thing most likely to bite again:** classloading order. A transitive dependency can be
 present and correct and still lose to a platform stub (§14.1f). Anything verified only in a module's
 own test APK is **not** verified.
 
-**Phases 0, 1, 1.5 and 2 are committed** — `97107e2e`, `42aaa9f8`, `b393250d`, `e65881a55`. The Spotify chain is proven end to end against the live
+**Phases 0, 1, 1.5, 2 and 3 are committed** — `97107e2e`, `42aaa9f8`, `b393250d`, `e65881a55`, `42eccd38c`. The Spotify chain is proven end to end against the live
 API (§14.1c) and the login screen renders (§14.1d). **Phase 3 — Canvas fetch and cache —
 is next**, the highest-risk phase, and it runs with no UI at all behind a temporary flag.
