@@ -36,7 +36,7 @@ jobs:
             exit 0
           fi
 
-          NEW_VERSION=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts || echo "")
+          NEW_VERSION=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts | head -1 || echo "")
           VERSION_CODE=$(grep -oP 'versionCode\s*=\s*\K\d+' app/build.gradle.kts || echo "")
 
           if [ -z "$NEW_VERSION" ]; then
@@ -68,7 +68,7 @@ jobs:
           fi
 
           if git show "$OLD_REF":app/build.gradle.kts > /dev/null 2>&1; then
-            OLD_VERSION=$(git show "$OLD_REF":app/build.gradle.kts | grep -oP 'versionName\s*=\s*"\K[^"]+' || echo "")
+            OLD_VERSION=$(git show "$OLD_REF":app/build.gradle.kts | grep -oP 'versionName\s*=\s*"\K[^"]+' | head -1 || echo "")
             echo "Previous version (from $OLD_REF): $OLD_VERSION"
             
             if [ "$OLD_VERSION" != "$NEW_VERSION" ]; then
