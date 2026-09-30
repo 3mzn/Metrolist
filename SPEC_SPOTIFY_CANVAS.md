@@ -1015,7 +1015,20 @@ SpotifyCanvas: first canvas frame rendered
 
 **Verified on device:** renders; genuinely animating (3 distinct frames, MD5-compared); gradient,
 blur, colour wash and particles all suppressed while it is up; silent fallback on a no-Canvas track;
-audio uninterrupted; portrait. Gate: compile clean, **139/139**.
+audio uninterrupted. Gate: compile clean, **139/139**.
+
+**Confirmed by the user, on the device, after the commit:**
+
+| Check | Result |
+|---|---|
+| **Pause keeps the Canvas looping** (spec §7.3) | ✅ confirmed |
+| **`isFullScreen` mode** | ✅ confirmed |
+| Input across the whole app, collapsed and expanded | ✅ fixed and confirmed |
+| Canvas present during expand and collapse animations | ✅ fixed and confirmed |
+
+**⚠ Landscape is the one unverified item**, and the user deferred it. It is the heavy-crop case
+(spec §5.2: a 9:16 Canvas cropped hard in landscape, deliberately not letterboxed) so it is a real
+gap rather than a formality. **Phase 5 must verify it** before the gesture ships.
 
 #### The five bugs — four were mine, and the user found every one
 
@@ -1068,7 +1081,6 @@ until the gesture exists.
 
 **Carried into Phase 5** as a requirement and a verification item.
 
-**Still unverified:** landscape (the heavy-crop case), pause-keeps-looping, and `isFullScreen`.
 
 **Committed state:** both `SPOTIFY_CANVAS_FETCH_ENABLED` and `SPOTIFY_CANVAS_RENDER_ENABLED` are
 `false`, so the committed tree renders nothing and the player behaves exactly as it did before.
@@ -1436,6 +1448,8 @@ the commit is clean.
 - Release at 1.5s → nothing happens, **and no network request** (check the log).
 - Haptic fires at 2s, not on press.
 - Second 2s hold → everything restored, Canvas gone.
+- **Landscape** — the one check Phase 4 never got to. Canvas fills the screen, cropped hard, no
+  letterboxing and no black bars (§5.2).
 - **No black flash on a first-ever play of a Canvas track** — hold the normal background until the
   first frame, then crossfade. This verifies the deferred §7.4 work (§14.1h).
 - Collapse mid-wash and re-expand: no partial-alpha Canvas left behind.
