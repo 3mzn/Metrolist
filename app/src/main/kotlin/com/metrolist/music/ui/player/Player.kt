@@ -1090,18 +1090,32 @@ fun BottomSheetPlayer(
             val sheetProgress by remember(state) { derivedStateOf { state.progress } }
             val sheetUp = sheetProgress > CANVAS_ACTIVE_PROGRESS_THRESHOLD
             val canvasActive = canvasEngaged && canvasResult != null && sheetUp
-            // The wash target: the normal background stays up until the first frame is ready, then
-            // the Canvas crossfades in over 800ms (spec §6.4, §7.4). Derived — never assigned — so
-            // a mid-wash collapse or re-expand cannot leave a partial alpha behind.
-            // `canvasRevealed` is also what suppresses the old background below: the existing
-            // background, wash and particles stay visible until the first frame, never black.
+            // Spec §7.4: the normal background stays up until the Canvas reports a rendered
+            // frame. Derived — never assigned — so a mid-wash collapse or re-expand cannot leave a
+            // partial alpha behind.
             val canvasRevealed = canvasActive && canvasFirstFrameReady
+            //
+            // Spec §6.4: 2000ms crossfade in and out (raised from 800ms by user decision during
+            // Phase 5 - it read as a snap at 800ms, and this is *why*, see below).
+            //
+            // This single value drives BOTH sides of the fade, which is the whole point. An
+            // earlier version animated only the Canvas in and hard-cut the normal background out
+            // the instant the first frame arrived. Nothing was actually crossfading: the gradient,
+            // wash and particles vanished in a single frame and the Canvas then ramped up over
+            // black, which reads as a snap no matter what the duration is.
             val canvasWashAlpha by animateFloatAsState(
                 targetValue = if (canvasRevealed) 1f else 0f,
-                animationSpec = tween(800),
+                animationSpec = tween(CANVAS_WASH_MS),
                 label = "canvasWash",
             )
-            // Stays true through the 800ms fade-out so the restore wash can render; the layer
+            // The normal background's share of the frame: 1 while no Canvas is up, 0 once the
+            // Canvas has fully arrived. Every pre-existing background layer below multiplies by
+            // this so all of them fade out together rather than popping.
+            //
+            // Note this is NOT `!canvasRevealed`: that boolean would keep cutting them out the
+            // instant the first frame lands, which is the bug being fixed here.
+            val legacyAlpha = 1f - canvasWashAlpha
+            // Stays true through the fade-out so the restore crossfade can render; the layer
             // itself still goes GONE the moment the sheet drops (via `sheetUp`).
             val layerLive = canvasActive || canvasWashAlpha > 0.001f
 
@@ -1130,7 +1144,7 @@ fun BottomSheetPlayer(
                 when (playerBackground) {
                     // While the Canvas is up it replaces the background entirely (spec 5). The
                     // crossfade between them is Phase 5, where the gesture provides the timing.
-                    PlayerBackgroundStyle.BLUR -> if (!canvasRevealed) {
+                    PlayerBackgroundStyle.BLUR -> if (legacyAlpha > 0f) {
                         // Single AsyncImage with Coil crossfade — no AnimatedContent snap.
                         // Coil keeps the old image visible while loading the new one, then
                         // crossfades between them. No gap, no flash.
@@ -1150,7 +1164,10 @@ fun BottomSheetPlayer(
                                         .crossfade(800)
                                         .build()
                                 }
-                            Box(modifier = Modifier.alpha(backgroundAlpha)) {
+                            // `legacyAlpha` crossfades against the Canvas; `backgroundAlpha` is
+                            // the pre-existing sheet-collapse fade. Both apply, and they are
+                            // independent: one tracks the wash, the other tracks the sheet.
+                            Box(modifier = Modifier.alpha(backgroundAlpha * legacyAlpha)) {
                                 AsyncImage(
                                     model = blurRequest,
                                     onError = { if (!blurFallback) blurFallback = true },
@@ -1171,7 +1188,7 @@ fun BottomSheetPlayer(
                         }
                     }
 
-                    PlayerBackgroundStyle.GRADIENT -> if (!canvasRevealed) {
+                    PlayerBackgroundStyle.GRADIENT -> if (legacyAlpha > 0f) {
                         AnimatedContent(
                             targetState = gradientColors,
                             transitionSpec = {
@@ -1197,7 +1214,7 @@ fun BottomSheetPlayer(
                                 Box(
                                     Modifier
                                         .fillMaxSize()
-                                        .alpha(backgroundAlpha)
+                                        .alpha(backgroundAlpha * legacyAlpha)
                                         .background(Brush.verticalGradient(colorStops = gradientColorStops))
                                         .background(Color.Black.copy(alpha = 0.2f)),
                                 )
@@ -1205,27 +1222,32 @@ fun BottomSheetPlayer(
                         }
                     }
 
-                    else -> if (!canvasRevealed) {
+                    else -> if (legacyAlpha > 0f) {
                         PlayerBackgroundStyle.DEFAULT
                     }
                 }
 
                 // Track-change color wash — always rendered so animation stays alive across
-                // recompositions. Suppressed while a Canvas renders: particles and the wash belong
-                // to the normal background, and spec 5 forbids either over a Canvas.
-                if (!canvasRevealed) {
+                // recompositions. Fades out with everything else rather than being cut, so the
+                // crossfade is symmetric. Spec 5 forbids it over a Canvas; at legacyAlpha == 0 it
+                // contributes nothing, which satisfies that without a hard cut.
+                if (legacyAlpha > 0f) {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
-                            .background(animatedWashColor.copy(alpha = 0.4f)),
+                            .background(animatedWashColor.copy(alpha = 0.4f * legacyAlpha)),
                     )
                 }
 
-                // Bass-reactive particles — full screen behind everything. Never drawn over a
-                // Canvas; they return only when the Canvas itself is dismissed (spec 5).
-                if (useNewPlayerDesign && !canvasRevealed) {
+                // Bass-reactive particles — full screen behind everything. Faded by the caller's
+                // modifier rather than by touching PlayerParticles: its draw loop overwrites
+                // baseColor's alpha, so the only clean seam is the Canvas modifier. Spec 5 keeps
+                // them from ever being drawn over a Canvas; at legacyAlpha == 0 they are gone.
+                if (useNewPlayerDesign && legacyAlpha > 0f) {
                     PlayerParticles(
-                        modifier = Modifier.fillMaxSize(),
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .alpha(legacyAlpha),
                         baseColor = TextBackgroundColor,
                     )
                 }

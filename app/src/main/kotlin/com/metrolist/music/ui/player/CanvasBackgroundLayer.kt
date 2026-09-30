@@ -72,6 +72,20 @@ private const val TAG = "SpotifyCanvas"
 const val CANVAS_ACTIVE_PROGRESS_THRESHOLD = 0.35f
 
 /**
+ * Spec §6.4: how long the Canvas crossfades in and out.
+ *
+ * **2000ms — set by user decision during Phase 5.** The spec originally said 800ms, and the first
+ * implementation reported as "a quick kinda-smooth 200ms-feeling snap". The cause was not the
+ * duration at all: only the Canvas side was animated, while the normal background was hard-cut the
+ * instant the first frame landed. Nothing was crossfading, so the perceived speed was the cut.
+ *
+ * Both sides now ride this one value, and the duration is the thing you actually see. Raised
+ * 800ms \u2192 1000ms \u2192 2000ms by user preference once the crossfade worked; 2000ms is the value that
+ * reads as smooth.
+ */
+const val CANVAS_WASH_MS = 2000
+
+/**
  * A TextureView that never consumes touch.
  *
  * The Canvas sits behind the player and is **decorative only**. Left to itself a `TextureView`

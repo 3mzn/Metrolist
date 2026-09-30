@@ -249,7 +249,7 @@ artwork and `AnimatedContent` has replaced it.
 
 ### 6.2 Long-press — dismiss Canvas
 
-A second 1s long-press dismisses. Background, particles, and artwork all return over **800ms**
+A second 1s long-press dismisses. Background, particles, and artwork all return over **2000ms**
 (symmetric with the wash-in). See §6.4 for the artwork's separate 400ms fade.
 
 ### 6.3 Swipe up on artwork
@@ -273,9 +273,24 @@ A second 1s long-press dismisses. Background, particles, and artwork all return 
 
 | Transition | Duration |
 |---|---|
-Reveal / hide artwork (swipe) | **400ms** fixed |
-Dismiss Canvas → artwork opaque | **400ms** fixed |
-Dismiss Canvas → background + particles | **800ms** |
+| Reveal / hide artwork (swipe) | **400ms** fixed |
+| Dismiss Canvas → artwork opaque | **400ms** fixed |
+| Dismiss Canvas → background + particles | **2000ms** crossfade |
+
+> **Both directions of the wash are one value, `CANVAS_WASH_MS`, and both sides animate.**
+>
+> The spec originally said 800ms and the first implementation was reported as "a quick
+> kinda-smooth 200ms-feeling snap". **The duration was never the problem.** Only the Canvas
+> side was animated; the normal background was hard-cut the instant the first frame landed,
+> so nothing was crossfading and the perceived speed was the cut. Both layers now ride the
+> same curve via `legacyAlpha = 1f - canvasWashAlpha`.
+>
+> Raised 800ms → 1000ms → **2000ms** by user preference once the crossfade actually worked.
+>
+> One trap worth recording: particles are faded by a `Modifier.alpha` at the **call site**,
+> not by passing a transparent `baseColor`. `PlayerParticles`' draw loop does
+> `baseColor.copy(alpha = a * ...)`, which *overwrites* the incoming alpha rather than
+> multiplying it — so a transparent `baseColor` would have silently done nothing.
 
 ---
 
@@ -286,8 +301,8 @@ Dismiss Canvas → background + particles | **800ms** |
 **TextureView.** Not SurfaceView, not manual frame decoding.
 
 SurfaceView punches a separate hole in the window and is drawn above the UI layer by the
-system. It would ignore the 800ms alpha wash (popping in at full opacity), would sit **above**
-the controls rather than behind them, and would break the graceful 800ms restore. TextureView
+system. It would ignore the Canvas alpha wash (popping in at full opacity), would sit **above** the
+controls rather than behind them, and would break the graceful restore. TextureView
 obeys normal UI compositing, so fades and z-order work.
 
 Cost accepted: slightly higher GPU memory and battery than SurfaceView, because frames are
@@ -330,7 +345,7 @@ flash black.
 
 ### 7.4 First frame
 
-The existing background is **kept until the Canvas's first frame is ready**, then the 800ms
+The existing background is **kept until the Canvas's first frame is ready**, then the 2000ms
 wash begins. There is **no black flash** at any point in the sequence.
 
 ---
@@ -451,13 +466,13 @@ handled locally resolves to: leave the player alone, restore the normal backgrou
 Must all pass:
 
 1. Long-press 1s on artwork, logged in, track **with** a Canvas → background washes to Canvas
-   over 800ms, particles gone, no black flash.
+over 2000ms, particles gone, no black flash.
 2. Music plays perfectly throughout, uninterrupted, unaffected by Canvas.
 3. One short swipe up on artwork → artwork fades to transparent over 400ms fixed; Canvas
    visible, particles still absent.
 4. Swipe up again → artwork fades back to fully opaque over 400ms.
 5. Second long-press 1s → Canvas dismissed, background + particles + opaque artwork all
-   restored over 800ms / 400ms.
+restored over 2000ms / 400ms.
 6. Track with **no** Canvas → long-press does nothing, silently. Music unaffected.
 7. Spotify not logged in → tap on the greyed switch navigates to login + shows a toast.
    Long-press shows the toast only.
@@ -1017,7 +1032,7 @@ SpotifyCanvas: first canvas frame rendered
 
 | Decision | Reason |
 |---|---|
-| **TextureView**, not SurfaceView (§7.1) | A SurfaceView composites *above* the UI layer, so it would ignore the 800ms wash and pop in at full opacity. Verified visually: the header and artwork sit on top. |
+| **TextureView**, not SurfaceView (§7.1) | A SurfaceView composites *above* the UI layer, so it would ignore the Canvas alpha wash and pop in at full opacity. Verified visually: the header and artwork sit on top. |
 | **A separate, muted ExoPlayer** owned by the UI layer (§7.2) | Not a second output on the music player. No `MergingMediaSource`, so the `Children enabled at different positions` class of failure is structurally impossible. |
 | `handleAudioFocus = false` | Verified: **zero audio-focus events in logcat** across a full run. The music is untouchable by construction. |
 | Its own `CacheDataSource` over the Canvas `SimpleCache` | Shares no state with the music player's cache. |
@@ -1442,11 +1457,11 @@ the commit is clean.
 - Cancel on early release; **no fetch issued before 1000ms**. Beware: a shorter window is 
   easier to hit by accident, so the early-release path carries more of the real usage.
 - First engagement sets the phase gate to the real gesture and **retires the temporary flag**.
-- 800ms wash in; 800ms restore on dismissal, 400ms artwork return to opaque.
+- 2000ms crossfade in and out, 400ms artwork return to opaque.
 - **⚠ Implement spec §7.4 here, not before** — Phase 4 deferred it. The Canvas only appears
   after the 1s hold completes and no fetch was issued before it, so there is a genuine window
   between the gesture and the first decoded frame. Hold the existing background until
-  `onFirstFrameReady`, then crossfade over 800ms. This is the one thing that makes the no-black-flash
+  `onFirstFrameReady`, then crossfade over 2000ms. This is the one thing that makes the no-black-flash
   guarantee true rather than incidental.
 
 **Out:** the swipe gesture.
@@ -2063,7 +2078,7 @@ Long-press cancel | Early release does nothing; **no network fetch before 1000ms
 Swipe direction | **Up only**, 60dp threshold, artwork square hit zone only |
 Swipe tracking | **NOT finger-tracked** — fixed animation |
 Artwork fade duration | **400ms** (both directions) |
-Background wash duration | **800ms** in, **800ms** restore |
+Background wash duration | **2000ms** in, **2000ms** restore |
 Swipe state | Two-state exclusive toggle, not scrubbable |
 Vertical swipe active | **Only while a Canvas is rendering** |
 Independence | Independent of `swipeThumbnail`; horizontal song-swipe never disturbed |
