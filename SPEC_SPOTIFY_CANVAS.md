@@ -1230,7 +1230,65 @@ tests=139 (132 base + 7 new), 0 failures
 
 ---
 
-#### 14.1e The duration match — a units bug upstream, copied deliberately
+#### 14.1i Phase 5 - the long-press, and retiring both temporary flags
+
+Commit `6e7f2df59`. The 1s hold replaced the 2s window by user decision, with `CANVAS_HOLD_MS`
+in `Thumbnail.kt` left as the single dial. Both temporary flags introduced in Phase 3 were retired
+here — nothing in the project is feature-gated any more except login state.
+
+Deferred from Phase 4 and implemented here as §7.4: the normal background is held until
+`onFirstFrameReady`, then crossfaded. This only matters once the Canvas appears after a deliberate
+gesture, which is why it could not be proven in Phase 4.
+
+User-verified on device: engage, dismiss, early release, silent behaviour on a track with no
+Canvas, collapse mid-wash, and the logged-out toast.
+
+#### 14.1j Phase 6 - the swipe, and what the gesture research changed
+
+Commit `29e52c29d`. Two findings worth recording.
+
+**The built-in detector was rejected.** Compose ships `detectVerticalDragGestures`, which does
+exactly this job. It is built on `awaitVerticalTouchSlopOrCancellation` — the same helper recorded
+in §16.9 as suspending indefinitely in this codebase without ever delivering a down, the fault that
+broke the hold silently and permanently. The swipe is hand-rolled instead, in the same shape as
+the hold.
+
+**Separate `pointerInput` blocks are the documented pattern, not a shortcut.** The Compose
+gesture detectors are top-level and the first blocks the coroutine forever, so a second detector
+in the same block is unreachable; Google's docs say to use separate `pointerInput` instances for
+multiple listeners. The cost is that neither gesture can cancel the other, since both consume
+nothing — which is exactly what leaves the horizontal song-swipe working. `CanvasGestureLatch`
+closes that in both directions, keyed on the pointer id rather than reset unconditionally so the
+block that reaches `open()` second cannot discard a claim the other already made.
+
+The latch was **two-way by user decision**: flick up, then pause without lifting, would otherwise
+let the hold fire at 1s and bring the artwork back. The artwork fade was raised 400ms → 1000ms on
+the same grounds as the wash; see §6.5 for why the two durations are deliberately unequal.
+
+User-verified on device: reveal, restore, sub-threshold ignored, swipe down inert, no-Canvas
+inert, `swipeThumbnail` off unaffected, horizontal song-swipe intact in every state, and both
+hold-then-swipe orderings showing only one toggle.
+
+#### 14.1k Post-Phase-6 fix - the wash was never actually crossfading
+
+Commit `bf03160ef`. Reported as "a quick kinda-smooth 200ms-feeling snap" on both engage and
+dismiss. The duration was never the cause: `canvasWashAlpha` animated only the Canvas in, while
+the gradient, colour wash and particles were gated on the `!canvasRevealed` **boolean** and were
+therefore removed in a single frame. A hard cut dominates perception regardless of the tween.
+
+Second, independent cause: the Canvas layer started at alpha 0 and the player needs ~300ms to
+produce its first frame, so most of the ramp played against nothing and only the steep tail was
+visible.
+
+Both sides now ride one value, `legacyAlpha = 1f - canvasWashAlpha`. Particles are faded by a
+`Modifier.alpha` at the **call site**, not by passing a transparent `baseColor` — `PlayerParticles`'s
+draw loop does `baseColor.copy(alpha = a * ...)`, which overwrites the incoming alpha instead of
+multiplying it, so a transparent `baseColor` would have silently done nothing. `PlayerParticles.kt`
+is unchanged.
+
+Duration 800ms → 1000ms → **2000ms** by user preference once the crossfade actually worked.
+
+#### 14.1e The duration match - a units bug upstream, copied deliberately
 
 **User decision: copy it verbatim.** Behaviour in Metrolist must be identical to SimpMusic, so
 the candidate-selection line is ported exactly as written, bug included.
@@ -1469,7 +1527,7 @@ the commit is clean.
 
 ### Phase 5 — Long-press gesture
 
-**Status:** ⏳ **PENDING**
+**Status:** ✅ **DONE — commit `6e7f2df59`** (results in §14.1i)
 
 **Goal:** the 1s long-press engages and dismisses the Canvas. First real user-facing phase.
 
@@ -1488,7 +1546,7 @@ the commit is clean.
 
 **Out:** the swipe gesture.
 
-**Gate:** compile + 132 tests.
+**Gate:** compile + **139 tests**.
 
 **Verification:**
 - Hold 1s on a known-Canvas track → background washes, no black flash, particles gone.
@@ -1511,7 +1569,7 @@ the commit is clean.
 
 ### Phase 6 — Swipe and artwork fade
 
-**Status:** ⏳ **PENDING**
+**Status:** ✅ **DONE — commit `29e52c29d`** (results in §14.1j)
 
 **Goal:** the reveal/hide interaction. Smallest, lowest-risk phase.
 
@@ -1525,7 +1583,7 @@ the commit is clean.
 
 **Out:** nothing. This completes the interaction design of §6.
 
-**Gate:** compile + 132 tests.
+**Gate:** compile + **139 tests**.
 
 **Verification:**
 - Swipe up → artwork fades to fully transparent over 1000ms; Canvas visible, **particles still
@@ -1580,10 +1638,14 @@ with no Canvas and no orphaned UI.
 | **1.5** | **Headless chain proof (inserted)** | **none** | **yes** | **✅ DONE** `b393250d` |
 | 2 | Login + tokens | low | **yes — real login** | **✅ DONE + verified** `e65881a55` |
 | 3 | Fetch + cache | **none** | **yes — the risky one** | **✅ DONE** `42eccd38c` |
-| 4 | Video surface | **medium** | **yes** | yes — flag-driven |
-| 5 | Long-press | medium | yes | needs 4 |
-| 6 | Swipe | low | yes | needs 4 |
+| 4 | Video surface | **medium** | **yes** | ✅ **DONE** `8cba7cc2d` — device results in §14.1h |
+| 5 | Long-press | medium | yes | ✅ **DONE** `6e7f2df59` — results in §14.1i |
+| 6 | Swipe | low | yes | ✅ **DONE** `29e52c29d` — results in §14.1j |
 | 7 | Settings + credits | low | yes | needs all |
+
+**Post-Phase-6 fix, not its own phase:** the Canvas wash was animating only one side of the
+crossfade — the normal background was hard-cut the instant the first frame landed, so nothing was
+crossfading and the transition read as a snap. Fixed in `bf03160ef`; see §14.1k.
 
 Phases 0–4 are complete without a single gesture existing. That is the point: the risky work
 is finished and proven before the interaction design is layered on top.
