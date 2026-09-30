@@ -243,6 +243,12 @@ val SpotifyClientTokenExpiresKey = longPreferencesKey("spotifyClientTokenExpires
 val SpotifyCanvasEnabledKey = booleanPreferencesKey("spotifyCanvasEnabled")
 val SpotifyCanvasFailureCountKey = intPreferencesKey("spotifyCanvasFailureCount")
 
+// Per-track Canvas verdicts, as one JSON map keyed by videoId: either a resolved
+// canvas/thumbnail pair, or a running count of confirmed-empty attempts that becomes
+// a cached "no canvas" at 3. A single key rather than one-per-track keeps DataStore
+// from accumulating unbounded sibling keys.
+val SpotifyCanvasCacheKey = stringPreferencesKey("spotifyCanvasCache")
+
 val LastFMUseSendLikes = booleanPreferencesKey("lastfmUseSendLikes")
 
 val ScrobbleDelayPercentKey = floatPreferencesKey("scrobbleDelayPercent")

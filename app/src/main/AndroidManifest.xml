@@ -44,9 +44,13 @@
         android:supportsRtl="false"
         android:theme="@style/Theme.Metrolist"
         tools:targetApi="tiramisu">
-        <uses-library
-            android:name="org.apache.http.legacy"
-            android:required="false" />
+        <!-- The org.apache.http.legacy library is deliberately NOT requested.
+             It ships a stub org.apache.commons.codec.binary.BaseNCodec which is loaded by the
+             boot classloader and therefore shadows the real commons-codec inside the APK.
+             kotlinonetimepassword, which the Spotify TOTP login needs, calls
+             BaseNCodec.isEmpty([B) and died with a NoSuchMethodError because of that stub.
+             Nothing in Metrolist or its dependencies references org.apache.http.
+             SPEC_SPOTIFY_CANVAS.md 4.2.1. -->
 
         <!-- Use Hilt's WorkManager configuration (HiltWorkerFactory) instead of the default initializer -->
         <provider

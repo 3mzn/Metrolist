@@ -198,6 +198,28 @@ object AppModule {
             )
         }
 
+    /**
+     * Spotify Canvas video cache.
+     *
+     * Mirrors SimpMusic's `spotifyCanvas` `SimpleCache` exactly (same cache name, and
+     * `cacheSize = -1` mapped to `NoOpCacheEvictor` as Metrolist already does for downloads).
+     * Canvas files are a few hundred KB each, so unbounded is the right trade here.
+     */
+    @Singleton
+    @Provides
+    @CanvasCache
+    fun provideCanvasCache(
+        @ApplicationContext context: Context,
+        databaseProvider: DatabaseProvider,
+    ): Cache =
+        LazyCache {
+            SimpleCache(
+                context.filesDir.resolve("spotifyCanvas"),
+                NoOpCacheEvictor(),
+                databaseProvider,
+            )
+        }
+
     @Singleton
     @Provides
     fun provideListenTogetherClient(

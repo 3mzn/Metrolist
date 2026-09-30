@@ -131,6 +131,7 @@ deterministic answer:
 | `com.maxrave.ktorext.encoding.brotli` | **Absent** — SimpMusic's brotli `ContentEncoding` helper | **Copy** the helper. Metrolist has `org.brotli:dec` (decode only) but no encoder; the Spotify client needs the encoder. |
 | `io.ktor:ktor-serialization-kotlinx-protobuf` | **Absent** — Metrolist's version catalog has Ktor 3.5.2 with **no** protobuf serialization artifact | **Add the dependency.** Required — not optional. |
 | `dev.turingcomplete:kotlinonetimepassword` | **Absent** | **Add.** Required by `SpotifyTotp`. |
+| *(found at runtime, Phase 3)* `org.apache.http.legacy` `<uses-library>` | **Declared by Metrolist** | **Removed.** Its platform stub shadows the real `commons-codec` and breaks the TOTP. See §14.1f. |
 
 **Ktor version difference: 3.6.0 (SimpMusic) vs 3.5.2 (Metrolist).** A minor-version skew, not a
 major one. The APIs used here (`HttpCache`, `HttpSend`, `AcceptAllCookiesStorage`, `ProxyConfig`,
@@ -464,10 +465,11 @@ Must all pass:
 ### 11.3 Gates
 
 - `./gradlew :app:compileFossDebugKotlin` clean.
-- `./gradlew :app:testFossDebugUnitTest` — full suite green (132 tests at base `7f168bf`).
+- `./gradlew :app:testFossDebugUnitTest` — full suite green. The base is **132**; Phase 3
+  **added 7** (`CanvasCachePolicyTest`), so the current expected total is **139**. Removing any
+  of those 7 is a regression in the spec 9.2 guarantees.
   **`:spotify`'s instrumented suite is separate and additional** (4 tests via
-  `:spotify:connectedDebugAndroidTest`); it does not change the 132, so a phase that adds
-  neither nor removes a `:app` test should still report exactly 132.
+  `:spotify:connectedDebugAndroidTest`); it does not change the `:app` count.
 - Delete `app/build/outputs/apk/foss/debug` before assembling (stale-APK rule).
 - Manual on-device verification of §11.2, with logcat evidence for the Canvas fetch and for
   each failure path.
@@ -752,11 +754,12 @@ YouTube videoId
   -> getSpotifyCanvas()
 ```
 
-> **Requirement for Phase 3:** the search-and-match step must be ported, not just the canvas
-> fetch. It is the part that maps our YouTube IDs onto Spotify's, and skipping it produces a
-> silent, plausible-looking failure. The smoke test takes the first search hit because it only
-> needs *a* known-canvas track; **the real implementation must match on duration**, or a song
-> with a same-titled different-length match will get the wrong Canvas, or none.
+> **Requirement for Phase 3:** the **search** step must be ported, not just the canvas fetch.
+> It is the part that maps our YouTube IDs onto Spotify's, and skipping it produces a silent,
+> plausible-looking failure.
+>
+> **But do NOT try to "fix" the candidate selection — see §14.1e.** The user has decided that
+> candidate selection is copied verbatim, so behaviour matches SimpMusic exactly.
 
 ### A second false signal, also caught here
 
@@ -908,6 +911,226 @@ A login flow that stores a well-formed but useless token is now **ruled out**.
 
 ---
 
+#### 14.1f Phase 3 finding — the fifth dependency gap, and why Phases 1 and 1.5 missed it
+
+**A runtime class-loading conflict between Metrolist and the ported TOTP code.** Found the first
+time the token mint ran inside `:app`, and it is the single best argument for this project's phase
+ordering.
+
+**Symptom.** With a valid `sp_dc` stored and the cookie proven good by the Phase 1.5 suite, every
+Canvas fetch failed with:
+
+```
+java.lang.NoSuchMethodError: No static method isEmpty([B)Z in class
+  Lorg/apache/commons/codec/binary/BinaryCodec;
+  or its super classes (declaration of 'org.apache.commons.codec.binary.BinaryCodec'
+  appears in /system/framework/org.apache.http.legacy.jar)
+    at org.apache.commons.codec.binary.BaseNCodec.decode(BaseNCodec.java:631)
+    at dev.turingcomplete.kotlinonetimepassword.GoogleAuthenticator.<init>(GoogleAuthenticator.kt:78)
+    at com.metrolist.spotify.auth.SpotifyTotpKt.generateTotp(SpotifyTotp.kt:122)
+    at com.metrolist.spotify.auth.SpotifyAuth.refreshToken(SpotifyAuth.kt:86)
+```
+
+**Cause.** Metrolist's manifest declared
+
+```xml
+<uses-library android:name="org.apache.http.legacy" android:required="false" />
+```
+
+`org.apache.http.legacy` ships a **stub** `org.apache.commons.codec.binary.BaseNCodec`, and a
+`<uses-library>` is loaded by the **boot classloader** — which is consulted *before* the app's DEX.
+The real `commons-codec:1.21.0` **is** in the APK, and it still loses. `kotlinonetimepassword`
+needs `BaseNCodec.isEmpty([B)`, which the stub does not have.
+
+**Why Phase 1 and Phase 1.5 both missed it.** Neither could have caught it:
+
+| Phase | What it proved | Why the conflict was invisible |
+|---|---|---|
+| 1 | the copy **compiles** | a compile cannot see classloading order |
+| 1.5 | the chain works **in `:spotify`'s own test APK** | that APK does **not** declare `org.apache.http.legacy`, so no stub is loaded and the real commons-codec is used |
+
+The conflict exists **only in `:app`**. A test that never runs in the app module cannot find it.
+This is precisely the risk that §14.0 ordered Phase 3 before any UI.
+
+**Fix.** Remove the `<uses-library>` declaration. Evidence that this is safe:
+
+- **No** Metrolist source references `org.apache.http` (verified across all of `app/src`).
+- No dependency declares it — the single occurrence in the merged manifest is ours.
+- It has been present since `1804fb079` *"first commit"*, with no commit ever explaining it.
+- `android:required="false"` means it was defensive, not load-bearing.
+- With it removed: `:app` compiles clean, the unit suite passes in full (132 at the time of this
+  check; 139 now, after \u00a714.1g added 7), the `:spotify` chain suite is **4/4 with 0 skipped**,
+  and playback is unaffected on device.
+
+**Lesson worth keeping:** a transitive dependency can be present, correct, and still lose to a
+platform stub. Presence on the classpath is not the same as being the class that loads. Only
+running the code in the final app module reveals it.
+
+##### Phase 3 evidence, gathered with the flag temporarily on
+
+The whole chain, from a track change, on device, with logcat as evidence:
+
+```
+SpotifyCanvas: query for diGBleLYaGQ: 'Dragga Party Ymo G' (from 'Dragga Party' / 'Ymo G')
+SpotifyCanvas: picked Spotify track 0PoHxWBZDbjBRSobhh06f6 ('Dragga Party')
+               for diGBleLYaGQ 'Dragga Party' out of 3 candidate(s)
+SpotifyCanvas: no canvas on Spotify for track 0PoHxWBZDbjBRSobhh06f6 (clean negative)
+SpotifyCanvas: clean negative 1/3 for diGBleLYaGQ 'Dragga Party'
+SpotifyCanvas: cache hit for zrW87-xUvt4 'Dat Bad'
+               -> https://canvaz.scdn.co/upload/licensor/3NAqPxQzicHuJO85ZYITtF/video/09b72ea8cb8f44128f02a26a5331d039.cnvs.mp4
+```
+
+| Spec 9.2 / Phase 3 requirement | Evidence |
+|---|---|
+| The **search** step runs, and is mandatory (§14.1c) | `query for ...` then `picked Spotify track ...` — a Spotify track ID, not the YouTube one |
+| Candidate selection is first-hit, per §14.1e | `out of 3 candidate(s)`, and the duration branch demonstrably did not fire |
+| The Canvas URL for `zrW87-xUvt4` is correct | **byte-identical** to Phase 1.5's result *and* to the URL SimpMusic had cached |
+| Positive cache holds the **video bytes** | `files/spotifyCanvas/5/*.exo` — two spans, 841 KB and 3.2 MB |
+| Positive cache is consulted on replay | `cache hit for zrW87-xUvt4` |
+| Clean negative is **not** cached on first sight | `clean negative 1/3` for `diGBleLYaGQ`, `url=None` |
+| Tokens are minted and persisted | `spotifyPersonalToken` (395 chars), `spotifyClientToken`, both expiries, all in DataStore |
+| Audio is untouched | playback continued throughout; the fetch runs on `Dispatchers.IO` |
+
+**Adjudicated on-device:** with the legacy library removed, `GoogleAuthenticator` constructs, the
+TOTP is produced, and Spotify returns `isAnonymous=false`. The fix is not theoretical.
+
+#### 14.1g Phase 3 — safety checks, and a second real bug they caught
+
+Implemented and device-verified. **Not yet committed** pending authorisation:
+
+- `SpotifyCanvasRepository` — the ported `getCanvas`, the cache index, the failure taxonomy
+- `CanvasCachePolicy.kt` — spec 9.2's taxonomy as pure, testable logic
+- `CanvasResult` + `toCanvasResult()` — ported verbatim from `mapping/Mapping.kt`
+- `@CanvasCache` + `provideCanvasCache` — SimpMusic's `spotifyCanvas` SimpleCache, same cache
+  name and unbounded evictor, using Metrolist's existing `LazyCache` idiom
+- `MusicService.onMediaItemTransition` hook, behind `SPOTIFY_CANVAS_FETCH_ENABLED`
+- Failure logging in `SpotifySessionRepository` — the gap that made §14.1f invisible
+- The `org.apache.http.legacy` removal above
+- `CanvasCachePolicyTest` — 7 tests, which the spec §14 explicitly asked for
+
+##### Check 1 — the negative cache reaches 3/3, and is then honoured
+
+Played "Dragga Party" (`diGBleLYaGQ`) to completion of the threshold:
+
+```
+SpotifyCanvas: no canvas on Spotify for track 0PoHxWBZDbjBRSobhh06f6 (clean negative)
+SpotifyCanvas: clean negative 3/3 for diGBleLYaGQ 'Dragga Party' - now cached as no-canvas
+```
+
+Replaying it afterwards:
+
+```
+SpotifyCanvas: no canvas (cached negative) for diGBleLYaGQ 'Dragga Party'
+```
+
+**No `query for` line and no `picked Spotify track` line** — the verdict was honoured without
+contacting Spotify at all. That is the whole point of the threshold: after three confirmed empties
+the app stops asking.
+
+##### Check 2 — a transport failure can never poison the cache
+
+Simulated offline by pointing the system proxy at a dead port (`settings put global http_proxy
+127.0.0.1:1`), then skipping three tracks:
+
+```
+SpotifyCanvas: search failed for 20E0yY4LcLI   ->  consecutive Spotify failures: 1/3
+SpotifyCanvas: search failed for uVfsRZI7XvM   ->  consecutive Spotify failures: 2/3
+SpotifyCanvas: search failed for TsjAJJnkHOI   ->  consecutive Spotify failures: 3/3
+SpotifyCanvas: failure limit reached - Phase 7 auto-disables here
+```
+
+**Zero `clean negative` lines across three different tracks.** The index was then diffed
+before/after:
+
+| Check | Result |
+|---|---|
+| entries before → after | **13 → 13**, unchanged |
+| the three failed tracks | **absent** from the index — no verdict was ever written |
+| pre-existing attempt counts | **none changed** |
+
+Then the proxy was removed and playback resumed:
+
+```
+SpotifyCanvas: canvas for wbG0rrSIC4k: https://canvaz.scdn.co/upload/licensor/1qUM3lGfyk2uc6PjDgGRa6/video/d06a771363fa4b12aa8be8264906d40d.cnvs.mp4
+SpotifyCanvas: consecutive Spotify failure counter reset to 0 by a normal answer for wbG0rrSIC4k
+```
+
+##### The second bug: the failure counter did not reset on a clean negative
+
+Found while setting up Check 2, and it was a real defect in the first draft of this phase.
+
+The counter originally reset **only when a Canvas was actually found**. But most tracks have no
+Canvas, so that is the *rare* case. Three transient network blips across a week — on tracks that
+legitimately have no Canvas — would therefore never reset the counter, and the feature would
+auto-disable itself in Phase 7 with no way back. Spec 9.2's own wording is *"resets on any
+successful load"*, and a confirmed-empty answer **is** a successful load: Spotify answered.
+
+Fixed, and pinned by `CanvasCachePolicyTest`:
+
+```
+tests=139 (132 base + 7 new), 0 failures
+
+  a transport failure never confirms no-canvas, at any attempt count
+  a clean negative is a successful load and so resets the failure counter
+  clean negatives accumulate and only confirm on the third
+  the failure counter trips after three consecutive transport failures
+  a transport failure between clean negatives does not push a track to confirmed
+  a canvas found clears the track's attempt count and resets failures
+  a transport failure advances the consecutive-failure counter and does not reset it
+```
+
+> **Why the taxonomy became a separate file.** It was previously reachable only through a live
+> network, which is exactly how the bug above survived review. Extracting it to
+> `CanvasCachePolicy.kt` means the rule that stops a flaky network burying a real Canvas is now
+> unit-tested, and the repository delegates to the tested function. This is Metrolist-side glue,
+> not ported SimpMusic code, so it is ours to structure; SimpMusic has no caching policy at all.
+
+**Phase 3 verification is now complete. Gate: compile clean, 139/139 tests.**
+
+---
+
+#### 14.1e The duration match — a units bug upstream, copied deliberately
+
+**User decision: copy it verbatim.** Behaviour in Metrolist must be identical to SimpMusic, so
+the candidate-selection line is ported exactly as written, bug included.
+
+**What upstream actually does** (`LyricsCanvasRepositoryImpl.getCanvas`, lines 186-213):
+
+```kotlin
+val track =
+    if (duration != 0) {
+        items.find { abs((it.item?.data?.duration?.totalMilliseconds ?: (0 / 1000)) - duration) < 1 }
+            ?: items.firstOrNull()      // <-- this is what actually runs
+    } else {
+        items.firstOrNull()
+    }
+```
+
+`totalMilliseconds` is **milliseconds**. The `duration` parameter is **seconds** — the caller
+passes `(timeline.total / 1000).toInt()` (`SharedViewModel.kt:289`). The predicate is therefore
+`abs(ms − seconds) < 1`, which is false for every real track. (`?: (0 / 1000)` is integer
+division of zero, so it is also just `0`.)
+
+**Consequence: the duration branch is unreachable and SimpMusic always takes the first search
+hit.** Metrolist will do the same.
+
+**Inherited risk, not introduced risk:** a search returning a same-titled remix or live version
+first will yield that track's Canvas, or none. This is SimpMusic's behaviour, reproduced on
+purpose. Anyone reading the code later must **not** "repair" the units without asking — that
+would make Metrolist behave *differently* from the reference, which is exactly what the porting
+rule exists to prevent.
+
+**What is still required, and is not affected:** the search step itself. Going from a YouTube
+videoId to a Spotify track ID requires `searchSpotifyTrack`; there is no other route. That is the
+part §14.1c warns about, and it is fully preserved.
+
+**Diagnostics stay mandatory** so a wrong pick is at least visible: Phase 3 already requires
+logging the mapped Spotify track ID, its duration and the HTTP status under the `SpotifyCanvas`
+tag. With first-hit selection those three lines are what makes a mismatch diagnosable after the
+fact.
+
+---
+
 ### Phase 1 — `:spotify` module
 
 **Status:** ✅ **DONE - commit `42aaa9f8`** (see 14.1a)
@@ -1014,17 +1237,26 @@ exists.
 **In:**
 - `utils/spotify/` orchestration in `:app`.
 - **Map YouTube videoId → Spotify track ID.** Ported from
-  `LyricsCanvasRepositoryImpl.getCanvas` (lines 114-200): build a scrubbed
-  `"title artist"` query from the local `SongEntity`, call `searchSpotifyTrack()`,
-  then **match candidates on duration** (SimpMusic uses `abs(difference) < 1s`).
-  The `:spotify` module already contains the search call and response model; this
-  step is the `:app`-side glue and is **required** — see §14.1c. Fetching by
-  YouTube ID returns HTTP 200 with an empty body, not an error.
+  `LyricsCanvasRepositoryImpl.getCanvas` (lines 114-245): build a scrubbed
+  `"title artist"` query from the local song, call `searchSpotifyTrack()`, then select a
+  candidate. The `:spotify` module already contains the search call and response model; this
+  step is the `:app`-side glue and is **required** — see §14.1c. Fetching by YouTube ID returns
+  HTTP 200 with an empty body, not an error.
+  **Candidate selection is copied verbatim, including its units bug, so the first search hit is
+  always used** — see §14.1e for the full reasoning. Do not "repair" it.
 - Canvas fetch on track change, **gated behind a temporary internal flag** (default off).
 - Positive disk cache of the Canvas video.
 - Negative cache: only clean negatives, **only after 3 attempts** (§9.2).
 - Consecutive-failure counter with reset-on-success.
 - Diagnostic logging under a `SpotifyCanvas` tag.
+
+**Metrolist-side mapping, confirmed by reading both codebases:**
+
+| SimpMusic | Metrolist |
+|---|---|
+| `localDataSource.getSong(videoId)` → `SongEntity` with `artistName: List<String>` | `com.metrolist.music.db.entities.Song`, whose `orderedArtists: List<ArtistEntity>` supplies the artist — **`SongEntity` itself has no artist field** |
+| `duration` = `(timeline.total / 1000).toInt()`, seconds | `SongEntity.duration`, already seconds |
+| `artistName.firstOrNull()` | `orderedArtists.firstOrNull()?.name` |
 
 **Out:** anything the user can see. The flag stays off, so the player is untouched.
 
@@ -1162,7 +1394,7 @@ the commit is clean.
 
 **Out:** nothing. Feature complete.
 
-**Gate:** compile + **full 132-test suite green**, plus all of §11.2.
+**Gate:** compile + **full 139-test suite green**, plus all of §11.2.
 
 **Verification:** re-run the complete §11.2 acceptance list end to end, item by item, with
 logcat evidence. This is the only phase that verifies the whole specification.
@@ -1223,13 +1455,18 @@ kotlinx.serialization protobuf | present | **absent** | Must be **added** (§4.2
 Media3 | 1.11.1 | 1.10.1 | Canvas uses a bare `ExoPlayer` + `MediaItem`. No exotic API. |
 Room | 2.8.5 | 2.8.4 | Untouched — no schema change (§4.3). |
 
-### 15.2 SimpMusic-internal dependencies — all resolved
+### 15.2 SimpMusic-internal dependencies — all resolved, plus one found at runtime
 
 Audited every `import` in `core/service/spotify/src/commonMain`. Four imports resolve to
 SimpMusic-internal modules (`:ktorExt`) that do not exist in Metrolist. All four have a
 deterministic answer, specified in §4.2.1: two are copied verbatim (`CurlLogger`, brotli
 helper), one is inlined to match Metrolist's existing engine (`getEngine` → `OkHttp`), and the
 fourth (`kotlinonetimepassword`) becomes a new dependency. **No unresolved references remain.**
+
+**That audit was necessary but not sufficient.** A **fifth** gap existed that no import audit could
+find: Metrolist's own `org.apache.http.legacy` `<uses-library>` broke the newly added
+`kotlinonetimepassword` at runtime through boot-classloader shadowing. It is invisible to the
+compiler and invisible to `:spotify`'s own test APK. See §14.1f.
 
 ### 15.3 Engine choice consistency
 
@@ -1337,7 +1574,7 @@ SimpMusic scale | 969 files, ~148.6k LOC (incl. submodule) |
   **Explicit user authorisation is required before each commit.** No batched pre-authorisation.
 - **Never push. `main` is never touched.**
 - Per-phase gates: `:app:compileFossDebugKotlin` clean, `:app:testFossDebugUnitTest` full suite
-  green (**132 tests** at this base).
+  green (**139 tests** — 132 base plus 7 added in Phase 3).
 - **Delete `app/build/outputs/apk/foss/debug` before assembling** (stale-APK rule).
 - If in doubt, ask. Do not assume.
 
@@ -1401,17 +1638,23 @@ Music accounts.
 > is the failure this spec warns about twice. A reader who hits it may "fix" the `@ProtoNumber`
 > annotations and break code that is working.
 >
-> The real chain (SimpMusic, `LyricsCanvasRepositoryImpl.getCanvas:114-200`):
+> The real chain (SimpMusic, `LyricsCanvasRepositoryImpl.getCanvas:114-245`):
 > ```
 > YouTube videoId → local SongEntity (title, artist, duration)
 >   → scrub query of "(feat.", "&", ")", "." etc.
 >   → searchSpotifyTrack()
->   → MATCH ON DURATION (abs difference < 1s)   ← the part that matters
+>   → candidate selection  ← SEE §14.1e, this is NOT duration matching in practice
 >   → Spotify track ID → getSpotifyCanvas()
 > ```
 > The `:spotify` module has the search call and response model. The mapping glue is Phase 3
-> work. **Taking the first search hit instead of matching on duration gives the wrong Canvas
-> on a search that returns a remix or a live version.**
+> work, and the **search step is mandatory** — there is no other route from a YouTube ID to a
+> Spotify track ID.
+>
+> ⚠ **The candidate-selection step is NOT duration matching, despite appearances.**
+> Upstream *looks* like it matches on duration (`abs(totalMilliseconds - duration) < 1`) but
+> compares **milliseconds against seconds**, so the branch is unreachable and **the first search
+> hit is always used**. Metrolist copies this verbatim **by user decision**, so it behaves
+> identically to SimpMusic. Do **not** "repair" the units — full reasoning in **§14.1e**.
 
 **The gate that blocks Canvas in SimpMusic** (`SharedViewModel.kt:286`) — **must NOT be
 reproduced:**
@@ -1595,6 +1838,13 @@ Metrolist's version catalog. Must be added.
 3.x. **Do not upgrade Metrolist's Ktor** to chase parity — that would risk the whole app's
 networking for one module. Accept 3.5.2.
 
+> **⚠ RUNTIME-ONLY DEPENDENCY CONFLICT (§14.1f).** Metrolist's manifest used to declare
+> `<uses-library android:name="org.apache.http.legacy" android:required="false" />`. That library
+> is boot-classpath, so its **stub** `org.apache.commons.codec.binary.BaseNCodec` shadows the real
+> `commons-codec` inside the APK, and `kotlinonetimepassword` dies with `NoSuchMethodError` on
+> `BaseNCodec.isEmpty([B)`. **This breaks only inside `:app`** — `:spotify`'s instrumented tests
+> do not declare the library, so they pass while the app fails. Already removed; do not re-add.
+
 ### 16.11 The three visual states (locked, do not redesign)
 
 | State | Background | Particles | Artwork | Entered by |
@@ -1722,9 +1972,13 @@ writes — main DB was 598 KB, WAL 4.1 MB), then
 persists a 211-char `sp_dc`, and `:spotify:connectedDebugAndroidTest` passes **4/4 with 0
 skipped** against that cookie, including `isAnonymous == false`.
 
-**Known and deliberately not yet exercised:** `validTokens()` — the lazy token minting and
-expiry refresh in `SpotifySessionRepository`. It is written and compiles, but nothing calls it
-until Phase 3. First real use is the next thing that can break it.
+**Phase 3 is implemented and fully device-verified but uncommitted** (§14.1g). Both safety
+checks passed, and they caught a real defect in the failure-counter reset, now fixed and pinned by
+7 unit tests. `:app` test count is **139**, not 132.
+
+**The one thing most likely to bite again:** classloading order. A transitive dependency can be
+present and correct and still lose to a platform stub (§14.1f). Anything verified only in a module's
+own test APK is **not** verified.
 
 **Phases 0, 1, 1.5 and 2 are committed** — `97107e2e`, `42aaa9f8`, `b393250d`, `e65881a55`. The Spotify chain is proven end to end against the live
 API (§14.1c) and the login screen renders (§14.1d). **Phase 3 — Canvas fetch and cache —

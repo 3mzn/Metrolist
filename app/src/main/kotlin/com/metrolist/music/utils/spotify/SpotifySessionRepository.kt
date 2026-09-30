@@ -47,6 +47,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
+import timber.log.Timber
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -62,6 +63,8 @@ import javax.inject.Singleton
 class SpotifySessionRepository @Inject constructor(
     @ApplicationContext private val context: Context,
 ) {
+    private val TAG = "SpotifySession"
+
     val spdc: Flow<String> = context.dataStore.data.map { it[SpotifySpdcKey] ?: "" }
 
     val isLoggedIn: Flow<Boolean> = spdc.map { it.isNotBlank() }
@@ -114,7 +117,10 @@ class SpotifySessionRepository @Inject constructor(
     suspend fun validTokens(now: Long = System.currentTimeMillis()): SpotifyTokens? =
         withContext(Dispatchers.IO) {
             val cookie = spdc.first()
-            if (cookie.isBlank()) return@withContext null
+            if (cookie.isBlank()) {
+                Timber.tag(TAG).d("no sp_dc stored - not logged in")
+                return@withContext null
+            }
 
             val prefs = context.dataStore.data.first()
             var personal = prefs[SpotifyPersonalTokenKey].orEmpty()
@@ -131,7 +137,10 @@ class SpotifySessionRepository @Inject constructor(
                 // A stale sp_dc yields a valid-looking *anonymous* token rather than an
                 // error, so check isAnonymous instead of trusting the response.
                 val minted = mintPersonalToken(cookie) ?: return@withContext null
-                if (minted.isAnonymous) return@withContext null
+                if (minted.isAnonymous) {
+                    Timber.tag(TAG).w("personal token came back ANONYMOUS - the sp_dc is stale")
+                    return@withContext null
+                }
                 personal = minted.accessToken
                 context.safeDataStoreEdit {
                     it[SpotifyPersonalTokenKey] = minted.accessToken
@@ -153,10 +162,20 @@ class SpotifySessionRepository @Inject constructor(
         }
 
     private suspend fun mintPersonalToken(cookie: String): PersonalTokenResponse? =
-        Spotify().getPersonalTokenWithTotp(cookie).getOrNull()
+        Spotify()
+            .getPersonalTokenWithTotp(cookie)
+            .getOrElse {
+                Timber.tag(TAG).w(it, "personal token mint failed")
+                null
+            }
 
     private suspend fun mintClientToken(): ClientTokenResponse? =
-        Spotify().getClientToken().getOrNull()
+        Spotify()
+            .getClientToken()
+            .getOrElse {
+                Timber.tag(TAG).w(it, "client token mint failed")
+                null
+            }
 
     data class SpotifyTokens(
         val personal: String,

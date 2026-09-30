@@ -17,4 +17,8 @@ annotation class DownloadCache
 
 @Qualifier
 @Retention(AnnotationRetention.BINARY)
+annotation class CanvasCache
+
+@Qualifier
+@Retention(AnnotationRetention.BINARY)
 annotation class ApplicationScope
