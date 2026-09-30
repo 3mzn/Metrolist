@@ -6,6 +6,8 @@
 package com.metrolist.music.ui.player
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -59,11 +61,13 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerId
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.util.fastAll
 import androidx.compose.ui.util.fastAny
@@ -134,6 +138,37 @@ private const val CANVAS_HOLD_MS = 1000L
  * ambiguous again.
  */
 private const val TAG_HOLD = "CanvasHold"
+
+/**
+ * SPEC_SPOTIFY_CANVAS §6.3: how far the finger must travel upward to count as a swipe.
+ *
+ * A distance, not a fling: there is no velocity term and no direction tolerance. Swiping down
+ * is not a gesture at all (spec §6.3), so the gesture is one-sided by construction rather than by
+ * a direction check that could be got wrong.
+ */
+private val CANVAS_SWIPE_THRESHOLD = 60.dp
+
+/**
+ * SPEC_SPOTIFY_CANVAS §6.4: the artwork's own fade, in both directions.
+ *
+ * **1000ms — raised from the spec's 400ms by user decision during Phase 6.**
+ *
+ * Deliberately *not* equal to `CANVAS_WASH_MS`. The artwork comes back in half the time the
+ * background crossfade takes, so it is restored well before that finishes. Tying the two together
+ * would look tidier in the source and would mean watching a semi-transparent artwork sit over the
+ * old background for the whole two seconds.
+ */
+private const val CANVAS_ARTWORK_FADE_MS = 1000
+
+/**
+ * Log tag for the Canvas swipe gesture.
+ *
+ * Same rationale as [TAG_HOLD]: a handler that silently stops responding produces no crash and
+ * no symptom, so both terminal paths are logged. Kept separate from [TAG_HOLD] because the two
+ * gestures are supposed to exclude each other, and a log showing both firing on one touch is the
+ * clearest possible evidence that the arbitration below has failed.
+ */
+private const val TAG_SWIPE = "CanvasSwipe"
 
 /**
  * Pre-calculated thumbnail dimensions to avoid repeated calculations during recomposition.
@@ -252,6 +287,9 @@ fun Thumbnail(
     isListenTogetherGuest: Boolean = false,
     onCoverArtCenterChanged: (Offset) -> Unit = {},
     onCanvasHold: () -> Unit = {},
+    canvasSwipeAvailable: Boolean = false,
+    canvasArtworkRevealed: Boolean = false,
+    onCanvasSwipe: () -> Unit = {},
 ) {
     val playerConnection = LocalPlayerConnection.current ?: return
     val context = LocalContext.current
@@ -462,6 +500,9 @@ fun Thumbnail(
                                     onCoverArtCenterChanged(it)
                                 },
                                 onCanvasHold = onCanvasHold,
+                                canvasSwipeAvailable = canvasSwipeAvailable,
+                                canvasArtworkRevealed = canvasArtworkRevealed,
+                                onCanvasSwipe = onCanvasSwipe,
                             )
                         }
                     }
@@ -542,6 +583,54 @@ private fun ThumbnailHeader(
 }
 
 /**
+ * SPEC_SPOTIFY_CANVAS §6.3: arbitrates the two artwork gestures when a single touch satisfies
+ * both.
+ *
+ * The hold and the swipe are separate `pointerInput` blocks, and that is the documented pattern
+ * rather than a shortcut: the Compose gesture detectors are top-level and the first one blocks
+ * the coroutine forever, so two detectors in one block means the second never runs. Separate
+ * blocks is the only way to have two listeners at all.
+ *
+ * The cost of separate blocks is that neither can cancel the other. Both consume nothing — which
+ * is exactly what leaves the carousel's horizontal song-swipe working — so neither ever finds out
+ * that the touch was taken. That matters here because the hold deliberately ignores finger drift
+ * (platform long-press semantics), so one touch can satisfy both:
+ *
+ *     hold 1s -> Canvas engages -> finger still down -> flick up 60dp -> swipe fires -> Canvas
+ *     dismisses again
+ *
+ * The user watches it appear and then vanish. The latch closes that in *both* directions:
+ * whoever acts first claims the touch, and the other stands down before it can act.
+ *
+ * One-shot would have fixed only the sequence above and left its mirror open — flick up to hide
+ * the artwork, then pause without lifting, and the hold fires at 1s and brings the artwork back.
+ *
+ * [open] is keyed on the pointer id rather than resetting unconditionally, because the two blocks
+ * reach it a frame or two apart and a blind reset from whichever runs second would discard a
+ * claim the other had already made.
+ */
+private class CanvasGestureLatch {
+    private var pointerId: PointerId? = null
+
+    var claimed: Boolean = false
+        private set
+
+    fun open(id: PointerId) {
+        if (pointerId != id) {
+            pointerId = id
+            claimed = false
+        }
+    }
+
+    /** Returns false if the touch is already claimed, in which case the caller must not act. */
+    fun claim(): Boolean {
+        if (claimed) return false
+        claimed = true
+        return true
+    }
+}
+
+/**
  * Individual thumbnail item in the carousel.
  */
 @Composable
@@ -562,6 +651,9 @@ private fun ThumbnailItem(
     onCoverArtCenter: (Offset) -> Unit = {},
     modifier: Modifier = Modifier,
     onCanvasHold: () -> Unit = {},
+    canvasSwipeAvailable: Boolean = false,
+    canvasArtworkRevealed: Boolean = false,
+    onCanvasSwipe: () -> Unit = {},
 ) {
     val incrementalSeekSkipEnabled by rememberPreference(SeekExtraSeconds, defaultValue = false)
     var skipMultiplier by remember { mutableIntStateOf(1) }
@@ -586,9 +678,23 @@ private fun ThumbnailItem(
     val isCurrentItem = item.mediaId == currentMediaId
     val pulseGated = coverPulse && useNewPlayerDesign && isCurrentItem
 
-    // SPEC_SPOTIFY_CANVAS Phase 5: the 2s Canvas hold lives on the artwork square only.
+    // SPEC_SPOTIFY_CANVAS Phase 5: the Canvas hold lives on the artwork square only.
     val latestOnCanvasHold by rememberUpdatedState(onCanvasHold)
     val canvasVibrator = remember(context) { context.getSystemService(Vibrator::class.java) }
+
+    // SPEC_SPOTIFY_CANVAS Phase 6: the swipe-up reveal lives on the same square and shares one
+    // latch with the hold, so a single touch can never drive both.
+    val latestOnCanvasSwipe by rememberUpdatedState(onCanvasSwipe)
+    val canvasGestureLatch = remember { CanvasGestureLatch() }
+    val swipeThresholdPx = with(LocalDensity.current) { CANVAS_SWIPE_THRESHOLD.toPx() }
+    // Spec §6.4/§6.5: a fixed 1000ms fade in both directions, never finger-tracked. The state is
+    // two exclusive booleans rather than a scrubbed value, so a plain animateFloatAsState is the
+    // whole model — there is nothing to interpolate from the finger.
+    val artworkAlpha by animateFloatAsState(
+        targetValue = if (canvasArtworkRevealed) 0f else 1f,
+        animationSpec = tween(CANVAS_ARTWORK_FADE_MS),
+        label = "canvasArtworkAlpha",
+    )
 
     Box(
         modifier = modifier
@@ -654,6 +760,16 @@ private fun ThumbnailItem(
                     val s = if (pulseGated) CoverBassPulse.scaleFor(pulseIntensity) else 1f
                     scaleX = s
                     scaleY = s
+                    // Spec §6.4: the swipe's reveal. Folded into the layer that already exists
+                    // for the pulse rather than adding a second one.
+                    //
+                    // This fades the whole square, which includes the cast button sitting at its
+                    // top-right corner. That is deliberate: the cast button is positioned against
+                    // the artwork square and is part of it, so leaving it behind would strand a
+                    // control floating over the Canvas. Reading `artworkAlpha` inside the block
+                    // defers it to the layer's update phase, so a reveal animates without
+                    // recomposing this composable.
+                    alpha = artworkAlpha
                 }
                 .pointerInput(isCurrentItem) {
                     // `detectTapGestures` cannot do this job: its long-press fires at the platform
@@ -668,7 +784,10 @@ private fun ThumbnailItem(
                     // keep winning, and Phase 5 depends on a stolen mid-hold silently cancelling
                     // rather than the horizontal swipe breaking.
                     awaitEachGesture {
-                        awaitFirstDown()
+                        val down = awaitFirstDown()
+                        // Phase 6: arm the shared latch so the swipe can find out this touch
+                        // started, whichever of the two handlers observes the down first.
+                        canvasGestureLatch.open(down.id)
                         // The hold window, written with `withTimeoutOrNull` so there is **no
                         // exception to catch and therefore no exception type to get wrong**.
                         //
@@ -705,10 +824,17 @@ private fun ThumbnailItem(
                                         // Stolen mid-hold (carousel scroll): nothing.
                                         return@withTimeoutOrNull
                                     }
+                                    if (canvasGestureLatch.claimed) {
+                                        // Phase 6: the swipe already claimed this touch.
+                                        // Standing down here rather than at the threshold
+                                        // matters, because "no touch-slop check" above is why
+                                        // this hold can still be running when the user flicks.
+                                        return@withTimeoutOrNull
+                                    }
                                 }
                             } == null
 
-                        if (reachedThreshold) {
+                        if (reachedThreshold && canvasGestureLatch.claim()) {
                             // Full window elapsed with the finger still down: the hold registered.
                             // Haptic fires here, at the threshold — never on press (spec §6.1).
                             Timber.tag(TAG_HOLD).d("canvas hold threshold reached")
@@ -716,8 +842,69 @@ private fun ThumbnailItem(
                                 VibrationEffect.createOneShot(50, VibrationEffect.DEFAULT_AMPLITUDE),
                             )
                             latestOnCanvasHold()
+                        } else if (reachedThreshold) {
+                            // Phase 6: the swipe got here first. The hold must stay silent — no
+                            // haptic, no toggle — or the one touch would drive both.
+                            Timber.tag(TAG_HOLD).d("hold lost the touch to the swipe")
                         } else {
                             Timber.tag(TAG_HOLD).d("hold abandoned before the threshold")
+                        }
+                    }
+                }
+                .pointerInput(isCurrentItem, canvasSwipeAvailable) {
+                    // SPEC_SPOTIFY_CANVAS §6.3: swipe up to reveal, swipe up again to restore.
+                    //
+                    // Gated here rather than inside the loop, and gated on a Canvas actually
+                    // rendering, which is what makes "independent of `swipeThumbnail`" true rather
+                    // than merely intended: in every state without a Canvas this block does not
+                    // exist, so the artwork has no vertical gesture at all for the carousel to
+                    // compete with. With `swipeThumbnail` off there is likewise nothing to
+                    // compete with, and the swipe still works.
+                    if (!isCurrentItem || !canvasSwipeAvailable) return@pointerInput
+
+                    // Deliberately hand-rolled, not `detectVerticalDragGestures`. That detector is
+                    // built on `awaitVerticalTouchSlopOrCancellation`, the same helper recorded in
+                    // spec §16.9 as suspending indefinitely in this codebase without ever
+                    // delivering a down — the fault that broke the hold. Using the built-in here
+                    // would walk straight back into it.
+                    awaitEachGesture {
+                        val down = awaitFirstDown()
+                        canvasGestureLatch.open(down.id)
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            if (event.changes.fastAll { !it.pressed }) {
+                                // Released short of the threshold: ignored, silently.
+                                return@awaitEachGesture
+                            }
+                            if (event.changes.fastAny { it.isConsumed }) {
+                                // Stolen by the carousel's horizontal drag. Same rule as the hold:
+                                // yield silently and leave the song-swipe intact.
+                                return@awaitEachGesture
+                            }
+                            if (canvasGestureLatch.claimed) {
+                                // The hold already acted on this touch.
+                                return@awaitEachGesture
+                            }
+                            // Net displacement from where the finger landed rather than
+                            // accumulated deltas: absolute positions cannot drift over a long drag,
+                            // and `positionChange()` would report only the unconsumed remainder.
+                            val travelledUp =
+                                down.position.y - event.changes.first().position.y
+                            // One-sided by construction. A downward drag cannot satisfy this, and
+                            // because the value is net, a drag that first went down still has to
+                            // end up 60dp up overall to count.
+                            if (travelledUp >= swipeThresholdPx) {
+                                if (canvasGestureLatch.claim()) {
+                                    Timber.tag(TAG_SWIPE).d("canvas swipe up threshold reached")
+                                    latestOnCanvasSwipe()
+                                } else {
+                                    Timber.tag(TAG_SWIPE).d("swipe lost the touch to the hold")
+                                }
+                                // The gesture is over either way; one swipe is one toggle, and
+                                // staying in the loop would let the drift after the threshold
+                                // claim a second one.
+                                return@awaitEachGesture
+                            }
                         }
                     }
                 }

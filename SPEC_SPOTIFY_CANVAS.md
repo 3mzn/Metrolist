@@ -195,7 +195,7 @@ fourth state, and never coexist with the Canvas.
 **Invariants**
 
 - Artwork transparency is **only** ever present while a Canvas is rendering.
-- Dismissing the Canvas returns the artwork to **fully opaque** (400ms fade, §6.4).
+- Dismissing the Canvas returns the artwork to **fully opaque** (1000ms fade, §6.4).
 - Particles are never drawn over a Canvas.
 - The Canvas is never drawn over the controls.
 
@@ -250,7 +250,7 @@ artwork and `AnimatedContent` has replaced it.
 ### 6.2 Long-press — dismiss Canvas
 
 A second 1s long-press dismisses. Background, particles, and artwork all return over **2000ms**
-(symmetric with the wash-in). See §6.4 for the artwork's separate 400ms fade.
+(symmetric with the wash-in). See §6.4 for the artwork's separate 1000ms fade.
 
 ### 6.3 Swipe up on artwork
 
@@ -259,7 +259,7 @@ A second 1s long-press dismisses. Background, particles, and artwork all return 
   the down direction.
 - **Threshold: 60dp** vertical.
 - **Not finger-tracked.** Below-threshold movement is ignored; a qualifying swipe runs a
-  **fixed 400ms** fade of the artwork's alpha to 0 (out) or 1 (in).
+  **fixed 1000ms** fade of the artwork's alpha to 0 (out) or 1 (in).
 - **Two-state toggle**, not a scrubbable value. One qualifying swipe fades out; the next fades
   back in. The two states are exclusive: revealing requires the artwork hidden, and vice versa.
 - **Active only while a Canvas is rendering.** When no Canvas is active there is no vertical
@@ -273,8 +273,8 @@ A second 1s long-press dismisses. Background, particles, and artwork all return 
 
 | Transition | Duration |
 |---|---|
-| Reveal / hide artwork (swipe) | **400ms** fixed |
-| Dismiss Canvas → artwork opaque | **400ms** fixed |
+| Reveal / hide artwork (swipe) | **1000ms** fixed |
+| Dismiss Canvas → artwork opaque | **1000ms** fixed |
 | Dismiss Canvas → background + particles | **2000ms** crossfade |
 
 > **Both directions of the wash are one value, `CANVAS_WASH_MS`, and both sides animate.**
@@ -291,6 +291,28 @@ A second 1s long-press dismisses. Background, particles, and artwork all return 
 > not by passing a transparent `baseColor`. `PlayerParticles`' draw loop does
 > `baseColor.copy(alpha = a * ...)`, which *overwrites* the incoming alpha rather than
 > multiplying it — so a transparent `baseColor` would have silently done nothing.
+
+### 6.5 Two independent fades, deliberately unequal
+
+The artwork's 1000ms and the background's 2000ms are **separate values on purpose**, not an
+oversight to be tidied up.
+
+| Value | Lives in | Constant |
+|---|---|---|
+| Artwork alpha | `Thumbnail.kt` | `CANVAS_ARTWORK_FADE_MS = 1000` |
+| Background wash | `CanvasBackgroundLayer.kt` | `CANVAS_WASH_MS = 2000` |
+
+The artwork returns in half the time the background crossfade takes, so it is restored well before
+that finishes. Tying them together would mean watching a semi-transparent artwork sit over the old
+background for the whole two seconds.
+
+Artwork duration history: spec said **400ms**, raised to **1000ms** by user decision during
+Phase 6, on the same grounds as the wash — 400ms read as a snap against a 2000ms background.
+
+The artwork fade is applied inside the `graphicsLayer` that already exists for the bass-pulse
+scale (`alpha = artworkAlpha`), not as a second layer, and it fades the **whole artwork square**
+including the cast button in its top-right corner. The cast button is positioned against that
+square and is part of it; leaving it behind would strand a control floating over the Canvas.
 
 ---
 
@@ -468,11 +490,11 @@ Must all pass:
 1. Long-press 1s on artwork, logged in, track **with** a Canvas → background washes to Canvas
 over 2000ms, particles gone, no black flash.
 2. Music plays perfectly throughout, uninterrupted, unaffected by Canvas.
-3. One short swipe up on artwork → artwork fades to transparent over 400ms fixed; Canvas
+3. One short swipe up on artwork → artwork fades to transparent over 1000ms fixed; Canvas
    visible, particles still absent.
-4. Swipe up again → artwork fades back to fully opaque over 400ms.
+4. Swipe up again → artwork fades back to fully opaque over 1000ms.
 5. Second long-press 1s → Canvas dismissed, background + particles + opaque artwork all
-restored over 2000ms / 400ms.
+restored over 2000ms / 1000ms.
 6. Track with **no** Canvas → long-press does nothing, silently. Music unaffected.
 7. Spotify not logged in → tap on the greyed switch navigates to login + shows a toast.
    Long-press shows the toast only.
@@ -1457,7 +1479,7 @@ the commit is clean.
 - Cancel on early release; **no fetch issued before 1000ms**. Beware: a shorter window is 
   easier to hit by accident, so the early-release path carries more of the real usage.
 - First engagement sets the phase gate to the real gesture and **retires the temporary flag**.
-- 2000ms crossfade in and out, 400ms artwork return to opaque.
+- 2000ms crossfade in and out, 1000ms artwork return to opaque.
 - **⚠ Implement spec §7.4 here, not before** — Phase 4 deferred it. The Canvas only appears
   after the 1s hold completes and no fetch was issued before it, so there is a genuine window
   between the gesture and the first decoded frame. Hold the existing background until
@@ -1496,7 +1518,7 @@ the commit is clean.
 **In:**
 - Vertical swipe **up** on the artwork square, 60dp threshold, **only while a Canvas is
   rendering**.
-- Fixed 400ms artwork alpha animation — not finger-tracked.
+- Fixed 1000ms artwork alpha animation — not finger-tracked.
 - Two-state exclusive toggle.
 - Independent of `swipeThumbnail`; horizontal song-swipe untouched.
 - Swipe **down** does nothing.
@@ -1506,7 +1528,7 @@ the commit is clean.
 **Gate:** compile + 132 tests.
 
 **Verification:**
-- Swipe up → artwork fades to fully transparent over 400ms; Canvas visible, **particles still
+- Swipe up → artwork fades to fully transparent over 1000ms; Canvas visible, **particles still
   absent**.
 - Swipe up again → artwork returns to opaque.
 - Below 60dp → ignored.
@@ -2077,7 +2099,7 @@ Long-press haptic | **One short vibration at the 1000ms threshold** — NOT on p
 Long-press cancel | Early release does nothing; **no network fetch before 1000ms** |
 Swipe direction | **Up only**, 60dp threshold, artwork square hit zone only |
 Swipe tracking | **NOT finger-tracked** — fixed animation |
-Artwork fade duration | **400ms** (both directions) |
+Artwork fade duration | **1000ms** (both directions) |
 Background wash duration | **2000ms** in, **2000ms** restore |
 Swipe state | Two-state exclusive toggle, not scrubbable |
 Vertical swipe active | **Only while a Canvas is rendering** |

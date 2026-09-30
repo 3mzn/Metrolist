@@ -794,8 +794,15 @@ fun BottomSheetPlayer(
     // Guards against two overlapping fetches if the user holds again mid-fetch.
     var canvasLoading by remember { mutableStateOf(false) }
     // Spec §7.4, implemented here per the Phase 4 deferral: the existing background is held
-    // until the Canvas reports a rendered frame, then the 800ms crossfade begins.
+    // until the Canvas reports a rendered frame, then the CANVAS_WASH_MS crossfade begins.
     var canvasFirstFrameReady by remember { mutableStateOf(false) }
+    // SPEC_SPOTIFY_CANVAS Phase 6: whether the artwork is faded out to expose the Canvas.
+    //
+    // Two exclusive states (spec §6.3), never a scrubbed value, so a Boolean is the honest type.
+    // Cleared on every track change and on every dismissal, because a transparent artwork over a
+    // *normal* background is the one state this player must never be able to reach: the swipe is
+    // only offered while a Canvas is rendering, so "revealed" must never outlive what it reveals.
+    var canvasArtworkRevealed by remember { mutableStateOf(false) }
 
     // Track change: tear down and rebuild (spec 7.3). Engagement never carries over — a
     // fresh long-press is required per track.
@@ -803,6 +810,7 @@ fun BottomSheetPlayer(
         canvasEngaged = false
         canvasLoading = false
         canvasFirstFrameReady = false
+        canvasArtworkRevealed = false
         canvasResult = null
     }
 
@@ -810,8 +818,9 @@ fun BottomSheetPlayer(
         scope.launch {
             if (canvasEngaged) {
                 // Second hold: dismiss. The wash retargets to 0 and the background restores
-                // over 800ms. Artwork is already opaque in Phase 5 (no swipe yet), so there
-                // is nothing to fade back.
+                // over CANVAS_WASH_MS. The artwork returns over its own shorter fade, so the two
+                // deliberately overlap rather than run in sequence.
+                canvasArtworkRevealed = false
                 canvasEngaged = false
                 return@launch
             }
@@ -849,9 +858,22 @@ fun BottomSheetPlayer(
             // already warm (re-engagement), or on the first decoded frame otherwise.
             canvasFirstFrameReady = false
             canvasEngagementId++
+            // A fresh engagement always starts with the artwork showing; revealing it is
+            // something the user asks for per engagement, never inherited from the last one.
+            canvasArtworkRevealed = false
             canvasEngaged = true
         }
     }
+
+    fun onCanvasSwipeToggle() {
+        canvasArtworkRevealed = !canvasArtworkRevealed
+    }
+
+    // The swipe is offered only once there is genuinely something behind the artwork to reveal.
+    // `canvasResult` is assigned only after a successful fetch — the hold returns early for a
+    // track with no Canvas and for a transport failure — so requiring both means the artwork
+    // cannot be faded out over a normal background by any path.
+    val canvasSwipeAvailable = canvasEngaged && canvasResult != null
 
     var showSleepTimerDialog by remember {
         mutableStateOf(false)
@@ -2232,6 +2254,9 @@ fun BottomSheetPlayer(
                                     isListenTogetherGuest = isListenTogetherGuest,
                                     onCoverArtCenterChanged = { coverArtCenter = it },
                                     onCanvasHold = { onCanvasHoldToggle() },
+                                    canvasSwipeAvailable = canvasSwipeAvailable,
+                                    canvasArtworkRevealed = canvasArtworkRevealed,
+                                    onCanvasSwipe = { onCanvasSwipeToggle() },
                                 )
                             }
                         }
@@ -2296,6 +2321,9 @@ fun BottomSheetPlayer(
                                     isListenTogetherGuest = isListenTogetherGuest,
                                     onCoverArtCenterChanged = { coverArtCenter = it },
                                     onCanvasHold = { onCanvasHoldToggle() },
+                                    canvasSwipeAvailable = canvasSwipeAvailable,
+                                    canvasArtworkRevealed = canvasArtworkRevealed,
+                                    onCanvasSwipe = { onCanvasSwipeToggle() },
                                 )
                             }
                         }
