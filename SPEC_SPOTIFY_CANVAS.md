@@ -871,17 +871,40 @@ to `/status`). It was **removed**: the porting rule (§4.2) permits only four ki
 this was a fifth. SimpMusic's design already covers the case — it clears cookies after a
 successful save, so the jar is empty on the next entry. The user was notified and did not object.
 
-##### ⚠ Outstanding — required before Phase 3
+##### ✅ End-to-end verification — CLOSED
 
-Phase 2's on-device verification is **half done**. The login form renders, but the far end of
-the chain is not yet proven:
+The user completed a real login on device. Both outstanding items are now resolved.
 
-- [ ] Log in for real; the IntegrationScreen row flips to "Log out from Spotify".
-- [ ] Tokens are genuinely present in `settings.preferences_pb` — **a green UI is not proof**.
-- [ ] Close the loop: copy the `sp_dc` that **our** login stored and re-run
-      `:spotify:connectedDebugAndroidTest` with it; all four Phase 1.5 tests must still pass.
+**1. The cookie is genuinely on disk.** `settings.preferences_pb` was pulled off the device and
+decoded. `spotifySpdc` is present as a **211-character** URL-safe string. The other Spotify keys
+are legitimately absent — `spotifyPersonalToken` / `spotifyClientToken` and their expiries are
+minted **lazily** on the first `validTokens()` call, which is Phase 3 work. Their absence is the
+designed behaviour, not a gap.
 
-This requires the user to type their own credentials, so it cannot be automated.
+> **Note for anyone reading the DataStore directly.** Metrolist's `Preferences` protobuf uses
+> field 2 for the value, and that field carries **its own tag+length wrapper** — a naive parse
+> yields 214 bytes of non-UTF-8 and looks like corruption. The real string is the 211 bytes
+> *inside* that wrapper. This cost three wrong readings before it was parsed correctly.
+
+**2. The close-the-loop test passes 4/4 with our own cookie.** The `sp_dc` that **Metrolist's own
+login** stored was fed back into `:spotify:connectedDebugAndroidTest`:
+
+```
+tests=4 failures=0 errors=0 skipped=0
+  [PASSED] clientToken_isObtainableWithoutAnyCredentials
+  [PASSED] personalToken_isObtainableAndAuthenticated
+  [PASSED] canvas_isFetchableForAKnownCanvasTrack
+  [PASSED] totpSecret_isFetchable
+```
+
+**`skipped=0` is the load-bearing number.** The cookie-dependent tests use `Assume`, so a missing
+cookie makes them *skip* and the run still reports success (see §14.1c, test hygiene). Zero
+skips proves they actually executed. And `personalToken_isObtainableAndAuthenticated` asserts
+`isAnonymous == false`, so the cookie is genuinely authenticated rather than merely well-formed.
+
+A login flow that stores a well-formed but useless token is now **ruled out**.
+
+**Phase 2 is fully verified. Phase 3 may proceed.**
 
 ---
 
@@ -924,8 +947,7 @@ because they are testable without a device or a network.
 
 ### Phase 2 — Login and token storage
 
-**Status:** ✅ **DONE — commit `e65881a55`** (results in §14.1d) — end-to-end token
-verification still outstanding
+**Status:** ✅ **DONE and fully verified — commit `e65881a55`** (results in §14.1d)
 
 > **⚑ COPY, DON'T REWRITE.** Port `SpotifyAuth.kt`, `SpotifyClient`'s login calls, and
 > `SpotifyTotp.kt` **as they are** from SimpMusic. The TOTP flow in particular is delicate —
@@ -1157,7 +1179,7 @@ with no Canvas and no orphaned UI.
 | 0 | Pre-flight | none | baseline | **✅ DONE** `97107e2e` |
 | 1 | `:spotify` module | none | no | **✅ DONE** `42aaa9f8` |
 | **1.5** | **Headless chain proof (inserted)** | **none** | **yes** | **✅ DONE** `b393250d` |
-| 2 | Login + tokens | low | **yes — real login** | **✅ DONE** `e65881a55`; token persistence still to verify |
+| 2 | Login + tokens | low | **yes — real login** | **✅ DONE + verified** `e65881a55` |
 | 3 | Fetch + cache | **none** | **yes — the risky one** | **yes — headless** |
 | 4 | Video surface | **medium** | **yes** | yes — flag-driven |
 | 5 | Long-press | medium | yes | needs 4 |
@@ -1642,9 +1664,8 @@ are layered on last.
 Each phase: one commit, `testing`, explicit user authorisation required.
 Current status: **Phases 0, 1, 1.5 and 2 are committed** — `97107e2e`, `42aaa9f8`,
 `b393250d`, `883d3cdd` (spec fold), `e65881a55`. **Phase 3 — Canvas fetch and cache — is next**, and is
-the highest-risk phase in the project. Its two outstanding prerequisites are listed in
-**§14.1d**: confirm our own login actually persists a usable token, then close the loop by
-re-running the Phase 1.5 suite against that cookie.
+the highest-risk phase in the project. Phase 2’s verification is closed (§14.1d): our own login
+persists a real cookie and the Phase 1.5 suite passes 4/4 against it.
 
 ### 16.16 If you are resuming
 
@@ -1655,7 +1676,8 @@ re-running the Phase 1.5 suite against that cookie.
    misleading experiments that preceded it, so neither is repeated.
 4. Confirm `git status` — clean once Phase 2 is committed.
 5. Confirm `adb devices` shows `emulator-5556`.
-6. **Clear the two outstanding items in §14.1d before writing Phase 3 code.** They need the
+6. **Phase 2 is fully verified — §14.1d is closed.** No outstanding items remain
+   before Phase 3.
    user to complete a real Spotify login, then a DataStore read, then a re-run of the
    Phase 1.5 suite against the cookie our own login stored.
 7. **If the `sp_dc` cookie has gone stale**, the symptom is `isAnonymous=true` rather than an
@@ -1671,7 +1693,7 @@ Canvas URLs still live and resolvable through our own fetch | ✅ **Phase 1.5 �
 Metrolist's Ktor 3.5.2 has nothing missing for this code | ✅ **Phase 1 — compiles clean** |
 The YouTube→Spotify ID mapping works | ✅ **Phase 1.5 — proven** (search + Canvas URL returned) |
 TextureView composites correctly under the existing background stack | Phase 4, on device |
-**Our own login persists a token the API accepts** | **⚠ Phase 2 — outstanding, §14.1d** |
+| **Our own login persists a token the API accepts** | **✅ Phase 2 — closed, 4/4 with our own cookie (§14.1d)** |
 Whether a clean negative needs exactly 3 attempts or fewer in practice | Phase 3 |
 
 **No database schema change is required** — confirmed by design.
@@ -1696,14 +1718,13 @@ writes — main DB was 598 KB, WAL 4.1 MB), then
 
 ## 17. Open items
 
-**Two, both carried from Phase 2 and both blocking Phase 3** (§14.1d):
+**None blocking.** Phase 2's two verification items are closed (§14.1d): a real login
+persists a 211-char `sp_dc`, and `:spotify:connectedDebugAndroidTest` passes **4/4 with 0
+skipped** against that cookie, including `isAnonymous == false`.
 
-1. Log in for real on device and confirm the IntegrationScreen row flips to "Log out".
-2. Confirm the tokens really landed in `settings.preferences_pb`, then re-run
-   `:spotify:connectedDebugAndroidTest` with that cookie — all four tests must pass. This is
-   what catches a login UI that stores a well-formed but useless token.
-
-Both need the user to type their own Spotify credentials.
+**Known and deliberately not yet exercised:** `validTokens()` — the lazy token minting and
+expiry refresh in `SpotifySessionRepository`. It is written and compiles, but nothing calls it
+until Phase 3. First real use is the next thing that can break it.
 
 **Phases 0, 1, 1.5 and 2 are committed** — `97107e2e`, `42aaa9f8`, `b393250d`, `e65881a55`. The Spotify chain is proven end to end against the live
 API (§14.1c) and the login screen renders (§14.1d). **Phase 3 — Canvas fetch and cache —
