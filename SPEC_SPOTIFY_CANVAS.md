@@ -1603,7 +1603,7 @@ the commit is clean.
 
 ### Phase 7 — Settings, failure handling, credits
 
-**Status:** ✅ **DONE — commit `HASH`** (results in §14.1l, §14.1m)
+**Status:** ✅ **DONE — commit `f39a66bdb`** (results in §14.1l, §14.1m)
 
 **Goal:** the feature is complete, controllable, and correctly attributed.
 
@@ -1650,7 +1650,7 @@ with no Canvas and no orphaned UI.
 | 4 | Video surface | **medium** | **yes** | ✅ **DONE** `8cba7cc2d` — device results in §14.1h |
 | 5 | Long-press | medium | yes | ✅ **DONE** `6e7f2df59` — results in §14.1i |
 | 6 | Swipe | low | yes | ✅ **DONE** `29e52c29d` — results in §14.1j |
-| 7 | Settings + credits | low | yes | ✅ **DONE** `HASH` — results in §14.1l, §14.1m |
+| 7 | Settings + credits | low | yes | ✅ **DONE** `f39a66bdb` — results in §14.1l, §14.1m |
 
 **Post-Phase-6 fix, not its own phase:** the Canvas wash was animating only one side of the
 crossfade — the normal background was hard-cut the instant the first frame landed, so nothing was
@@ -2295,7 +2295,7 @@ is next**, the highest-risk phase, and it runs with no UI at all behind a tempor
 
 #### 14.1l Phase 7 - the settings switch, and the one deliberate port deviation
 
-Commit `HASH`.
+Commit `f39a66bdb`.
 
 **The settings switch** is in `AppearanceSettings.kt`, first row of that screen's **Player**
 group. Not `PlayerSettings.kt`: the two screens are separate files that both contain a group
