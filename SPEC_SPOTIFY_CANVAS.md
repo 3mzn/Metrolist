@@ -1691,9 +1691,9 @@ Nine phases in total, not eight.
 
 ### 14.2 Deferred improvements (not blocking)
 
-#### 14.2a PARTLY REOPENED — geometry fixed in Compose; resampling side effect to be judged on device
+#### 14.2a CLOSED — Canvas upscaling softness. Fixed as a side effect of the crop fix.
 
-**Found by the user during Phase 4, on device; closed after Phase 7 as accepted-as-is, then partly reopened after the 14.0.0 release.** The GEOMETRY half is now fixed: the view is sized to the real video aspect and cropped in Compose, so the compositor does the scaling with proper filtering instead of the player nearest-neighbour path. That may also have fixed the SOFTNESS this section was closed over — but that is for the user to judge on device, not to claim here. If Canvases still look soft, the Compose-crop fix described below remains available. If they look sharp, this section can be closed as fixed-by-side-effect.
+**Closed by user decision after 14.1.0: the softness is gone.** The user judged it on device and reported it fixed. It was never a separate fix — it was a side effect of §14.1p's centre-crop, which moved scaling from the player's nearest-neighbour path to the compositor, which filters properly. The two symptoms had one cause, which is why closing the geometry half was enough to close this one.
 
 `CanvasBackgroundLayer` sets `C.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING` (2). Media3 1.10.1
 offers **only two** modes:
@@ -2500,3 +2500,53 @@ Three things this changed beyond UI:
 3. **The limit applies on next app start**, matching Song and Image Cache, which read their
    preferences once when the module builds the cache. Deliberately the same rather than adding
    re-eviction the other two do not have.
+
+#### 14.1r — CI release builds are closed. Manual release only.
+
+**Closed by user decision after 14.1.0: the user has stopped wanting CI release builds. Releases are
+built, signed, published and pushed manually from here on.**
+
+This is a release-process decision, not a Canvas one, but it belongs in this file because the spec is
+the running record and the two are entangled: the Canvas feature is what made the release pipeline
+worth using, and the pipeline is now deliberately not used.
+
+**What is closed.** `.github/workflows/release.yml` ("Bump to new version") and
+`.github/workflows
+otify-update.yml` ("Notify Update") are not the release path any more. Two
+independent defects made them unusable, and neither is being fixed:
+
+1. `release.yml`'s `check-version` job grepped `versionName` without taking the first match, so the
+   `buildCommit?.let { versionName = "$baseVersionName+$it" }` line made the value two lines and the
+   job failed on "Invalid format". Every release since that line landed failed here — including
+   v13.11.0 and the v14.0.0 bump. Fixed in `976747c6b` with `head -1`, but the fix is now moot.
+2. `notify-update.yml` uses `android-actions/setup-android@v3.2.2`, which is deprecated and no
+   longer installs the SDK. It fails at "Setup Android SDK" before any credential is touched, so no
+   Supabase upload and no FCM send ever happened from CI.
+
+**What replaces it.** The manual path, which is what actually shipped 14.0.0, 14.0.1 and 14.1.0:
+
+    1. bump versionCode + versionName in `app/build.gradle.kts`, add a `---vX.Y.Z` block to
+       `changelog.md`, commit, push to `personal/main`
+    2. `./gradlew :app:assembleFossRelease` — unsigned, as expected (the `release` buildType has no
+       signingConfig; that is deliberate, see `RELEASE_RUNBOOK.md` Step 1)
+    3. sign with `apksigner` using the keystore in `app/keystore/release.keystore`, credentials from
+       `CONTINUATION.md` §1.2, never printed
+    4. `gh release create vX.Y.Z Metrolist.apk`
+    5. `node push-update.js <signed-apk>` — uploads to Supabase, updates `latest-foss.json`, sends
+       the FCM push to `metrolist_foss_updates`
+
+`RELEASE_RUNBOOK.md` at the repo root is the canonical record of that path, including the reason the
+passwords are not in the repo and the `apksigner.bat` colon-vs-space gotcha.
+
+**Consequences worth stating rather than leaving implied:**
+
+- **Pushing a version bump to `main` will still trigger both workflows and they will still fail.**
+  That is now expected noise, not a signal. Nothing is published by them: `create-release` needs the
+  build job to succeed, and `notify-update` needs a published release.
+- **`RELEASE_TOKEN` is absent from the fork's secrets.** It was never needed, because releases are
+  created with the user's own `gh` login, which has `repo` scope. Do not "fix" this by adding it.
+- **The hardcoded Windows JDK path in tracked `gradle.properties` stays.** It breaks every Ubuntu CI
+  run at startup, which is precisely why CI is not the path. Removing it would be a one-line change
+  that fixes CI — but the user has decided CI is not wanted, so it is left exactly as it is.
+- **`LASTFM_API_KEY` / `LASTFM_SECRET` are absent.** Also never needed: both default to `""` and
+  `App.kt` handles empty, so LastFM scrobbling is silently inert in locally built APKs. Unchanged.
