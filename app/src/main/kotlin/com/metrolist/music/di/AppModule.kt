@@ -15,6 +15,7 @@ import androidx.media3.datasource.cache.ContentMetadataMutations
 import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
 import androidx.media3.datasource.cache.NoOpCacheEvictor
 import androidx.media3.datasource.cache.SimpleCache
+import com.metrolist.music.constants.MaxCanvasCacheSizeKey
 import com.metrolist.music.constants.MaxSongCacheSizeKey
 import com.metrolist.music.db.InternalDatabase
 import com.metrolist.music.db.MusicDatabase
@@ -201,9 +202,17 @@ object AppModule {
     /**
      * Spotify Canvas video cache.
      *
-     * Mirrors SimpMusic's `spotifyCanvas` `SimpleCache` exactly (same cache name, and
-     * `cacheSize = -1` mapped to `NoOpCacheEvictor` as Metrolist already does for downloads).
-     * Canvas files are a few hundred KB each, so unbounded is the right trade here.
+     * Mirrors SimpMusic's `spotifyCanvas` `SimpleCache` name exactly, and follows
+     * `providePlayerCache` for the evictor: `-1` is unlimited, anything else is a real ceiling.
+     *
+     * Previously `NoOpCacheEvictor` unconditionally, on the reasoning that a Canvas is a few
+     * hundred KB so unbounded was harmless. That was true per-file and wrong in aggregate — a
+     * listener plays hundreds of tracks, and the cache is never emptied otherwise.
+     *
+     * **The preference is read once, here, when the cache is first built.** Changing the limit in
+     * Settings -> Storage therefore takes effect on the next app start, exactly as it does for the
+     * song and image caches. Deliberately the same behaviour rather than adding re-eviction the
+     * other two caches do not have.
      */
     @Singleton
     @Provides
@@ -213,9 +222,15 @@ object AppModule {
         databaseProvider: DatabaseProvider,
     ): Cache =
         LazyCache {
+            val cacheSize = context.dataStore[MaxCanvasCacheSizeKey] ?: 3072
+            val evictor =
+                when (cacheSize) {
+                    -1 -> NoOpCacheEvictor()
+                    else -> LeastRecentlyUsedCacheEvictor(cacheSize * 1024 * 1024L)
+                }
             SimpleCache(
                 context.filesDir.resolve("spotifyCanvas"),
-                NoOpCacheEvictor(),
+                evictor,
                 databaseProvider,
             )
         }

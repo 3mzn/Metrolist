@@ -255,6 +255,13 @@ val SpotifyCanvasFailureCountKey = intPreferencesKey("spotifyCanvasFailureCount"
 // from accumulating unbounded sibling keys.
 val SpotifyCanvasCacheKey = stringPreferencesKey("spotifyCanvasCache")
 
+// Max Canvas video cache, in MB. -1 means unlimited.
+//
+// 500MB is the floor rather than 0: Canvas videos are a few hundred KB each, so a literal zero
+// would leave no room for a single one, and "disable caching" already exists as the master switch
+// in Appearance -> Player. The ladder this is chosen from lives with the storage UI, not here.
+val MaxCanvasCacheSizeKey = intPreferencesKey("maxCanvasCacheSize")
+
 val LastFMUseSendLikes = booleanPreferencesKey("lastfmUseSendLikes")
 
 val ScrobbleDelayPercentKey = floatPreferencesKey("scrobbleDelayPercent")

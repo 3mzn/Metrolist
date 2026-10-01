@@ -2474,3 +2474,29 @@ in ways only the device could show. Worth recording as the lesson §14.1d alread
 **Side effect, for the user to judge:** the compositor now does the scaling with proper filtering
 rather than the player's nearest-neighbour path, so §14.2a's softness may be gone too. Verified
 as fixed geometry; the sharpness question is the user's to answer on device.
+
+#### 14.1q — Canvas Cache storage group (post-14.0.1)
+
+New group in Settings → Storage, between Song Cache and Image Cache, built to mirror those
+two groups row for row: a limit slider with progress bar and used/limit line, a counts row, and
+two confirm-dialog clears. Four rows, no enable switch — the master switch in Appearance
+→ Player already covers that, and a second one would be redundant.
+
+Three things this changed beyond UI:
+
+1. **The video cache is now bounded.** `AppModule.kt` used `NoOpCacheEvictor` unconditionally,
+   on the reasoning that a few hundred KB per Canvas was harmless. True per file, wrong in
+   aggregate — nothing ever emptied it. Now `LeastRecentlyUsedCacheEvictor` with `-1` still
+   meaning unlimited, exactly like the song cache. Default **3072MB** on a ladder of 500MB, 1GB,
+   2.5GB, **3GB**, 4GB, 6GB, 8GB, Unlimited. 3GB is in the ladder only because the slider needs
+   `indexOf(default)` to resolve; a default off the ladder leaves the thumb with no position.
+
+2. **"Clear no-Canvas records" wipes only confirmed negatives** (`noCanvasAttempts >= 3) and
+   zeroes the consecutive-failure counter in the same operation — otherwise clearing records
+   *because* Spotify was misbehaving would re-fire the §9.2 notification almost immediately.
+   Resolved URLs survive. Tracks still under the threshold are excluded from both the wipe and the
+   count, since they are retryable rather than a verdict.
+
+3. **The limit applies on next app start**, matching Song and Image Cache, which read their
+   preferences once when the module builds the cache. Deliberately the same rather than adding
+   re-eviction the other two do not have.

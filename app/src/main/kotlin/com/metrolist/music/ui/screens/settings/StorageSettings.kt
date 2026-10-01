@@ -56,9 +56,12 @@ import com.metrolist.music.LocalPlayerConnection
 import com.metrolist.music.R
 import com.metrolist.music.constants.EnableSongCacheKey
 import com.metrolist.music.constants.DownloadLyricsWithDownloadsKey
+import com.metrolist.music.constants.MaxCanvasCacheSizeKey
 import com.metrolist.music.constants.MaxImageCacheSizeKey
 import com.metrolist.music.constants.MaxSongCacheSizeKey
 import com.metrolist.music.db.entities.PlaylistEntity
+import com.metrolist.music.di.CanvasCacheEntryPoint
+import com.metrolist.music.di.SpotifyCanvasEntryPoint
 import com.metrolist.music.extensions.tryOrNull
 import com.metrolist.music.ui.component.ActionPromptDialog
 import com.metrolist.music.ui.component.IconButton
@@ -67,6 +70,7 @@ import com.metrolist.music.ui.component.Material3SettingsItem
 import com.metrolist.music.ui.dialog.SocialRepositoryEntryPoint
 import com.metrolist.music.ui.utils.backToMain
 import com.metrolist.music.utils.rememberPreference
+import com.metrolist.music.utils.spotify.CanvasCacheCounts
 import com.metrolist.music.widget.PartnerWidgetManager
 import dagger.hilt.android.EntryPointAccessors
 import java.io.File
@@ -90,6 +94,20 @@ fun StorageSettings(
     val imageDiskCache = context.imageLoader.diskCache ?: return
     val playerCache = LocalPlayerConnection.current?.service?.playerCache ?: return
     val downloadCache = LocalPlayerConnection.current?.service?.downloadCache ?: return
+    // Via the existing entry point rather than the player: the Canvas cache belongs to the Canvas
+    // layer, and reaching it through PlayerConnection would couple this screen to playback.
+    val canvasCache = remember {
+        EntryPointAccessors.fromApplication(
+            context.applicationContext,
+            CanvasCacheEntryPoint::class.java,
+        ).canvasCache()
+    }
+    val spotifyCanvasRepository = remember {
+        EntryPointAccessors.fromApplication(
+            context.applicationContext,
+            SpotifyCanvasEntryPoint::class.java,
+        ).spotifyCanvasRepository()
+    }
 
     val coroutineScope = rememberCoroutineScope()
     val songCacheString = stringResource(R.string.song_cache).lowercase()
@@ -106,6 +124,13 @@ fun StorageSettings(
         key = EnableSongCacheKey,
         defaultValue = true
     )
+    // 3072 MB. The ladder this slider walks lives below; the default has to be a member of it, or
+    // `indexOf` returns -1 and the thumb has no position.
+    val (maxCanvasCacheSize, onMaxCanvasCacheSizeChange) = rememberPreference(
+        key = MaxCanvasCacheSizeKey,
+        defaultValue = 3072
+    )
+    val canvasCacheString = stringResource(R.string.canvas_cache).lowercase()
     val (downloadLyrics, onDownloadLyricsChange) = rememberPreference(
         key = DownloadLyricsWithDownloadsKey,
         defaultValue = true
@@ -122,6 +147,8 @@ fun StorageSettings(
     var clearCacheDialog by remember { mutableStateOf(false) }
     var clearImageCacheDialog by remember { mutableStateOf(false) }
     var clearToListenDialog by remember { mutableStateOf(false) }
+    var clearCanvasCacheDialog by remember { mutableStateOf(false) }
+    var clearCanvasNegativesDialog by remember { mutableStateOf(false) }
 
     // Widget UI debug test: render own playback into the Partner widget for visual inspection.
     var widgetUiDebugTest by rememberPreference(
@@ -154,6 +181,13 @@ fun StorageSettings(
     var downloadCacheSize by remember {
         mutableLongStateOf(tryOrNull { downloadCache.cacheSpace } ?: 0)
     }
+    var canvasCacheSize by remember {
+        mutableLongStateOf(tryOrNull { canvasCache.cacheSpace } ?: 0)
+    }
+    // Re-read whenever either clear action runs, so the counts cannot drift from the index after
+    // a wipe. Polled rather than observed: the index is a DataStore JSON blob with no per-entry
+    // flow, and nothing else on this screen changes it while it is open.
+    var canvasCounts by remember { mutableStateOf(CanvasCacheCounts()) }
     val imageCacheProgress by animateFloatAsState(
         targetValue =
             (imageCacheSize.toFloat() / (maxImageCacheSize * 1024 * 1024L)).coerceIn(
@@ -169,6 +203,17 @@ fun StorageSettings(
                 1f,
             ),
         label = "playerCacheProgress",
+    )
+    // Progress is meaningless against "unlimited", so it reads zero there rather than dividing by
+    // Long.MAX_VALUE and showing a bar that is always empty.
+    val canvasCacheProgress by animateFloatAsState(
+        targetValue =
+            if (maxCanvasCacheSize == -1) {
+                0f
+            } else {
+                (canvasCacheSize.toFloat() / (maxCanvasCacheSize * 1024 * 1024L)).coerceIn(0f, 1f)
+            },
+        label = "canvasCacheProgress",
     )
 
     LaunchedEffect(maxImageCacheSize) {
@@ -200,6 +245,26 @@ fun StorageSettings(
             delay(500)
             playerCacheSize = tryOrNull { playerCache.cacheSpace } ?: 0
         }
+    }
+    LaunchedEffect(canvasCache) {
+        while (isActive) {
+            delay(500)
+            canvasCacheSize = tryOrNull { canvasCache.cacheSpace } ?: 0
+        }
+    }
+    // The counts change only when the user acts on this screen or a Canvas is played, so once on
+    // entry plus a refresh after each clear is enough — a poll here would read the whole DataStore
+    // JSON blob twice a second for a number that barely moves.
+    //
+    // `runCatching`, not the screen's usual `tryOrNull`: that helper takes a non-suspend lambda
+    // and the repository reads are suspending.
+    suspend fun refreshCanvasCounts() {
+        canvasCounts =
+            runCatching { spotifyCanvasRepository.cacheCounts() }.getOrDefault(CanvasCacheCounts())
+        canvasCacheSize = runCatching { canvasCache.cacheSpace }.getOrDefault(0)
+    }
+    LaunchedEffect(Unit) {
+        refreshCanvasCounts()
     }
     LaunchedEffect(downloadCache) {
         while (isActive) {
@@ -308,6 +373,79 @@ fun StorageSettings(
             onCancel = { clearImageCacheDialog = false },
             content = {
                 Text(text = stringResource(R.string.clear_image_cache_dialog))
+            },
+        )
+    }
+
+    if (clearCanvasCacheDialog) {
+        ActionPromptDialog(
+            title = stringResource(R.string.clear_canvas_cache),
+            onDismiss = { clearCanvasCacheDialog = false },
+            onConfirm = {
+                        coroutineScope.launch(Dispatchers.IO) {
+                            // Per-resource removal rather than `clear()`: the same pattern the song
+                            // cache uses, and it leaves the cache instance itself usable, so a
+                            // playing Canvas is not handed a released cache.
+                            canvasCache.keys.forEach { key ->
+                                canvasCache.removeResource(key)
+                            }
+                            withContext(Dispatchers.Main) {
+                        refreshCanvasCounts()
+                        Toast.makeText(
+                            context,
+                            R.string.canvas_cache_cleared,
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                    }
+                }
+                clearCanvasCacheDialog = false
+            },
+            onCancel = { clearCanvasCacheDialog = false },
+            content = {
+                Text(text = stringResource(R.string.clear_canvas_cache_dialog))
+            },
+        )
+    }
+
+    if (clearCanvasNegativesDialog) {
+        ActionPromptDialog(
+            title = stringResource(R.string.clear_canvas_negatives),
+            onDismiss = { clearCanvasNegativesDialog = false },
+            onConfirm = {
+                coroutineScope.launch(Dispatchers.IO) {
+                    val removed =
+                        runCatching { spotifyCanvasRepository.clearConfirmedNegatives() }
+                            .getOrDefault(0)
+                    withContext(Dispatchers.Main) {
+                        refreshCanvasCounts()
+                        // Reports 0 rather than claiming success: a wipe that removed nothing is a
+                        // real outcome, not a failure worth an error.
+                        Toast.makeText(
+                            context,
+                            if (removed > 0) {
+                                context.getString(R.string.canvas_negatives_cleared, removed)
+                            } else {
+                                context.getString(R.string.canvas_negatives_none_to_clear)
+                            },
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                    }
+                }
+                clearCanvasNegativesDialog = false
+            },
+            onCancel = { clearCanvasNegativesDialog = false },
+            content = {
+                Text(
+                    text =
+                        if (canvasCounts.confirmedEmpty > 0) {
+                            stringResource(
+                                R.string.clear_canvas_negatives_dialog,
+                                canvasCounts.confirmedEmpty,
+                            )
+                        } else {
+                            stringResource(R.string.canvas_negatives_none_to_clear)
+                        },
+                )
             },
         )
     }
@@ -567,6 +705,112 @@ fun StorageSettings(
                         },
                     ),
                 ),
+        )
+
+        Material3SettingsGroup(
+            title = stringResource(R.string.canvas_cache),
+            items = listOf(
+                Material3SettingsItem(
+                    icon = painterResource(R.drawable.cached),
+                    title = { Text(stringResource(R.string.max_canvas_cache_size)) },
+                    description = {
+                        val canvasCacheValues =
+                            remember { listOf(500, 1024, 2560, 3072, 4096, 6144, 8192, -1) }
+                        Column {
+                            Text(
+                                text =
+                                    if (maxCanvasCacheSize == -1) {
+                                        stringResource(R.string.unlimited)
+                                    } else {
+                                        Formatter.formatShortFileSize(context, maxCanvasCacheSize * 1024 * 1024L)
+                                    },
+                            )
+                            Slider(
+                                value = canvasCacheValues.indexOf(maxCanvasCacheSize).toFloat(),
+                                onValueChange = {
+                                    val newValue = canvasCacheValues[it.roundToInt()]
+                                    val newLimitInBytes = if (newValue == -1) {
+                                        Long.MAX_VALUE
+                                    } else {
+                                        newValue * 1024 * 1024L
+                                    }
+
+                                    if (newLimitInBytes < canvasCacheSize) {
+                                        cacheUsage = canvasCacheSize
+                                        cacheType = canvasCacheString
+                                        onConfirmAction = { onMaxCanvasCacheSizeChange(newValue) }
+                                        showCacheWarningDialog = true
+                                    } else {
+                                        onMaxCanvasCacheSizeChange(newValue)
+                                    }
+                                },
+                                steps = canvasCacheValues.size - 2,
+                                valueRange = 0f..(canvasCacheValues.size - 1).toFloat(),
+                            )
+                            LinearProgressIndicator(
+                                progress = { canvasCacheProgress },
+                                modifier = Modifier.fillMaxWidth(),
+                                strokeCap = StrokeCap.Round,
+                            )
+                            Spacer(modifier = Modifier.padding(2.dp))
+                            Text(
+                                text =
+                                    if (maxCanvasCacheSize == -1) {
+                                        Formatter.formatShortFileSize(context, canvasCacheSize)
+                                    } else {
+                                        "${Formatter.formatShortFileSize(context, canvasCacheSize)} / ${
+                                            Formatter.formatShortFileSize(
+                                                context,
+                                                maxCanvasCacheSize * 1024 * 1024L,
+                                            )
+                                        }"
+                                    },
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                        }
+                    },
+                ),
+                Material3SettingsItem(
+                    icon = painterResource(R.drawable.cached),
+                    title = { Text(stringResource(R.string.canvas_feature_name)) },
+                    description = {
+                        // Counts index records, not bytes: the video cache and the verdict index
+                        // are independent, and the two clears above act on one each.
+                        Column {
+                            Text(
+                                text =
+                                    stringResource(
+                                        R.string.canvas_cache_summary,
+                                        canvasCounts.withCanvas,
+                                        canvasCounts.confirmedEmpty,
+                                    ),
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                            if (canvasCounts.confirmedEmpty == 0) {
+                                Text(
+                                    text = stringResource(R.string.canvas_negatives_none_to_clear),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    },
+                ),
+                Material3SettingsItem(
+                    icon = painterResource(R.drawable.clear_all),
+                    title = { Text(stringResource(R.string.clear_canvas_cache)) },
+                    onClick = {
+                        clearCanvasCacheDialog = true
+                    },
+                ),
+                Material3SettingsItem(
+                    icon = painterResource(R.drawable.clear_all),
+                    title = { Text(stringResource(R.string.clear_canvas_negatives)) },
+                    onClick = {
+                        clearCanvasNegativesDialog = true
+                    },
+                ),
+            ),
         )
 
         Material3SettingsGroup(

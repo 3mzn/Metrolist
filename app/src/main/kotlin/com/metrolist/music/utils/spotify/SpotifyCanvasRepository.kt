@@ -116,6 +116,20 @@ private sealed interface Outcome {
             }
 }
 
+/**
+ * Counts of what the Canvas index currently holds, for the Storage settings screen.
+ *
+ * Deliberately about *records*, not bytes: the size and its limit come from the `SimpleCache`, and
+ * mixing the two in one row would read as if clearing one cleared the other. They are independent —
+ * the video cache can be emptied while every URL verdict survives, and vice versa.
+ */
+data class CanvasCacheCounts(
+    /** Tracks with a resolved Canvas URL. */
+    val withCanvas: Int = 0,
+    /** Tracks confirmed to have no Canvas (spec §9.2 threshold reached). */
+    val confirmedEmpty: Int = 0,
+)
+
 /** Why a Canvas lookup failed. None of these is evidence about the track itself. */
 internal enum class FailureCause {
     /** No usable route to Spotify: offline, DNS failure, timeout, connection reset. */
@@ -339,6 +353,52 @@ class SpotifyCanvasRepository @Inject constructor(
         val entry = cachedEntry(videoId) ?: return null
         val url = entry.canvasUrl ?: return null
         return CanvasResult(entry.isVideo, url, entry.canvasThumbUrl)
+    }
+
+    // ---------------------------------------------------------------- settings support
+
+    /**
+     * How many tracks the index holds in each state, for the Storage settings screen.
+     *
+     * The negative count is only ever [CanvasCacheEntry.isConfirmedEmpty] — a track whose Canvas
+     * was seen to be missing enough times to be trusted (spec §9.2). Tracks still under the
+     * threshold are *not* counted here: they are retryable state, not a verdict, and showing them
+     * as "no Canvas" would misreport tracks that would very likely fetch successfully next time.
+     */
+    suspend fun cacheCounts(): CanvasCacheCounts {
+        val index = readIndex()
+        return CanvasCacheCounts(
+            withCanvas = index.count { it.value.canvasUrl != null },
+            confirmedEmpty = index.count { it.value.isConfirmedEmpty },
+        )
+    }
+
+    /**
+     * Drops every confirmed "no Canvas" verdict, and zeroes the consecutive-failure counter.
+     *
+     * Scoped to confirmed negatives only (spec §9.2). Resolved entries keep their URLs so working
+     * Canvases are untouched — the point is to undo a wrong verdict, not to forget everything.
+     *
+     * The counter reset is part of the same operation, not a separate decision. That counter
+     * drives the §9.2 failure notification, so a user who clears the records *because* Spotify was
+     * misbehaving would otherwise get the notification again almost immediately, and the symptom
+     * they just tried to clear would look unfixed.
+     *
+     * @return how many verdicts were dropped
+     */
+    suspend fun clearConfirmedNegatives(): Int {
+        val index = readIndex()
+        val kept = index.filterValues { !it.isConfirmedEmpty }
+        val removed = index.size - kept.size
+        if (removed > 0) {
+            context.safeDataStoreEdit { it[SpotifyCanvasCacheKey] = JSON.encodeToString(kept) }
+        }
+        val failures = context.dataStore.data.first()[SpotifyCanvasFailureCountKey] ?: 0
+        if (failures != 0) {
+            context.safeDataStoreEdit { it[SpotifyCanvasFailureCountKey] = 0 }
+        }
+        Timber.tag(TAG).d("cleared $removed confirmed no-canvas verdict(s); failure counter zeroed")
+        return removed
     }
 
     // ---------------------------------------------------------------- cache index

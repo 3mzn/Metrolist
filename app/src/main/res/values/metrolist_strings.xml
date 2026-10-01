@@ -444,6 +444,18 @@
 
     <!-- Canvas failure notification. Phase 7, spec 9.2. -->
     <string name="canvas_feature_name">Spotify Canvas</string>
+    <!-- Canvas storage, Settings -> Storage. -->
+    <string name="canvas_cache">Canvas Cache</string>
+    <string name="max_canvas_cache_size">Max Canvas cache size</string>
+    <string name="canvas_cache_summary">%1$d tracks with Canvas, %2$d with none</string>
+    <string name="clear_canvas_cache">Clear Canvas videos</string>
+    <string name="clear_canvas_cache_dialog">Deletes the cached Canvas videos. They will be downloaded again when needed.</string>
+    <string name="clear_canvas_negatives">Clear "no Canvas" records</string>
+    <string name="clear_canvas_negatives_dialog">Forgets tracks recorded as having no Canvas, so they will be looked up again. Currently %1$d track(s) recorded as having none.</string>
+    <string name="clear_canvas_negatives_none">No tracks are currently recorded as having no Canvas.</string>
+    <string name="canvas_cache_cleared">Canvas cache cleared</string>
+    <string name="canvas_negatives_cleared">Cleared %1$d "no Canvas" record(s)</string>
+    <string name="canvas_negatives_none_to_clear">No "no Canvas" records to clear</string>
     <string name="canvas_enable">Canvas</string>
     <string name="canvas_enable_description">Show the animated artwork Spotify provides behind the player</string>
     <string name="canvas_login_required_subtitle">Log in to Spotify to enable</string>
