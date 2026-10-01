@@ -211,9 +211,21 @@ Canvas fills the entire screen. **No letterboxing, no black bars** — centre-cr
 (`ContentScale.Crop`). A Canvas is a 9:16 vertical video; in landscape this crops heavily,
 which is accepted rather than letterboxed.
 
-> **⚠ The crop is correct; the resampling is not.** Implemented with
-> `VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING`, which is Media3's **nearest-neighbour** path —
-> upscaling is visibly soft. Accepted for now; see **§14.2a**.
+> **The crop is a `Matrix` transform on the surface itself, and it must be non-uniform.**
+> `VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING` is a no-op on TextureView — ExoPlayer
+> applies scaling modes to SurfaceView output only — so for years this spec claimed a
+> centre-crop that never happened, and a 9:16 Canvas on a taller phone was squished.
+> Sizing the view to the video's aspect and letting Compose clip does not work either:
+> `dumpsys` showed the view still at full container size, and a TextureView's layout bounds
+> do not crop a native `Surface`. `setTransform` scales the surface *content*, which is
+> independent of layout and is the only thing that works.
+>
+> The scale has to grow on the overflowing axis and leave the other alone — scaling both
+> equally scales the squash rather than removing it. For 1080x1920 in a 1080x2400 view:
+> `scaleX = 1080/1080 = 1.00`, `scaleY = 2400/1920 = 1.25`, so X takes 1.25 and Y stays 1.00,
+> and the horizontal overflow is the crop. A single uniform `max(...)` cannot express this:
+> `max(1080 / (2400 * 0.5625), 1f)` is exactly `1f`. Three attempts failed on this — see
+> §14.1p. Centre-scaled, so the crop is symmetric.
 
 ### 5.3 Controls
 
@@ -1679,11 +1691,9 @@ Nine phases in total, not eight.
 
 ### 14.2 Deferred improvements (not blocking)
 
-#### 14.2a CLOSED — Canvas upscaling softness. Accepted as-is; no code change was made.
+#### 14.2a PARTLY REOPENED — geometry fixed in Compose; resampling side effect to be judged on device
 
-**Found by the user during Phase 4, on device. CLOSED after Phase 7 by user decision — accepted
-as-is, will not fix.** No code change was made, so **the behaviour below is still exactly as
-described.** This section is kept as the record of a known limitation, not as a fix.
+**Found by the user during Phase 4, on device; closed after Phase 7 as accepted-as-is, then partly reopened after the 14.0.0 release.** The GEOMETRY half is now fixed: the view is sized to the real video aspect and cropped in Compose, so the compositor does the scaling with proper filtering instead of the player nearest-neighbour path. That may also have fixed the SOFTNESS this section was closed over — but that is for the user to judge on device, not to claim here. If Canvases still look soft, the Compose-crop fix described below remains available. If they look sharp, this section can be closed as fixed-by-side-effect.
 
 `CanvasBackgroundLayer` sets `C.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING` (2). Media3 1.10.1
 offers **only two** modes:
@@ -2413,3 +2423,54 @@ not happening.
 and `SERVER_ERROR` (any other non-2xx). Only `UNREACHABLE` has met a real response. The other two
 share the same status check and the same code path — the notification is the same, only the
 message differs — so the untested part is the classification, not the delivery.
+
+#### 14.1p — centre-crop was never actually cropping. Found by the user on a 9:20 phone.
+
+**Reported after the 14.0.0 release as:** the Canvas *"STRETCHES to fit, instead of cropping out
+the sides"*, squished from both sides. A 9:16 Canvas on a 9:20 phone should crop its sides; it was
+being compressed horizontally instead.
+
+**The defect.** `§5.2` has claimed centre-crop since this spec was written, and the code has never
+delivered it. `setVideoScalingMode(VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING)` **is a no-op on
+TextureView** — ExoPlayer applies scaling modes to SurfaceView output only. With the call
+silently doing nothing, a bare TextureView stretches its frame to its own bounds. Every portrait
+phone taller than 9:16 has shown this since Phase 4.
+
+**Three failed fixes before the right one, all instructive:**
+
+1. **Compose-side sizing** — size the TextureView to the video's aspect, centre it in a
+   clipped box. Measured and wrong: `dumpsys activity top` still reported `0,0-1080,2400` on a
+   1080x2400 screen with `width(maxHeight * aspect)` applied. A TextureView's layout bounds do
+   not crop a native `Surface`, and Compose's clip does not reach into it.
+
+2. **A stale-state bug**, found while verifying the above. The aspect was
+   `remember(canvas?.canvasUrl)` — a *new* state object per engagement — while the size listener
+   lived in a `DisposableEffect` keyed only on the player and so kept writing the first object
+   object. The layout read a value that stayed `null` forever. Fixed by keeping one stable object and
+   re-seeding per track; the same fix also covers consecutive Canvases that share a resolution,
+   where ExoPlayer reports no size *change* and no callback would ever come.
+
+3. **A uniform `setTransform`**, which cannot express a centre-crop at all. Aspect preservation
+   means *one* axis grows while the other holds; scaling both by the same factor only scales the
+   squash up or down. The specific bug was a clamp: `max(viewW / (viewH * aspect), 1f)` evaluates to
+   exactly `1f` for a 9:16 video in a 9:20 view, so it silently applied no transform whatsoever.
+
+**The working fix** — per-axis scale, from `onVideoSizeChanged`:
+
+    scaleX = viewW / videoWidth      // 1.00  already full width
+    scaleY = viewH / videoHeight     // 1.25  too short
+    scale  = max(scaleX, scaleY)     // 1.25
+    setScale(scale / scaleX, scale / scaleY, centreX, centreY)
+
+X grows 1.25, Y holds 1.00, the horizontal overflow is cropped, and scaling about the centre keeps it
+symmetric. State is kept as width/height rather than a collapsed aspect ratio, since collapsing
+early is what hid the arithmetic error.
+
+**What actually ended the guessing** was instrumenting rather than inferring: a temporary log line
+in the layout branch, `dumpsys activity top` for the real view bounds, and a `screencap` for the
+visual truth. Three builds were shipped before that, all reasoned from the code alone and all wrong
+in ways only the device could show. Worth recording as the lesson §14.1d already teaches.
+
+**Side effect, for the user to judge:** the compositor now does the scaling with proper filtering
+rather than the player's nearest-neighbour path, so §14.2a's softness may be gone too. Verified
+as fixed geometry; the sharpness question is the user's to answer on device.
