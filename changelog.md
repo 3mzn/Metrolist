@@ -1,3 +1,6 @@
+---v14.0.1
+- Canvas artwork now crops to your phone's shape instead of being squeezed — 14.0.0 stretched it sideways on taller screens
+
 ---v14.0.0
 - Spotify Canvas: long-press the album art to show the track's animated artwork behind the player, swipe up to reveal it fully
 - New Canvas switch in Settings → Appearance → Player (on by default), with a login prompt when you're signed out
