@@ -77,6 +77,15 @@ enum class BorderGlowIntensity {
     MEDIUM,
     HIGH,
 }
+
+/**
+ * Home-screen ring visualizer (SPEC_HOME_WALLPAPER_RINGS). Hotspot strength and peak
+ * brightness are deliberately **separate** from the MiniPlayer's equivalents so the
+ * wallpaper and the MiniPlayer cannot change each other.
+ */
+val HomeRingEnabledKey = booleanPreferencesKey("homeRingEnabled")
+val HomeRingHotspotKey = floatPreferencesKey("homeRingHotspot")
+val HomeRingIntensityKey = stringPreferencesKey("homeRingIntensity")
 val HidePlayerThumbnailKey = booleanPreferencesKey("hidePlayerThumbnail")
 val CropAlbumArtKey = booleanPreferencesKey("cropAlbumArt")
 val SeekExtraSeconds = booleanPreferencesKey("seekExtraSeconds")

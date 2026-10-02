@@ -38,6 +38,7 @@ import com.metrolist.music.LocalPlayerAwareWindowInsets
 import com.metrolist.music.R
 import com.metrolist.music.constants.AudioNormalizationKey
 import com.metrolist.music.constants.AudioOffload
+import com.metrolist.music.constants.HomeRingEnabledKey
 import com.metrolist.music.constants.AudioTrackPlaybackParamsKey
 import com.metrolist.music.constants.AudioQuality
 import com.metrolist.music.constants.AudioQualityKey
@@ -132,6 +133,14 @@ fun PlayerSettings(
         LoudnessLevelKey,
         defaultValue = LoudnessLevel.BALANCED,
     )
+
+    val (homeRingOn, _) = rememberPreference(
+        key = HomeRingEnabledKey,
+        defaultValue = false,
+    )
+    // Offload and the home-screen rings are mutually exclusive: offload bypasses the
+    // decoder, so the rings would get no audio at all. Mirrors the crossfade interlock.
+    val offloadBlocked = crossfadeEnabled || homeRingOn
 
     val (audioOffload, onAudioOffloadChange) = rememberPreference(
         key = AudioOffload,
@@ -451,19 +460,25 @@ fun PlayerSettings(
                     title = { Text(stringResource(R.string.audio_offload)) },
                     description = {
                         Text(
-                            if (crossfadeEnabled) stringResource(R.string.audio_offload_disabled_by_crossfade)
-                            else stringResource(R.string.audio_offload_description)
+                            when {
+                                crossfadeEnabled -> stringResource(R.string.audio_offload_disabled_by_crossfade)
+                                // Offload bypasses the decoder entirely, so no audio ever
+                                // reaches the wallpaper rings — they would be silently
+                                // dead. Same reasoning as the crossfade interlock above.
+                                homeRingOn -> stringResource(R.string.audio_offload_disabled_by_home_ring)
+                                else -> stringResource(R.string.audio_offload_description)
+                            }
                         )
                     },
                     trailingContent = {
                         Switch(
-                            checked = if (crossfadeEnabled) false else audioOffload,
+                            checked = if (offloadBlocked) false else audioOffload,
                             onCheckedChange = onAudioOffloadChange,
-                            enabled = !crossfadeEnabled,
+                            enabled = !offloadBlocked,
                             thumbContent = {
                                 Icon(
                                     painter = painterResource(
-                                        id = if (!crossfadeEnabled && audioOffload) R.drawable.check else R.drawable.close
+                                        id = if (!offloadBlocked && audioOffload) R.drawable.check else R.drawable.close
                                     ),
                                     contentDescription = null,
                                     modifier = Modifier.size(SwitchDefaults.IconSize)
@@ -471,7 +486,7 @@ fun PlayerSettings(
                             }
                         )
                     },
-                    onClick = { if (!crossfadeEnabled) onAudioOffloadChange(!audioOffload) }
+                    onClick = { if (!offloadBlocked) onAudioOffloadChange(!audioOffload) }
                 ))
                 add(Material3SettingsItem(
                     icon = painterResource(R.drawable.graphic_eq),

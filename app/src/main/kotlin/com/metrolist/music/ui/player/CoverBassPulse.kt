@@ -80,6 +80,39 @@ object CoverBassPulse {
     private var owner: String? = null
     private var lastInitSession: Int? = null
 
+    /**
+     * Tokens that need the capture kept alive even when their own "do I want this?"
+     * condition is false — see [retain]. The live wallpaper is the only current user: it
+     * renders while the app is backgrounded, where the player screen is not composed and
+     * would otherwise have released everything.
+     */
+    private val retainers = mutableSetOf<String>()
+
+    /**
+     * Keeps the capture alive regardless of [release] calls until [unretain] is called.
+     * Process-wide and thread-safe enough for our two callers (main thread in both cases).
+     */
+    fun retain(token: String) {
+        retainers += token
+    }
+
+    /** Drops a retention; releases the Visualizer once nobody holds it any more. */
+    fun unretain(token: String) {
+        retainers -= token
+        if (retainers.isEmpty()) release()
+    }
+
+    /** True while some consumer still needs the capture. */
+    fun isRetained(): Boolean = retainers.isNotEmpty()
+
+    /**
+     * Monotonic guard for [advanceFrame]. Composition and the wallpaper's render loop are
+     * two independent 60 fps drivers in the same process; without this, whichever ran
+     * second would re-apply the release glide and the envelope would decay twice as fast.
+     * Both pass `System.nanoTime()`-based stamps, so the larger one always wins.
+     */
+    private var lastAdvanceNs = 0L
+
     fun peakFor(intensity: CoverPulseIntensity): Float =
         when (intensity) {
             CoverPulseIntensity.LOW -> 1.06f
@@ -114,9 +147,12 @@ object CoverBassPulse {
      */
     fun init(audioSessionId: Int, owner: String) {
         if (audioSessionId <= 0) return
-        if (visualizer != null &&
-            audioSessionId == lastInitSession && owner == this.owner
-        ) return
+        // A live capture for this session is already good enough — adopt it. Without this,
+        // a second consumer calling init with its own owner token would tear down and
+        // recreate the Visualizer every time ownership ping-ponged between the player
+        // screen and the wallpaper.
+        if (visualizer != null && audioSessionId == lastInitSession) return
+        if (visualizer != null && owner == this.owner) return
         lastInitSession = audioSessionId
         try {
             release()
@@ -152,6 +188,9 @@ object CoverBassPulse {
     }
 
     fun release() {
+        // A retainer (the live wallpaper) still needs the data even though the player
+        // screen has stopped wanting it.
+        if (retainers.isNotEmpty()) return
         try {
             visualizer?.release()
         } catch (_: Exception) {
@@ -173,6 +212,11 @@ object CoverBassPulse {
      * when captures resume.
      */
     fun advanceFrame(prevNs: Long, nowNs: Long) {
+        // Two independent 60 fps drivers exist (composition, and the wallpaper's own
+        // render loop). Whichever fires second for the same instant must not re-apply the
+        // release glide, or the envelope decays at double rate. See [lastAdvanceNs].
+        if (nowNs <= lastAdvanceNs) return
+        lastAdvanceNs = nowNs
         val dtMs = (nowNs - prevNs) / 1_000_000f
         if (dtMs !in 0f..250f) return
         val stalled = SystemClock.elapsedRealtime() - lastCaptureMs > 1000L

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Metrolist Project (C) 2026
  * Licensed under GPL-3.0 | See git history for contributors
  */
@@ -218,6 +218,7 @@ import com.metrolist.music.utils.cipher.CipherDeobfuscator
 import com.metrolist.music.utils.dataStore
 import com.metrolist.music.utils.get
 import com.metrolist.music.utils.reportException
+import com.metrolist.music.wallpaper.HomeRingAudioState
 import com.metrolist.music.widget.MetrolistWidgetManager
 import com.metrolist.music.widget.MusicWidgetReceiver
 import com.metrolist.music.widget.PartnerWidgetManager
@@ -4957,6 +4958,18 @@ class MusicService :
         isPlaying: Boolean,
         isLiked: Boolean? = currentSong.value?.song?.let { if (it.isEpisode) it.inLibrary != null else it.liked }
     ) {
+        // Publish to the live wallpaper before the debounce below. This method is already
+        // the app's "playback state changed" hook (called from every transport action and
+        // state change), so publishing here covers all transitions with a single insertion
+        // point instead of scattering writes across the service.
+        HomeRingAudioState.publish(
+            sessionId = player.audioSessionId,
+            playing = isPlaying,
+            muted = isMuted.value,
+            casting = castConnectionHandler?.isCasting?.value == true,
+            songId = currentSong.value?.song?.id,
+            thumbnailUrl = currentSong.value?.song?.thumbnailUrl,
+        )
         pendingWidgetUpdate = isPlaying to isLiked
         if (widgetUpdateInFlight) return
         widgetUpdateInFlight = true

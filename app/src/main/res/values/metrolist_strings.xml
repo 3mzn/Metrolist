@@ -1240,4 +1240,8 @@
     <string name="wallpaper_probe_apply">Wallpaper probe (temporary)</string>
     <string name="wallpaper_probe_desc">Phase 1 test. Opens the Metrolist live wallpaper prompt. Not part of the app.</string>
     <string name="wallpaper_probe_no_handler">Nothing on this device handled the live wallpaper request</string>
+    <string name="home_ring_wallpaper">Home screen rings</string>
+    <string name="home_ring_wallpaper_on">Rings around your home screen widgets, reacting to bass</string>
+    <string name="home_ring_wallpaper_off">Replaces the wallpaper with a bass-reactive glow. Rings only react while the partner widget shows your own song.</string>
+    <string name="audio_offload_disabled_by_home_ring">Off while the home screen ring visualizer is on — offload bypasses the audio the rings react to</string>
 </resources>

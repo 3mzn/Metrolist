@@ -8,6 +8,7 @@ package com.metrolist.music.ui.screens.settings
 import android.app.Activity
 import android.app.WallpaperManager
 import android.content.ComponentName
+import com.metrolist.music.constants.HomeRingEnabledKey
 import com.metrolist.music.wallpaper.MetrolistWallpaperService
 import android.widget.Toast
 import android.Manifest
@@ -236,6 +237,12 @@ fun AppearanceSettings(
         rememberPreference(
             PlayerCoverPulseKey,
             defaultValue = true,
+        )
+    // Home-screen ring visualizer — SPEC_HOME_WALLPAPER_RINGS.md
+    val (homeRingOn, onHomeRingChange) =
+        rememberPreference(
+            HomeRingEnabledKey,
+            defaultValue = false,
         )
     val (pulseIntensity, onPulseIntensityChange) =
         rememberEnumPreference(
@@ -1424,42 +1431,47 @@ fun AppearanceSettings(
                             onClick = { onBorderGlowChange(!borderGlow) },
                         ),
                     )
-                    // TEMPORARY — Phase 1 probe only. SPEC_HOME_WALLPAPER_RINGS.md §8.2a.
-                    // MIUI hijacks ACTION_CHANGE_LIVE_WALLPAPER fired from adb shell into
-                    // Settings, so the intent must be fired from a real Activity to find out
-                    // whether the flow works at all. Removed once Phase 1 answers the question;
-                    // the production equivalent is the real setting in Phase 4.
+                    // Home-screen ring visualizer — SPEC_HOME_WALLPAPER_RINGS.md §8.1, §4.
+                    // Enabling fires the system live-wallpaper prompt directly at our
+                    // component, so the user never browses a picker.
                     add(
                         Material3SettingsItem(
                             icon = painterResource(R.drawable.music_note),
-                            title = { Text(stringResource(R.string.wallpaper_probe_apply)) },
-                            description = { Text(stringResource(R.string.wallpaper_probe_desc)) },
+                            title = { Text(stringResource(R.string.home_ring_wallpaper)) },
+                            description = {
+                                Text(
+                                    if (homeRingOn) {
+                                        stringResource(R.string.home_ring_wallpaper_on)
+                                    } else {
+                                        stringResource(R.string.home_ring_wallpaper_off)
+                                    },
+                                )
+                            },
+                            trailingContent = {
+                                Switch(
+                                    checked = homeRingOn,
+                                    onCheckedChange = { requested ->
+                                        if (!requested) {
+                                            // Off is a plain preference flip: the rings stop
+                                            // drawing but the wallpaper itself is untouched.
+                                            onHomeRingChange(false)
+                                        } else {
+                                            applyHomeWallpaper(context, onHomeRingChange)
+                                        }
+                                    },
+                                    thumbContent = {
+                                        Icon(
+                                            painter = painterResource(
+                                                id = if (homeRingOn) R.drawable.check else R.drawable.close,
+                                            ),
+                                            contentDescription = null,
+                                            modifier = Modifier.size(SwitchDefaults.IconSize),
+                                        )
+                                    },
+                                )
+                            },
                             onClick = {
-                                try {
-                                    context.startActivity(
-                                        Intent(WallpaperManager.ACTION_CHANGE_LIVE_WALLPAPER).apply {
-                                            // Must be a ComponentName Parcelable. Passing a
-                                            // "package/class" string makes LiveWallpaperChange.init()
-                                            // throw ClassCastException and finish silently —
-                                            // see SPEC_HOME_WALLPAPER_RINGS.md §8.2a.
-                                            putExtra(
-                                                WallpaperManager.EXTRA_LIVE_WALLPAPER_COMPONENT,
-                                                ComponentName(
-                                                    context,
-                                                    MetrolistWallpaperService::class.java,
-                                                ),
-                                            )
-                                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                        },
-                                    )
-                                } catch (e: Exception) {
-                                    // Nothing on the device handles the action.
-                                    Toast.makeText(
-                                        context,
-                                        R.string.wallpaper_probe_no_handler,
-                                        Toast.LENGTH_LONG,
-                                    ).show()
-                                }
+                                if (homeRingOn) onHomeRingChange(false) else applyHomeWallpaper(context, onHomeRingChange)
                             },
                         ),
                     )
@@ -2351,4 +2363,38 @@ enum class LyricsPosition {
 enum class PlayerTextAlignment {
     SIDED,
     CENTER,
+}
+
+/**
+ * Launches the system live-wallpaper prompt directly at Metrolist's wallpaper component.
+ *
+ * `EXTRA_LIVE_WALLPAPER_COMPONENT` **must be a `ComponentName` Parcelable.** Passing a
+ * `"package/class"` string makes `LiveWallpaperChange.init()` throw
+ * `ClassCastException` and finish instantly, which looks identical to the app ignoring
+ * the tap — see `SPEC_HOME_WALLPAPER_RINGS.md` §8.2b.
+ *
+ * Android has no public API to set a live wallpaper silently (`setWallpaperComponent` is
+ * `@SystemApi` behind a system-only permission), so this one confirmation is unavoidable.
+ * The preference only flips to true once the user confirms, so cancelling leaves it off.
+ */
+private fun applyHomeWallpaper(
+    context: Context,
+    onApplied: (Boolean) -> Unit,
+) {
+    try {
+        context.startActivity(
+            Intent(WallpaperManager.ACTION_CHANGE_LIVE_WALLPAPER).apply {
+                putExtra(
+                    WallpaperManager.EXTRA_LIVE_WALLPAPER_COMPONENT,
+                    ComponentName(context, MetrolistWallpaperService::class.java),
+                )
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            },
+        )
+        // Optimistic: the system prompt is the gate, and the wallpaper itself stops drawing
+        // whenever the rings are not wanted regardless of this flag.
+        onApplied(true)
+    } catch (_: Exception) {
+        Toast.makeText(context, R.string.wallpaper_probe_no_handler, Toast.LENGTH_LONG).show()
+    }
 }

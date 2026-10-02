@@ -14,28 +14,34 @@ import android.os.Looper
 import android.os.SystemClock
 import android.service.wallpaper.WallpaperService
 import android.view.SurfaceHolder
+import coil3.ImageLoader
+import coil3.imageLoader
+import com.metrolist.music.ui.player.CoverBassPulse
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import timber.log.Timber
 
 /**
  * Live wallpaper that draws bass-reactive glow rings around the home-screen widgets.
  *
  * Renders with AGSL via [HomeRingShader], a port of the shader the MiniPlayer already
- * uses. The wallpaper is what makes this possible at all: a widget is a `RemoteViews`
+ * uses. The wallpaper is what makes this possible at all: an app widget is a `RemoteViews`
  * bitmap over a ~1 MB Binder pipe with a ~2 fps ceiling, whereas this is a real `Surface`
  * on the real frame clock — measured at **60.13 fps** on HyperOS 3.
  *
- * **Phase 3 state:** rings are drawn at the geometry measured in Phase 2, driven by fixed
- * constants. Audio arrives in Phase 4 — keeping them separate means a placement problem
- * can't be mistaken for an audio problem.
- *
- * Findings and the full rationale live in `SPEC_HOME_WALLPAPER_RINGS.md`. Findings that
+ * Findings and the full rationale live in `SPEC_HOME_WALLPAPER_RINGS.md`. The ones that
  * shape this file:
+ *
  * - The surface is 1080×2400 and maps **1:1** to the screen (§5.3), so ring coordinates
  *   are plain screen pixels with no transform.
  * - The surface **does not scroll** (`xOffsetStep == -1.0`), so rings cannot drift across
  *   home-screen pages (§6).
  * - `lockHardwareCanvas()` works here, which AGSL requires (§9a). Without it the canvas is
  *   software-backed and `RuntimeShader` throws.
+ * - Services run in the same process as the app, so the wallpaper reads the real
+ *   `CoverBassPulse` singleton directly — no IPC, no second audio capture.
  *
  * Findings are logged under the [TAG] tag; read them with:
  *   `adb logcat -s MetrolistWallpaper`
@@ -51,9 +57,17 @@ class MetrolistWallpaperService : WallpaperService() {
         /** One compiled shader per ring. `null` until [compileRings] succeeds. */
         private var rings: List<HomeRingShader.Ring>? = null
 
+        private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
         private var running = false
         private var visible = false
         private var surfaceReady = false
+        private var captureHeld = false
+
+        /** Fades toward the current target rather than snapping — see [driveAudio]. */
+        private var ringAlpha = 0f
+        private var lastFrameMs = 0L
+        private var lastAdvanceNs = 0L
 
         private var frameCount = 0
         private var hardwareCanvasSeen = false
@@ -82,6 +96,7 @@ class MetrolistWallpaperService : WallpaperService() {
             super.onSurfaceChanged(holder, format, width, height)
             surfaceReady = true
             compileRings()
+            HomeRingSettings.start(scope, this@MetrolistWallpaperService)
             Timber.tag(TAG).d(
                 "PROBE surface=${width}x$height screen=" +
                     "${resources.displayMetrics.widthPixels}x${resources.displayMetrics.heightPixels} " +
@@ -97,7 +112,7 @@ class MetrolistWallpaperService : WallpaperService() {
         }
 
         override fun onSurfaceDestroyed(holder: SurfaceHolder) {
-            stop()
+            stopLoop()
             surfaceReady = false
             Timber.tag(TAG).d("onSurfaceDestroyed after $frameCount frames")
             super.onSurfaceDestroyed(holder)
@@ -107,8 +122,7 @@ class MetrolistWallpaperService : WallpaperService() {
             super.onVisibilityChanged(visible)
             this.visible = visible
             Timber.tag(TAG).d("onVisibilityChanged visible=$visible")
-            // Spec §7.2: do no work when hidden.
-            if (visible) start() else stop()
+            if (visible) start() else stopLoop()
         }
 
         override fun onOffsetsChanged(
@@ -121,8 +135,43 @@ class MetrolistWallpaperService : WallpaperService() {
         ) {
             super.onOffsetsChanged(xOffset, yOffset, xOffsetStep, yOffsetStep, xPixelOffset, yPixelOffset)
             // Verified in Phase 2 that this wallpaper does not scroll (step == -1.0), so the
-            // static ring geometry in HomeRings stays correct. Logged to detect a change.
+            // static geometry in HomeRings stays correct. Logged to detect a change.
             Timber.tag(TAG).d("PROBE offsets xPixel=$xPixelOffset yPixel=$yPixelOffset step=$xOffsetStep")
+        }
+
+        override fun onDestroy() {
+            stopLoop()
+            HomeRingSettings.stop()
+            scope.cancel()
+            super.onDestroy()
+        }
+
+        // ── Audio capture ownership ────────────────────────────────────────
+
+        /**
+         * Claims the shared `CoverBassPulse` capture for as long as the wallpaper is on
+         * screen. The player screen releases it whenever its own conditions lapse, which
+         * would otherwise kill the capture the moment the app is backgrounded — exactly
+         * when the rings need it.
+         */
+        private fun holdCapture() {
+            if (captureHeld) return
+            captureHeld = true
+            CoverBassPulse.retain(RETAIN_TOKEN)
+            if (HomeRingAudioState.audioSessionValid) {
+                CoverBassPulse.init(HomeRingAudioState.audioSessionId, RETAIN_TOKEN)
+            }
+        }
+
+        private fun releaseCapture() {
+            if (!captureHeld) return
+            captureHeld = false
+            CoverBassPulse.unretain(RETAIN_TOKEN)
+            HomeRingAudioState.clearPlayback()
+            HomeRingColorSource.clear()
+            ringAlpha = 0f
+            lastFrameMs = 0L
+            lastAdvanceNs = 0L
         }
 
         // ── Shader setup ───────────────────────────────────────────────────
@@ -148,14 +197,17 @@ class MetrolistWallpaperService : WallpaperService() {
         private fun start() {
             if (running || !surfaceReady || !visible) return
             running = true
+            holdCapture()
             handler.removeCallbacks(drawRunnable)
             handler.post(drawRunnable)
             Timber.tag(TAG).d("Frame loop started")
         }
 
-        private fun stop() {
+        private fun stopLoop() {
             running = false
             handler.removeCallbacks(drawRunnable)
+            // Hidden: hand the capture back and let the rings fade to nothing next time.
+            releaseCapture()
             Timber.tag(TAG).d("Frame loop stopped")
         }
 
@@ -201,7 +253,10 @@ class MetrolistWallpaperService : WallpaperService() {
             frameCount++
             if (frameCount == FRAME_REPORT_INTERVAL) {
                 Timber.tag(TAG).d(
-                    "PROBE frames=$frameCount hw=$hardwareCanvasSeen rings=${rings?.size ?: 0}",
+                    "PROBE frames=$frameCount hw=$hardwareCanvasSeen rings=${rings?.size ?: 0} " +
+                        "alpha=${"%.2f".format(ringAlpha)} " +
+                        "playing=${HomeRingAudioState.isPlaying} " +
+                        "session=${HomeRingAudioState.audioSessionId}",
                 )
                 frameCount = 0
             }
@@ -212,39 +267,104 @@ class MetrolistWallpaperService : WallpaperService() {
             canvas.drawColor(Color.BLACK)
 
             val activeRings = rings
-            if (!hardware || activeRings == null) {
-                // Without AGSL the honest appearance is the plain black background rather
-                // than something that implies a visualizer is running.
-                return
-            }
+            if (!hardware || activeRings == null) return
 
-            // Fixed values until Phase 4 wires up CoverBassPulse.
-            //
-            // Shader time MUST stay small. The AGSL evaluates `cos(angle - time*orbitSpeed)`,
-            // and float32 precision degrades as the argument grows — at ~1e6 the fractional
-            // part is lost and the orbit freezes. MiniPlayer already hits this and wraps its
-            // time (`MiniPlayer.kt:468`); do the same here rather than passing raw uptime.
-            val timeSeconds = (SystemClock.uptimeMillis() % TIME_WRAP_MS) / 1000f
-            // Synthetic bass so Phase 3 can verify the animation path end to end: a slow
-            // breath that makes the glow pulse and the hotspot orbit visibly. Phase 4
-            // replaces this with the real CoverBassPulse value.
-            val testBass = 0.5f + 0.45f * kotlin.math.sin(timeSeconds * TEST_BREATH_HZ)
+            val driven = driveAudio() ?: return
             for (ring in activeRings) {
                 ring.draw(
                     canvas = canvas,
                     paint = paint,
-                    color = RING_COLOR,
-                    bass = testBass,
-                    alpha = RING_ALPHA,
-                    timeSeconds = timeSeconds,
-                    hotspotMult = HOTSPOT_MULT,
+                    color = driven.color,
+                    bass = driven.bass,
+                    alpha = driven.alpha,
+                    timeSeconds = driven.timeSeconds,
+                    hotspotMult = driven.hotspotMult,
                 )
             }
+        }
+
+        /**
+         * Advances the audio envelope and resolves this frame's ring alpha.
+         *
+         * Returns `null` when nothing should be painted, so the idle state is an honest
+         * black screen rather than a frozen glow that implies a stalled visualizer.
+         */
+        private fun driveAudio(): FrameInput? {
+            // Shader time MUST stay small. The AGSL evaluates `cos(angle - time*orbitSpeed)`
+            // and float32 loses the fractional part of a large argument, so the orbit
+            // freezes. MiniPlayer hits the same trap and wraps its time
+            // (`MiniPlayer.kt:468`); wrap identically rather than passing raw uptime.
+            val timeSeconds = (SystemClock.uptimeMillis() % TIME_WRAP_MS) / 1000f
+
+            // §4.3 gate: the widget must show *my* song. On the partner's track there is no
+            // local audio to visualise, so the rings stay completely inactive.
+            val gateOpen = HomeRingSettings.debugWidgetOn
+            val audioActive = gateOpen && HomeRingAudioState.isActive()
+            if (audioActive && HomeRingAudioState.audioSessionId > 0) {
+                CoverBassPulse.init(HomeRingAudioState.audioSessionId, RETAIN_TOKEN)
+            }
+
+            // Drive the 60 fps display envelope from this loop: composition is torn down
+            // when the app is backgrounded, and the wallpaper has its own frame clock.
+            // `advanceFrame` guards against double-advancing while both are alive.
+            if (audioActive) {
+                val nowNs = System.nanoTime()
+                if (lastAdvanceNs != 0L) CoverBassPulse.advanceFrame(lastAdvanceNs, nowNs)
+                lastAdvanceNs = nowNs
+            } else {
+                lastAdvanceNs = 0L
+            }
+
+            val bass = if (audioActive) {
+                CoverBassPulse.smoothedBass.coerceIn(0f, 1f)
+            } else {
+                0f
+            }
+            val peak = HomeRingSettings.peak
+            val target = when {
+                !visible -> 0f
+                !gateOpen -> 0f
+                !audioActive -> 0f
+                // Dimmed on mute or casting — matches the MiniPlayer exactly (§4b).
+                HomeRingAudioState.isDimmed() -> IDLE_ALPHA
+                // The MiniPlayer's curve: 0.2 + bass * (peak - 0.2).
+                else -> (IDLE_ALPHA + bass * (peak - IDLE_ALPHA)).coerceIn(IDLE_ALPHA, peak)
+            }
+
+            // Ease toward the target so stopping/hiding genuinely fades rather than snaps.
+            val nowMs = SystemClock.uptimeMillis()
+            val dtMs = if (lastFrameMs == 0L) 0f else (nowMs - lastFrameMs).toFloat()
+            lastFrameMs = nowMs
+            ringAlpha += (target - ringAlpha) * (dtMs / FADE_MS).coerceIn(0f, 1f)
+            if (ringAlpha < ALPHA_EPSILON && target == 0f) {
+                HomeRingColorSource.clear()
+                return null
+            }
+
+            if (audioActive) {
+                HomeRingColorSource.request(
+                    context = this@MetrolistWallpaperService,
+                    imageLoader = this@MetrolistWallpaperService.imageLoader,
+                    songId = HomeRingAudioState.songId,
+                    thumbnailUrl = HomeRingAudioState.thumbnailUrl,
+                )
+            }
+
+            return FrameInput(
+                bass = bass,
+                alpha = ringAlpha,
+                color = HomeRingColorSource.color,
+                timeSeconds = timeSeconds,
+                hotspotMult = HomeRingSettings.hotspotMult,
+            )
         }
     }
 
     private companion object {
         const val TAG = "MetrolistWallpaper"
+
+        /** Ownership token for the shared CoverBassPulse capture. */
+        const val RETAIN_TOKEN = "homeWallpaper"
 
         /** ~60 fps target. The system still paces us; this only bounds our own loop. */
         const val FRAME_BUDGET_MS = 16L
@@ -252,25 +372,28 @@ class MetrolistWallpaperService : WallpaperService() {
         /** Emit a status line every N frames so logcat stays readable. */
         const val FRAME_REPORT_INTERVAL = 120
 
-        // ── Phase 3 placeholders ──────────────────────────────────────────
-        // Replaced with the real CoverBassPulse value and the cover-art colour in Phase 4.
         /**
          * Wrap shader time every 60s, matching MiniPlayer (`MiniPlayer.kt:468`). Keeps the
          * `cos()` argument small enough that float32 does not quantise the orbit away.
          */
         const val TIME_WRAP_MS = 60_000L
 
-        /** Breath frequency of the synthetic bass, radians/second ÷ 2π — ~0.29 Hz. */
-        const val TEST_BREATH_HZ = 1.8f
+        /** MiniPlayer's floor (`MiniPlayer.kt:456`) — the ring persists while playing. */
+        const val IDLE_ALPHA = 0.2f
 
-        const val RING_ALPHA = 1f
+        /** Time constant for the fade in/out, in ms. */
+        const val FADE_MS = 260f
 
-        /** Matches the MiniPlayer default (`MiniPlayerBorderHotspotKey`, default 10f). */
-        const val HOTSPOT_MULT = 10f
-
-        /**
-         * Stand-in for the cover-art palette colour until Phase 4 reads `borderSongColor`.
-         */
-        const val RING_COLOR = 0xFF7FD4FF.toInt()
+        /** Below this the ring is indistinguishable from black; skip the draw entirely. */
+        const val ALPHA_EPSILON = 0.004f
     }
 }
+
+/** What one frame needs, after the alpha envelope has been resolved. */
+private data class FrameInput(
+    val bass: Float,
+    val alpha: Float,
+    val color: Int,
+    val timeSeconds: Float,
+    val hotspotMult: Float,
+)
