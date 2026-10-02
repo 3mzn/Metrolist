@@ -1,7 +1,9 @@
 # SPEC — Home Screen Ring Visualizer (Live Wallpaper)
 
-**Status:** Phase 1 ✅ committed `058b42a39` — **GATE PASSED**. Phase 2 ✅ **COMPLETE**,
-geometry pixel-verified. Phase 3 next, awaiting authorisation.
+**Status:** Phase 1 ✅ committed `058b42a39` — **GATE PASSED**. Phase 2 ✅ complete,
+geometry pixel-verified. Phase 3 ✅ complete — rings rendering correctly, user-visible
+falloff and corner fit confirmed on device. Phase 4 (live audio) next, awaiting
+authorisation.
 **Created:** 2026-10-03
 **Branch:** `testing`
 **Supersedes:** nothing. Extends `SPEC_SPOTIFY_CANVAS.md` (shares `CoverBassPulse`).
@@ -196,18 +198,20 @@ returned clean.
 
 ### 5.2a Corner radii — **MEASURED per widget** (Q3 answered)
 
-Measured by walking down each widget's left edge until it reaches solid colour; the
-vertical offset at which the straight edge begins is the corner radius.
+Measured two independent ways, in agreement. **Edge walk:** follow a widget's left edge
+down until it reaches solid colour; that offset is the radius. **Corner diagonal:** step
+inward from the bounding-box corner until the widget's own pixels begin, then
+`R = s / 0.2929`.
 
 | Widget | Radius | Evidence |
 |---|---|---|
-| Nothing X | **56 px** | left edge solid at y = 1229, top at 1173 → 56 |
-| Claude | **~44 px** | left edge solid at y = 1219, top at 1171 → 48 (AA spread) |
-| Brave | **~18 px** | left edge solid at y = 1714, top at 1696 → 18 |
-| Partner | **~40 px** (est.) | card corners, less critical — ours, with a gradient |
+| Nothing X | **56 px** | edge walk: solid at y = 1229, top 1173 → 56. Diagonal returned 56.3 ✅ |
+| Claude | **46 px** | edge walk, AA-corrected |
+| Brave | **18 px** | edge walk: solid at y = 1714, top 1696 → 18 |
+| Partner | **66 px** | diagonal. Initially *estimated* at 40 — wrong, see Phase 3c |
 
-**These are the radii Phase 3 must pass to the shader.** Using one uniform radius would
-visibly clash at the corners, which is exactly what Q3 anticipated.
+**Per-widget radii are necessary.** Using one uniform radius visibly clashes, which is
+exactly what Q3 anticipated.
 
 ### 5.3 Wallpaper surface — **MEASURED: 1080×2400, identity, no scroll** ✅
 
@@ -628,19 +632,84 @@ With the phone connected, unlocked, on the home screen, and the probe wallpaper 
 
 | Widget | Ring rect `[x,y,w,h]` | Corner radius | Orb | Direction |
 |---|---|---|---|---|
-| Metrolist (Partner) | `[74,638,932,466]` | ~40 px | no | — |
-| Nothing X | `[78,1173,416,416]` | 56 px | yes | **+1** |
-| Claude | `[584,1171,419,419]` | ~44 px | yes | **−1** |
-| Brave | `[74,1696,932,135]` | ~18 px | no | — |
+| Metrolist (Partner) | `[74,638,932,466]` | **66 px** | no | — |
+| Nothing X | `[78,1173,416,416]` | **56 px** | yes | **+1** |
+| Claude | `[584,1171,419,419]` | **46 px** | yes | **−1** |
+| Brave | `[74,1696,932,135]` | **18 px** | no | — |
+
+Corner radii confirmed on device during Phase 3 — see §10 Phase 3c for the measurement
+method and the correction of the partner radius from an estimate of 40 to a measured 66.
 
 Note the ring rects are the **visible** bounds. Because the wallpaper renders *behind* the
 widgets, the ring must be drawn **just outside** these — the glow extends outward from the
 edge, so the rect itself is the boundary and the shader's falloff does the rest.
 
-### Phase 3 — Static rings, no audio (NEXT)
-Four rings drawn at the measured geometry from Phase 2, driven by a fixed test value
-(`bass = 0.5`). User visually confirms placement, corners, and flush-vs-cell-edge.
-**No audio dependency yet** — so geometry problems stay isolated from audio problems.
+### Phase 3 — Static rings, no audio ✅ **COMPLETE 2026-10-03**
+
+Four rings drawn at the Phase 2 geometry, fixed `bass = 0.55`, placeholder colour.
+Verified on device. **Three real bugs found and fixed**, all in the shader port:
+
+#### 3a ⚠️ THE PREMULTIPLIED ALPHA TRAP — the flat-fill bug
+
+AGSL / `RuntimeShader` output is interpreted as **premultiplied alpha**. Blending over
+black is `dst = src + dst·(1−a)`, so returning `(cr, cg, cb, a)` with **unpremultiplied**
+colour means the colour channels are added at full strength and **`a` is effectively
+ignored** — every pixel in the falloff paints solid.
+
+Symptom: rings rendered as **flat filled rectangles**, identical across the whole 24 px
+band and across time. Luminance was a constant 198 (= the placeholder colour's own mean).
+
+Fix — premultiply in the shader:
+```glsl
+float a = clamp(intensity * ringAlpha, 0.0, 1.0);
+return half4(cr * a, cg * a, cb * a, a);
+```
+
+**How it was found.** Not by inspection. A first guess (a dead-code-eliminated
+`resolution` uniform corrupting the uniform slots) was **tested and disproved**. The
+decisive step was a temporary diagnostic that returned `half4(dist / 64.0, 0.5, 0.0, 1.0)`:
+the red channel then ramped **0.5 → 23.6 linearly** across the band, proving the SDF and
+all uniform writes were correct and the fault lay purely in the return statement.
+
+⚠️ **This likely affects the shipped `BorderGlowShader.kt` too** — same return statement,
+so the MiniPlayer ring is likely also saturated rather than a true falloff. **Deliberately
+NOT changed**: it is shipped, working, and is the visual reference the user approved.
+Raised for the user to decide.
+
+**Lesson:** read the pixels and logcat; do not conclude from plausibility. Two confident
+wrong diagnoses were made and caught only by measuring.
+
+#### 3b Ring painted only the rect interior — "corner brackets"
+
+`canvas.drawRect(0, 0, w, h)` covered exactly the widget bounds. Since the wallpaper is
+*behind* the widgets, all of that was hidden — except where a widget's own rounded corner
+exposed it. Result: **bright blue corner brackets**, not rings.
+
+Fix: draw the clip rect (`±CLIP_MARGIN_PX`), not the inner rect.
+
+#### 3c Partner corner radius was wrong — 40 → 66
+
+The partner radius was **estimated** at 40 while the others were measured. The ring cut
+inside the corners, which the user spotted visually.
+
+Measured properly by **corner diagonal**: step inward from the bounding-box corner
+`(left, top)` along the diagonal until the widget's own pixels begin. For a rounded rect
+the arc lies at `s = R·(1 − 1/√2) = 0.2929·R`, so `R = s / 0.2929`.
+
+**Method calibrated first:** applied to Nothing X (known radius 56 from the independent
+edge-walk) it returned **56.3**. Then applied to the partner widget it returned **66**.
+
+Also refined Claude 44 → 46.
+
+**Final radii:** partner **66**, Nothing X **56**, Claude **46**, Brave **18**.
+
+#### Verified falloff (Nothing X right edge, y=1300)
+
+| x | 494 | 498 | 502 | 506 | 510 | 514 | 518 |
+|---|---|---|---|---|---|---|---|
+| lum | 198 | 128 | 54 | 27 | 14 | 7 | 0 |
+
+Clean exponential decay to black — a real glow, not a fill.
 
 ### Phase 4 — Live audio
 - `CoverBassPulse` ownership transfer (§3.2), wallpaper owns the analysis.

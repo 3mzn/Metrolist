@@ -7,10 +7,7 @@ package com.metrolist.music.wallpaper
 
 import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.LinearGradient
 import android.graphics.Paint
-import android.graphics.RuntimeShader
-import android.graphics.Shader
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -20,44 +17,46 @@ import android.view.SurfaceHolder
 import timber.log.Timber
 
 /**
- * Phase 1 probe for the home-screen ring visualizer. **Not the final wallpaper.**
+ * Live wallpaper that draws bass-reactive glow rings around the home-screen widgets.
  *
- * Purpose is to answer, on a real device, four questions that cannot be resolved from
- * documentation — see `SPEC_HOME_WALLPAPER_RINGS.md` §5.3, §6, §7, §9a:
+ * Renders with AGSL via [HomeRingShader], a port of the shader the MiniPlayer already
+ * uses. The wallpaper is what makes this possible at all: a widget is a `RemoteViews`
+ * bitmap over a ~1 MB Binder pipe with a ~2 fps ceiling, whereas this is a real `Surface`
+ * on the real frame clock — measured at **60.13 fps** on HyperOS 3.
  *
- *  1. Does a third-party live wallpaper run at all on HyperOS 3?
- *  2. What is the **surface** size handed to `onSurfaceChanged`? Not necessarily the
- *     screen size — Android may hand a wallpaper a wider buffer so it can scroll across
- *     home-screen pages. This is the number ring placement depends on.
- *  3. Does the surface move when swiping pages (`onOffsetsChanged`)?
- *  4. Does `lockHardwareCanvas()` succeed? Required for AGSL (§9a).
+ * **Phase 3 state:** rings are drawn at the geometry measured in Phase 2, driven by fixed
+ * constants. Audio arrives in Phase 4 — keeping them separate means a placement problem
+ * can't be mistaken for an audio problem.
  *
- * Draws an animated gradient and nothing else. **Deliberately does not touch**
- * `CoverBassPulse`, `Player.kt`, `MiniPlayer.kt`, `BorderGlowShader.kt`, settings, or
- * any preference — audio integration is Phase 4, and geometry is Phase 2.
+ * Findings and the full rationale live in `SPEC_HOME_WALLPAPER_RINGS.md`. Findings that
+ * shape this file:
+ * - The surface is 1080×2400 and maps **1:1** to the screen (§5.3), so ring coordinates
+ *   are plain screen pixels with no transform.
+ * - The surface **does not scroll** (`xOffsetStep == -1.0`), so rings cannot drift across
+ *   home-screen pages (§6).
+ * - `lockHardwareCanvas()` works here, which AGSL requires (§9a). Without it the canvas is
+ *   software-backed and `RuntimeShader` throws.
  *
  * Findings are logged under the [TAG] tag; read them with:
  *   `adb logcat -s MetrolistWallpaper`
  */
 class MetrolistWallpaperService : WallpaperService() {
 
-    override fun onCreateEngine(): Engine = ProbeEngine()
+    override fun onCreateEngine(): Engine = RingEngine()
 
-    private inner class ProbeEngine : Engine() {
+    private inner class RingEngine : Engine() {
 
         private val paint = Paint()
-        private var shader: RuntimeShader? = null
 
-        /** Set once per attach; reported in the log so the AGSL path is unambiguous. */
-        private var agslActive = false
+        /** One compiled shader per ring. `null` until [compileRings] succeeds. */
+        private var rings: List<HomeRingShader.Ring>? = null
 
         private var running = false
         private var visible = false
         private var surfaceReady = false
 
         private var frameCount = 0
-        private var lastReportedWidth = 0
-        private var lastReportedHeight = 0
+        private var hardwareCanvasSeen = false
 
         private val handler = Handler(Looper.getMainLooper())
 
@@ -66,7 +65,7 @@ class MetrolistWallpaperService : WallpaperService() {
                 if (!running) return
                 val startedAt = SystemClock.uptimeMillis()
                 drawFrame()
-                // Target ~60 fps. The system paces us; this only bounds our own rate.
+                // Target ~60 fps. The system paces us; this only bounds our own loop.
                 val elapsed = SystemClock.uptimeMillis() - startedAt
                 handler.postDelayed(this, (FRAME_BUDGET_MS - elapsed).coerceAtLeast(1))
             }
@@ -82,21 +81,18 @@ class MetrolistWallpaperService : WallpaperService() {
         override fun onSurfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
             super.onSurfaceChanged(holder, format, width, height)
             surfaceReady = true
-            lastReportedWidth = width
-            lastReportedHeight = height
-            prepareShader(width, height)
+            compileRings()
             Timber.tag(TAG).d(
-                "PROBE surface=${width}x$height format=$format " +
-                    "screen=${resources.displayMetrics.widthPixels}x${resources.displayMetrics.heightPixels} " +
-                    "agslSupported=${Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU} " +
-                    "shaderReady=${shader != null}",
+                "PROBE surface=${width}x$height screen=" +
+                    "${resources.displayMetrics.widthPixels}x${resources.displayMetrics.heightPixels} " +
+                    "rings=${rings?.size ?: 0}",
             )
             start()
         }
 
         override fun onSurfaceRedrawNeeded(holder: SurfaceHolder) {
-            // The system asks for a repaint when the wallpaper becomes visible again
-            // (e.g. after the screen wakes). Without this the wallpaper can stay blank.
+            // The system asks for a repaint when the wallpaper becomes visible again (e.g.
+            // after the screen wakes). Without this the wallpaper can stay blank.
             drawFrame()
         }
 
@@ -111,7 +107,7 @@ class MetrolistWallpaperService : WallpaperService() {
             super.onVisibilityChanged(visible)
             this.visible = visible
             Timber.tag(TAG).d("onVisibilityChanged visible=$visible")
-            // Idle behaviour is a spec requirement (§7.2): do no work when hidden.
+            // Spec §7.2: do no work when hidden.
             if (visible) start() else stop()
         }
 
@@ -124,30 +120,27 @@ class MetrolistWallpaperService : WallpaperService() {
             yPixelOffset: Int,
         ) {
             super.onOffsetsChanged(xOffset, yOffset, xOffsetStep, yOffsetStep, xPixelOffset, yPixelOffset)
-            // xPixelOffset is the direct measure of whether the buffer is wider than the
-            // screen: if it moves on a page swipe, the surface is scrollable (§5.3).
+            // Verified in Phase 2 that this wallpaper does not scroll (step == -1.0), so the
+            // static ring geometry in HomeRings stays correct. Logged to detect a change.
             Timber.tag(TAG).d("PROBE offsets xPixel=$xPixelOffset yPixel=$yPixelOffset step=$xOffsetStep")
         }
 
         // ── Shader setup ───────────────────────────────────────────────────
 
-        private fun prepareShader(width: Int, height: Int) {
+        private fun compileRings() {
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-                shader = null
-                agslActive = false
+                rings = null
+                Timber.tag(TAG).w("RuntimeShader needs API 33+; drawing plain background")
                 return
             }
-            shader = try {
-                RuntimeShader(PROBE_SHADER).apply {
-                    setFloatUniform("resolution", width.toFloat(), height.toFloat())
-                }
+            rings = try {
+                HomeRings.RINGS.map { HomeRingShader.Ring(it).apply { compile() } }
             } catch (e: Exception) {
-                // A syntax error in AGSL throws here, not at draw time — and the stack
-                // trace may not name the shader.
-                Timber.tag(TAG).e(e, "RuntimeShader construction failed; falling back to gradient")
+                // A SkSL compile error throws here, at construction — not at draw time.
+                // Never let this kill the wallpaper service.
+                Timber.tag(TAG).e(e, "Ring shader compile failed; drawing plain background")
                 null
             }
-            agslActive = shader != null
         }
 
         // ── Frame loop ─────────────────────────────────────────────────────
@@ -170,15 +163,13 @@ class MetrolistWallpaperService : WallpaperService() {
             val holder = surfaceHolder ?: return
             if (!holder.surface.isValid) return
 
-            // §9a: RuntimeShader needs a hardware canvas. lockCanvas() returns a software
-            // canvas and throws "Software rendering doesn't support RuntimeShader".
-            // Keep "wallpaper runs" and "AGSL available" as two separate facts (§9a).
+            // AGSL needs a hardware canvas: lockCanvas() returns a software one and
+            // RuntimeShader throws "Software rendering doesn't support RuntimeShader" (§9a).
             var canvas: Canvas? = null
             var hardware = true
             try {
                 canvas = holder.lockHardwareCanvas()
             } catch (e: IllegalStateException) {
-                // SurfaceHolder doesn't support lockHardwareCanvas.
                 hardware = false
                 Timber.tag(TAG).w("lockHardwareCanvas unsupported: ${e.message}")
             } catch (e: IllegalArgumentException) {
@@ -190,7 +181,7 @@ class MetrolistWallpaperService : WallpaperService() {
                 canvas = try {
                     holder.lockCanvas()
                 } catch (e: Exception) {
-                    // Surface not ready yet, or lost between visibility check and lock.
+                    // Surface not ready yet, or lost between the visibility check and the lock.
                     Timber.tag(TAG).d("lockCanvas failed: ${e.message}")
                     null
                 } ?: return
@@ -206,37 +197,39 @@ class MetrolistWallpaperService : WallpaperService() {
                 }
             }
 
+            if (hardware) hardwareCanvasSeen = true
             frameCount++
             if (frameCount == FRAME_REPORT_INTERVAL) {
-                Timber.tag(TAG).d("PROBE frames=$frameCount hw=$hardware agsl=${agslActive && hardware}")
+                Timber.tag(TAG).d(
+                    "PROBE frames=$frameCount hw=$hardwareCanvasSeen rings=${rings?.size ?: 0}",
+                )
                 frameCount = 0
             }
         }
 
         private fun renderFrame(canvas: Canvas, hardware: Boolean) {
-            val w = canvas.width.toFloat()
-            val h = canvas.height.toFloat()
-            if (w <= 0f || h <= 0f) return
+            // Background. Pure black per spec §8.3 — on AMOLED those pixels are simply off.
+            canvas.drawColor(Color.BLACK)
 
-            val useShader = hardware && shader != null
-            if (useShader) {
-                val time = (SystemClock.uptimeMillis() % LOOP_PERIOD_MS) / LOOP_PERIOD_MS.toFloat()
-                shader?.setFloatUniform("resolution", w, h)
-                shader?.setFloatUniform("time", time)
-                paint.shader = shader
-                canvas.drawRect(0f, 0f, w, h, paint)
-            } else {
-                // Fallback: a plain gradient so the probe still proves the wallpaper runs
-                // even where AGSL is unavailable. §9a — keep these outcomes distinct.
-                val time = (SystemClock.uptimeMillis() % LOOP_PERIOD_MS) / LOOP_PERIOD_MS.toFloat()
-                val shift = time * w
-                paint.shader = LinearGradient(
-                    shift - w, 0f, shift, h,
-                    intArrayOf(Color.BLACK, Color.rgb(0, 90, 160), Color.BLACK),
-                    floatArrayOf(0f, 0.5f, 1f),
-                    Shader.TileMode.CLAMP,
+            val activeRings = rings
+            if (!hardware || activeRings == null) {
+                // Without AGSL the honest appearance is the plain black background rather
+                // than something that implies a visualizer is running.
+                return
+            }
+
+            // Fixed values until Phase 4 wires up CoverBassPulse.
+            val timeSeconds = SystemClock.uptimeMillis() / 1000f
+            for (ring in activeRings) {
+                ring.draw(
+                    canvas = canvas,
+                    paint = paint,
+                    color = RING_COLOR,
+                    bass = TEST_BASS,
+                    alpha = RING_ALPHA,
+                    timeSeconds = timeSeconds,
+                    hotspotMult = HOTSPOT_MULT,
                 )
-                canvas.drawRect(0f, 0f, w, h, paint)
             }
         }
     }
@@ -244,33 +237,25 @@ class MetrolistWallpaperService : WallpaperService() {
     private companion object {
         const val TAG = "MetrolistWallpaper"
 
-        /** ~60 fps target. The system still paces us; this bounds our own loop. */
+        /** ~60 fps target. The system still paces us; this only bounds our own loop. */
         const val FRAME_BUDGET_MS = 16L
-
-        /** Gradient period. */
-        const val LOOP_PERIOD_MS = 4000L
 
         /** Emit a status line every N frames so logcat stays readable. */
         const val FRAME_REPORT_INTERVAL = 120
 
-        /**
-         * Trivial moving gradient. Exists only to prove the AGSL path works in a
-         * wallpaper surface; the real ring shader arrives in Phase 3.
-         *
-         * Not `const` — `trimIndent()` is not a compile-time constant.
-         */
-        val PROBE_SHADER = """
-            uniform float2 resolution;
-            uniform float  time;
+        // ── Phase 3 placeholders ──────────────────────────────────────────
+        // Replaced with the real CoverBassPulse value and the cover-art colour in Phase 4.
+        /** Fixed bass level, chosen mid-range so both the glow and the hotspot are visible. */
+        const val TEST_BASS = 0.55f
 
-            half4 main(float2 fragCoord) {
-                float2 uv = fragCoord / resolution;
-                float phase = time * 6.2831853;
-                float wave = 0.5 + 0.5 * sin(uv.x * 6.2831853 + phase);
-                float vignette = 1.0 - length(uv - float2(0.5)) * 0.9;
-                float v = max(vignette, 0.0);
-                return half4(v * 0.20, v * wave * 0.45, v * 0.85, 1.0);
-            }
-        """.trimIndent()
+        const val RING_ALPHA = 1f
+
+        /** Matches the MiniPlayer default (`MiniPlayerBorderHotspotKey`, default 10f). */
+        const val HOTSPOT_MULT = 10f
+
+        /**
+         * Stand-in for the cover-art palette colour until Phase 4 reads `borderSongColor`.
+         */
+        const val RING_COLOR = 0xFF7FD4FF.toInt()
     }
 }
