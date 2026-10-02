@@ -646,8 +646,8 @@ edge, so the rect itself is the boundary and the shader's falloff does the rest.
 
 ### Phase 3 — Static rings, no audio ✅ **COMPLETE 2026-10-03**
 
-Four rings drawn at the Phase 2 geometry, fixed `bass = 0.55`, placeholder colour.
-Verified on device. **Three real bugs found and fixed**, all in the shader port:
+Four rings drawn at the Phase 2 geometry, synthetic breathing bass, placeholder colour.
+Verified on device. **Four real bugs found and fixed**, all in the shader port:
 
 #### 3a ⚠️ THE PREMULTIPLIED ALPHA TRAP — the flat-fill bug
 
@@ -749,6 +749,72 @@ breath. Nothing X (hotspot ring) varies more, as expected from the orbiting lobe
 Clean exponential decay to black — a real glow, not a fill.
 
 ### Phase 4 — Live audio
+
+Wires the rings to the real `CoverBassPulse` value and the real cover-art colour, and
+settles the "behave exactly like the MiniPlayer" requirement.
+
+#### 4a Decisions taken (2026-10-03)
+
+**MiniPlayer-matching scope — the two 2×2 rings only.**
+Nothing X and Claude must behave exactly like the MiniPlayer's ring: same dot, same
+orbit, same pulse, same alpha curve. **Metrolist and Brave keep their dotless treatment**
+— confirmed to mean the two dotted rings, not all four.
+
+**Keep the corrected alpha. Do NOT inherit the MiniPlayer's bug.**
+Worth being precise, because the assumption initially went the other way: the
+**wallpaper rings are already correct** (premultiplied, §3a) and are the only soft-glow
+version. `BorderGlowShader` is the one carrying the defect. "Identical to the MiniPlayer"
+therefore applies to **behaviour and animation only** — copying its alpha handling
+verbatim would reintroduce the flat-slab rendering. User confirmed: *"keep it that way."*
+
+**Corner radii stay measured, not 32dp.** Matching the MiniPlayer's fixed 32 dp would
+visibly clash with the widgets' actual shapes. Measured radii win.
+
+**Separate wallpaper controls** for hotspot strength *and* peak brightness, so the
+wallpaper can neither be changed by nor change the MiniPlayer sliders.
+
+#### 4b Alpha envelope — mirrors the MiniPlayer, plus the wallpaper's own endpoints
+
+MiniPlayer (`MiniPlayer.kt:444-457`), reproduced exactly:
+
+```kotlin
+val peak = when (intensity) { LOW -> 0.7f; MEDIUM -> 0.85f; HIGH -> 1f }
+val dimmed = miniIsMuted || isCasting
+val a = if (dimmed) 0.2f else (0.2f + bass * (peak - 0.2f)).coerceIn(0.2f, peak)
+```
+
+| | MiniPlayer | Wallpaper |
+|---|---|---|
+| Floor while playing | 0.2 (ring persists) | **0.2, same** |
+| Peak brightness | shared intensity pref | **own preference** |
+| Muted / casting | → 0.2 | **→ 0.2, matching** |
+| Playback stopped | holds at 0.2 | **→ 0, fades to nothing** |
+| Wallpaper hidden | n/a | **→ 0, fades to nothing** |
+
+The *curve* is identical while playing; only the stopped/hidden endpoint differs, which is
+the user's explicit earlier instruction and what §4.4 originally specified.
+
+#### 4c Deferred variant — crisp core stroke (user request)
+
+The MiniPlayer draws a second layer over the glow: a crisp solid stroke whose width grows
+with bass, `2dp + bass × 2dp` (`BorderGlowShader.kt:174`). **Deliberately omitted** from
+the wallpaper port so the glow-only version can be judged first.
+
+Parked here as an explicit follow-up: add it as a second pass over the same rect,
+converting `2dp` at density 2.8125 px/dp → ≈5.6 px + bass × 5.6 px. Expect it to read as a
+thin bright outline tracing each widget — at wallpaper scale it may need a larger base
+width than the MiniPlayer's 2 dp to be visible.
+
+#### 4d Remaining Phase 4 work
+
+- `CoverBassPulse` ownership transfer (§3.2) — the only change to existing player code.
+- Colour from `borderSongColor`, single global source (§4.3).
+- Two new preferences: wallpaper hotspot strength, wallpaper peak brightness.
+- `Widget UI Debug Test` gate — rings fully inactive on the partner's track.
+- Offload interlock (§9), following the crossfade precedent at `PlayerSettings.kt:454`.
+- Replace the synthetic breathing bass with the real value.
+
+**Legacy summary bullets from the original plan, retained for traceability:**
 - `CoverBassPulse` ownership transfer (§3.2), wallpaper owns the analysis.
 - Alpha envelope (§4.4): idle-persist, stopped→fade, hidden→fade.
 - Colour from `borderSongColor` (§4.3).
@@ -776,6 +842,12 @@ Low value while the user never moves widgets — recommended as cheap insurance,
 | Q5 | Lock screen in scope? | **Confirmed out of scope.** Home screen only. |
 | Q6 | Enable without the picker? | **Yes, from inside the app** — one tap → our wallpaper's preview → Android prompt (home/lock/both). **User-verified working on device.** (§8.1) |
 | Q7 | Can the original wallpaper be restored? | **Not pixel-exact** (Android 13+ blocks reading it). Restore is by re-opening the picker and re-selecting. Black is the fallback. |
+| Q8 | Which rings must match the MiniPlayer? | **The two 2×2 only** (Nothing X, Claude). Metrolist + Brave stay dotless. |
+| Q9 | Copy the MiniPlayer's alpha exactly, even its bug? | **No** — keep the corrected premultiplied alpha. Behaviour/animation identical, rendering stays a true glow. |
+| Q10 | Crisp core stroke? | **Omit for now**, user wants to see glow-only first. Parked as §4c for later comparison. |
+| Q11 | Corner radius — measured or 32dp? | **Measured** (66/56/46/18). |
+| Q12 | Hotspot strength + peak brightness — share the MiniPlayer sliders? | **Separate wallpaper controls**, for both. |
+| Q13 | Dim on mute / casting? | **Yes**, match the MiniPlayer's 0.2 floor. |
 
 **No open questions remain.** Phase 1 may proceed on user authorisation.
 
