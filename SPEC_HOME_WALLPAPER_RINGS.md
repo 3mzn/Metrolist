@@ -703,6 +703,43 @@ Also refined Claude 44 → 46.
 
 **Final radii:** partner **66**, Nothing X **56**, Claude **46**, Brave **18**.
 
+#### 3d ⚠️ Unbounded shader time — the orbit-freeze bug
+
+The rings were **completely static**: 0 luminance delta across the whole perimeter over
+3.5 s. Two separate causes, one of them a real bug in this port.
+
+**Cause 1 — expected.** Ring brightness derives solely from `bass`, which was pinned at a
+constant. With no audio wired up (that is Phase 4), a static ring is correct. The
+"fade to black and loop" behaviour belongs to the **Phase 1 probe gradient**, which the
+rings replaced; the rings were never meant to do that.
+
+**Cause 2 — a real bug.** `time` was passed as `SystemClock.uptimeMillis() / 1000f`,
+unbounded. The AGSL evaluates `cos(angle − time·orbitSpeed)`, and float32 loses the
+fractional part of a large argument — at ~5 h uptime the orbit quantises and freezes.
+
+**The shipped MiniPlayer already documents this exact hazard** (`MiniPlayer.kt:466-468`):
+
+> `// Modulo to keep shader time small (avoids float precision loss in cos() at ~1e9).`
+> `val timeSec = (System.nanoTime() % 60_000_000_000L) / 1_000_000_000f`
+
+Fixed the same way — wrap at 60 s. Worth noting this trap would have produced a silent,
+easy-to-misread "the shader doesn't animate" symptom on any long-running device.
+
+**Cause 3 — saturation hides the hotspot.** At high `bass`, `intensity` reaches ≈3.8 at
+the ring centreline and clamps to alpha 1. The hotspot *multiplies* baseGlow by up to ×11,
+so it modulates an already-clipped value and is **invisible**. The orbiting dot therefore
+only reads when the base glow is below saturation. This is a property of the original
+shader's gain, inherited by the port — see the `BorderGlowShader` note in 3a.
+
+#### Verified animation
+
+Added a **synthetic breathing bass** (`0.5 + 0.45·sin(t·1.8)`, ≈3.5 s period) so Phase 3
+could verify the animation path end to end without audio. Phase 4 replaces it with the real
+`CoverBassPulse` value.
+
+Partner edge luminance over 6 frames at 0.5 s: **198, 192, 195, 198, 44, 198** — a clear
+breath. Nothing X (hotspot ring) varies more, as expected from the orbiting lobe.
+
 #### Verified falloff (Nothing X right edge, y=1300)
 
 | x | 494 | 498 | 502 | 506 | 510 | 514 | 518 |

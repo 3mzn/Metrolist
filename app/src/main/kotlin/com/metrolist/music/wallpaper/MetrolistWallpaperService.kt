@@ -219,13 +219,22 @@ class MetrolistWallpaperService : WallpaperService() {
             }
 
             // Fixed values until Phase 4 wires up CoverBassPulse.
-            val timeSeconds = SystemClock.uptimeMillis() / 1000f
+            //
+            // Shader time MUST stay small. The AGSL evaluates `cos(angle - time*orbitSpeed)`,
+            // and float32 precision degrades as the argument grows — at ~1e6 the fractional
+            // part is lost and the orbit freezes. MiniPlayer already hits this and wraps its
+            // time (`MiniPlayer.kt:468`); do the same here rather than passing raw uptime.
+            val timeSeconds = (SystemClock.uptimeMillis() % TIME_WRAP_MS) / 1000f
+            // Synthetic bass so Phase 3 can verify the animation path end to end: a slow
+            // breath that makes the glow pulse and the hotspot orbit visibly. Phase 4
+            // replaces this with the real CoverBassPulse value.
+            val testBass = 0.5f + 0.45f * kotlin.math.sin(timeSeconds * TEST_BREATH_HZ)
             for (ring in activeRings) {
                 ring.draw(
                     canvas = canvas,
                     paint = paint,
                     color = RING_COLOR,
-                    bass = TEST_BASS,
+                    bass = testBass,
                     alpha = RING_ALPHA,
                     timeSeconds = timeSeconds,
                     hotspotMult = HOTSPOT_MULT,
@@ -245,8 +254,14 @@ class MetrolistWallpaperService : WallpaperService() {
 
         // ── Phase 3 placeholders ──────────────────────────────────────────
         // Replaced with the real CoverBassPulse value and the cover-art colour in Phase 4.
-        /** Fixed bass level, chosen mid-range so both the glow and the hotspot are visible. */
-        const val TEST_BASS = 0.55f
+        /**
+         * Wrap shader time every 60s, matching MiniPlayer (`MiniPlayer.kt:468`). Keeps the
+         * `cos()` argument small enough that float32 does not quantise the orbit away.
+         */
+        const val TIME_WRAP_MS = 60_000L
+
+        /** Breath frequency of the synthetic bass, radians/second ÷ 2π — ~0.29 Hz. */
+        const val TEST_BREATH_HZ = 1.8f
 
         const val RING_ALPHA = 1f
 
