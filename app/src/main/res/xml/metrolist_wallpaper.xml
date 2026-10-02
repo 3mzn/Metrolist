@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Live wallpaper descriptor for MetrolistWallpaperService.
+
+    Required by android.service.wallpaper.SERVICE_META_DATA. The <wallpaper> tag carries
+    the thumbnail and description shown in the system wallpaper picker.
+
+    See SPEC_HOME_WALLPAPER_RINGS.md (Phase 1 probe).
+-->
+<wallpaper xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/metrolist_wallpaper_description"
+    android:thumbnail="@mipmap/ic_launcher" />

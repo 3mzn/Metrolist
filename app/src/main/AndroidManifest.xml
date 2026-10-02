@@ -288,6 +288,25 @@
             </intent-filter>
         </service>
 
+        <!--
+            Live wallpaper probe (SPEC_HOME_WALLPAPER_RINGS.md, Phase 1).
+            BIND_WALLPAPER is mandatory: it stops other apps binding this service.
+            Home screen only; the picker prompt lets the user choose scope.
+        -->
+        <service
+            android:name=".wallpaper.MetrolistWallpaperService"
+            android:exported="true"
+            android:label="@string/metrolist_wallpaper_name"
+            android:permission="android.permission.BIND_WALLPAPER"
+            tools:ignore="ExportedService">
+            <intent-filter>
+                <action android:name="android.service.wallpaper.WallpaperService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.service.wallpaper"
+                android:resource="@xml/metrolist_wallpaper" />
+        </service>
+
         <!-- Receiver for Listen Together notification actions (Approve/Reject) -->
         <receiver
             android:name=".listentogether.ListenTogetherActionReceiver"

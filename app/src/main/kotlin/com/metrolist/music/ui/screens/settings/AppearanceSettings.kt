@@ -6,6 +6,10 @@
 package com.metrolist.music.ui.screens.settings
 
 import android.app.Activity
+import android.app.WallpaperManager
+import android.content.ComponentName
+import com.metrolist.music.wallpaper.MetrolistWallpaperService
+import android.widget.Toast
 import android.Manifest
 import android.content.Context
 import android.content.Intent
@@ -1418,6 +1422,45 @@ fun AppearanceSettings(
                                 )
                             },
                             onClick = { onBorderGlowChange(!borderGlow) },
+                        ),
+                    )
+                    // TEMPORARY — Phase 1 probe only. SPEC_HOME_WALLPAPER_RINGS.md §8.2a.
+                    // MIUI hijacks ACTION_CHANGE_LIVE_WALLPAPER fired from adb shell into
+                    // Settings, so the intent must be fired from a real Activity to find out
+                    // whether the flow works at all. Removed once Phase 1 answers the question;
+                    // the production equivalent is the real setting in Phase 4.
+                    add(
+                        Material3SettingsItem(
+                            icon = painterResource(R.drawable.music_note),
+                            title = { Text(stringResource(R.string.wallpaper_probe_apply)) },
+                            description = { Text(stringResource(R.string.wallpaper_probe_desc)) },
+                            onClick = {
+                                try {
+                                    context.startActivity(
+                                        Intent(WallpaperManager.ACTION_CHANGE_LIVE_WALLPAPER).apply {
+                                            // Must be a ComponentName Parcelable. Passing a
+                                            // "package/class" string makes LiveWallpaperChange.init()
+                                            // throw ClassCastException and finish silently —
+                                            // see SPEC_HOME_WALLPAPER_RINGS.md §8.2a.
+                                            putExtra(
+                                                WallpaperManager.EXTRA_LIVE_WALLPAPER_COMPONENT,
+                                                ComponentName(
+                                                    context,
+                                                    MetrolistWallpaperService::class.java,
+                                                ),
+                                            )
+                                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                        },
+                                    )
+                                } catch (e: Exception) {
+                                    // Nothing on the device handles the action.
+                                    Toast.makeText(
+                                        context,
+                                        R.string.wallpaper_probe_no_handler,
+                                        Toast.LENGTH_LONG,
+                                    ).show()
+                                }
+                            },
                         ),
                     )
                     add(

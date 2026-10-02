@@ -1235,4 +1235,9 @@
     <string name="lt_chat_auto_delete_30">After 30 days</string>
     <string name="lt_chat_auto_delete_90">After 90 days</string>
     <string name="lt_chat_auto_delete_never">Never</string>
+    <string name="metrolist_wallpaper_name">Metrolist</string>
+    <string name="metrolist_wallpaper_description">Metrolist home screen visualizer (experimental)</string>
+    <string name="wallpaper_probe_apply">Wallpaper probe (temporary)</string>
+    <string name="wallpaper_probe_desc">Phase 1 test. Opens the Metrolist live wallpaper prompt. Not part of the app.</string>
+    <string name="wallpaper_probe_no_handler">Nothing on this device handled the live wallpaper request</string>
 </resources>
