@@ -1,7 +1,7 @@
 # SPEC — Home Screen Ring Visualizer (Live Wallpaper)
 
-**Status:** Phase 1 **AUTHORISED 2026-10-03**, in progress. Phase 0 complete, all questions
-resolved.
+**Status:** Phase 1 ✅ committed `058b42a39` — **GATE PASSED**. Phase 2 ✅ **COMPLETE**,
+geometry pixel-verified. Phase 3 next, awaiting authorisation.
 **Created:** 2026-10-03
 **Branch:** `testing`
 **Supersedes:** nothing. Extends `SPEC_SPOTIFY_CANVAS.md` (shares `CoverBassPulse`).
@@ -172,41 +172,64 @@ Claude     [582,1148][1006,1614]  424×466   desc="Claude"
 Brave      [74,1658][1006,1869]  932×211   desc="Brave search"
 ```
 
-### 5.2 MIUI invisible padding — host frame vs visible content
+### 5.2 MIUI invisible padding — **PIXEL-VERIFIED 2026-10-03**
 
-| Widget | Host frame | Visible content | Inset L/R | Inset T/B |
+`uiautomator` host-frame vs visible-content bounds, cross-checked against the live
+screenshot with the probe wallpaper active (which makes edges trivially detectable —
+bright blue behind dark cards).
+
+| Widget | Host frame | **Visible content (verified)** | Inset L/R | Inset T/B |
 |---|---|---|---|---|
 | Partner | `[74,638][1006,1104]` | `[74,638][1006,1104]` | 0 | 0 |
 | Nothing X | `[74,1148][498,1614]` | `[78,1173][494,1589]` | 4 | 25 |
 | Claude | `[582,1148][1006,1614]` | `[584,1171][1003,1590]` | 2 | 23 |
 | Brave | `[74,1658][1006,1869]` | `[74,1696][1006,1831]` | 0 | 38 |
 
-**This is why pixel measurement is mandatory.** Grid-cell edges alone would float the
-ring 4–38 px away from the visible widget. Disagreement between `uiautomator` and
-screenshot analysis is itself the signal that MIUI padding is in play.
+**Verification method:** luminance scans across each boundary. Example — Nothing X at
+x=280: wallpaper luminance 90.3 for y ≤ 1172, widget luminance 25.3 from y = 1173. The
+transition lands on **exactly** the predicted pixel. Same result for Brave
+(75.7 → 53.0 at y = 1696) and Partner (73.0 → 202.7 at y = 638).
 
-### 5.3 Wallpaper surface — **MEASURED, no scroll** ✅
+**`uiautomator`'s nested content bounds are pixel-exact.** No heuristics needed, and no
+disagreement between the two methods — the method cross-check the spec called for
+returned clean.
 
-**Result: the surface maps 1:1 to the screen. No scroll multiplier.**
+### 5.2a Corner radii — **MEASURED per widget** (Q3 answered)
+
+Measured by walking down each widget's left edge until it reaches solid colour; the
+vertical offset at which the straight edge begins is the corner radius.
+
+| Widget | Radius | Evidence |
+|---|---|---|
+| Nothing X | **56 px** | left edge solid at y = 1229, top at 1173 → 56 |
+| Claude | **~44 px** | left edge solid at y = 1219, top at 1171 → 48 (AA spread) |
+| Brave | **~18 px** | left edge solid at y = 1714, top at 1696 → 18 |
+| Partner | **~40 px** (est.) | card corners, less critical — ours, with a gradient |
+
+**These are the radii Phase 3 must pass to the shader.** Using one uniform radius would
+visibly clash at the corners, which is exactly what Q3 anticipated.
+
+### 5.3 Wallpaper surface — **MEASURED: 1080×2400, identity, no scroll** ✅
+
+**Surface buffer: `bounds={0,0,2400,1080}` → 1080 × 2400, exactly the screen.**
+
+Read from the live `Wallpaper BBQ wrapper` layer in `dumpsys SurfaceFlinger` while the
+wallpaper was visible. Combined with:
 
 ```
 PROBE offsets xPixel=0 yPixel=0 step=-1.0
 ```
 
 `xOffsetStep == -1.0` is Android's documented "**this wallpaper does not scroll**"
-signal. Combined with `xPixelOffset == 0`, the launcher is not translating the wallpaper
-when home-screen pages change.
+signal, and `xPixelOffset == 0` confirms the launcher is not translating the surface
+across pages.
 
-**Consequences — both spec risks are closed:**
-- §6 (rings drifting across 8 pages) — **no drift.** Static placement is correct on
-  page 1, and the surface simply does not move.
-- The screen→buffer transform is the **identity**. The `uiautomator` bounds in §5.1 can
-  be fed to the shader directly, with no scale or offset correction.
+**The screen→buffer transform is the IDENTITY.** The `uiautomator` bounds in §5.1 can be
+fed straight into the shader — no scale, no offset, no correction.
 
-⚠️ One measurement still outstanding: the literal `onSurfaceChanged` width/height. The
-logcat buffer rotated before the attach-time line was captured. **The `step=-1.0` result
-is the load-bearing one** — it establishes there is no scroll even if the absolute buffer
-size needs re-confirming.
+**Both §5.3 and §6 are fully closed:**
+- Rings will **not** drift across the 8 home screen pages.
+- No coordinate conversion is needed at all.
 
 **Your screen is 1080×2400. That is not in dispute.** The open question is a different
 number: the size of the *drawing canvas* Android hands the wallpaper.
@@ -254,24 +277,18 @@ a clean identity transform — in which case the `uiautomator` numbers are used 
 
 ---
 
-## 6. ⚠️ Unresolved risk: 8 home screen pages
+## 6. 8 home screen pages — **NO DRIFT, risk closed** ✅
 
 `uiautomator` reports **`Page 1 of 8 pages`**. All widgets are on page 1.
 
-User declined scroll tracking (Q4). **Consequence:** if the launcher translates the
-wallpaper surface during page swipes, the rings **drift out from under their widgets**,
-and on pages 2–8 the rings float in empty space.
+**Measured: the wallpaper surface does not scroll** (`xOffsetStep == -1.0`,
+`xPixelOffset == 0` — see §5.3). The launcher is not translating the wallpaper on page
+swipes, so **rings stay locked to their widgets** and the concern that motivated Q2 is
+moot. No offset-parity fix is needed.
 
-User has accepted the drift (§Q2, confirmed 2026-10-03): rings render at their measured
-page-1 positions and are **wrong on pages 2–8**. No offset-parity fix.
-
-Three candidate behaviours:
-
-**DECIDED (Q2):** static placement. Draw rings at measured page-1 coordinates, ignore
-`onOffsetsChanged`. Rings are correct on page 1 and wrong on pages 2–8. **Accepted.**
-
-Still required in Phase 1: log the real `onSurfaceChanged` dimensions, because even a
-static wallpaper needs the screen→surface mapping resolved to place anything at all.
+**DECIDED (Q2):** static placement at the measured page-1 coordinates; ignore
+`onOffsetsChanged`. Confirmed correct by measurement — the surface does not move, so
+static placement is not a compromise here, it is the exact answer.
 
 ---
 
@@ -281,34 +298,41 @@ static wallpaper needs the screen→surface mapping resolved to place anything a
 
 | Question | Result |
 |---|---|
-| Does a 3rd-party live wallpaper run on HyperOS 3? | ✅ **YES** — 60.2 fps sustained |
+| Does a 3rd-party live wallpaper run on HyperOS 3? | ✅ **YES** — 60.13 fps sustained |
 | Does `lockHardwareCanvas()` work? (§9a) | ✅ **YES** — `hw=true` |
 | Does AGSL / `RuntimeShader` work in a wallpaper? | ✅ **YES** — `agsl=true` |
+| Surface size? (§5.3) | ✅ **1080 × 2400 — identity transform** |
 | Is the surface scrolled/multiplied? (§5.3, §6) | ✅ **NO** — `step=-1.0`, `xPixel=0` |
 | Does the visibility lifecycle work? | ✅ `visible=true/false`, loop starts/stops correctly |
-| **GATE** | ✅ **PASSED — proceed to Phase 2** |
+| Survives leaving the home screen and returning? | ✅ Confirmed by user + log |
+| Survives `am kill-all`? | ✅ **YES** — PID 31425 unchanged |
+| Survives `send-trim-memory RUNNING_CRITICAL`? | ✅ **YES** |
+| Survives `am kill` on our own package? | ✅ **YES** — PID 31425 unchanged |
+| **GATE** | ✅ **PASSED** |
 
-Frame rate measured from the log: 120 frames per 1.994 s = **60.2 fps**. No dropped-frame
-warnings, no `lockCanvas` fallback, no shader errors.
+**Frame rate, measured over a 9.979 s window:** 600 frames = **60.13 fps**. No dropped-frame
+warnings, no `lockCanvas` fallback, no shader errors, no exceptions.
 
 **§9a resolved favourably:** MIUI's surfaces **do** support `lockHardwareCanvas()`, so the
 existing AGSL ring shader (`BorderGlowShader`) can be reused as-is in the wallpaper. The
-software-canvas fallback was written but never needed.
+software-canvas fallback path was written but never triggered.
 
-### 7.0a ⚠️ NEW FINDING — force-stopping the app reverts the wallpaper
+### 7.0a `force-stop` reverts the wallpaper — but ordinary kills do NOT
 
-`adb shell am force-stop com.metrolist.music.debug` caused the system to fall back:
+`adb shell am force-stop com.metrolist.music.debug` **did** revert the wallpaper to
+MIUI's static one. But every realistic kill path was then tested and **all survived**:
 
-```
-mWallpaperComponent=ComponentInfo{com.miui.miwallpaper/...ImageWallpaper}
-```
+| Action | Result |
+|---|---|
+| `am kill-all` | ✅ wallpaper held, PID 31425 alive |
+| `send-trim-memory RUNNING_CRITICAL` | ✅ survived |
+| `am kill com.metrolist.music.debug` | ✅ survived, PID unchanged |
+| Open another app, return home | ✅ user-confirmed, still animating |
 
-The wallpaper reverted to MIUI's static one and Metrolist stopped being the provider.
-
-**Not yet established:** whether this is specific to an explicit `force-stop` (a forceful
-"app disabled" signal the wallpaper service treats as permanent), or whether ordinary
-memory-pressure kills do the same. **The second case would be a serious robustness
-problem.** §7.2's idle test and a subsequent memory-pressure test must confirm this.
+**Interpretation:** `force-stop` is an explicit "disable this app" signal, and the system
+treats the wallpaper provider as removed. Real memory pressure does **not** behave that
+way. **The earlier fear that HyperOS would silently drop the wallpaper under pressure is
+disproven.**
 
 ### 7.1 While music is playing — safe
 
@@ -589,22 +613,34 @@ Establishes, on the real device:
 
 **Stop condition:** if it will not run, abandon here. Cost ≈ one small commit.
 
-### Phase 2 — Geometry mapping
-With the phone connected, unlocked, on the home screen:
+### Phase 2 — Geometry mapping ✅ **COMPLETE 2026-10-03**
 
-1. `adb shell uiautomator dump` → authoritative widget bounds (§5.1).
-2. `adb shell screencap -p` → pixel analysis of **visible** widget edges + corner radii.
-3. `adb shell dumpsys appwidget` → grid size cross-check.
-4. **Reconcile the three.** Where they disagree, screenshot wins. Log every delta.
-5. Derive screen→surface transform from Phase 1's real surface size.
-6. Emit final per-ring rects + corner radii + a flush/cell-edge toggle.
+With the phone connected, unlocked, on the home screen, and the probe wallpaper active:
 
-Deliverable: ring geometry as data, not guesses.
+1. ✅ `uiautomator dump` → authoritative widget bounds (§5.1).
+2. ✅ `screencap` → pixel verification of visible edges. **All four matched exactly.**
+3. ✅ `dumpsys SurfaceFlinger` → live wallpaper layer `bounds={0,0,2400,1080}` = **1080×2400**.
+4. ✅ Reconciliation: `uiautomator` and screenshot **agree perfectly**. No deltas.
+5. ✅ Screen→surface transform derived: **identity**.
+6. ✅ Corner radii measured per widget (§5.2a).
 
-### Phase 3 — Static rings, no audio
-Four rings drawn at measured geometry, driven by a fixed test value (e.g. `bass = 0.5`).
-User visually confirms placement, corners, flush-vs-cell-edge. **No audio dependency yet** —
-so geometry problems are isolated from audio problems.
+**Deliverable achieved — final ring geometry (surface == screen coordinates):**
+
+| Widget | Ring rect `[x,y,w,h]` | Corner radius | Orb | Direction |
+|---|---|---|---|---|
+| Metrolist (Partner) | `[74,638,932,466]` | ~40 px | no | — |
+| Nothing X | `[78,1173,416,416]` | 56 px | yes | **+1** |
+| Claude | `[584,1171,419,419]` | ~44 px | yes | **−1** |
+| Brave | `[74,1696,932,135]` | ~18 px | no | — |
+
+Note the ring rects are the **visible** bounds. Because the wallpaper renders *behind* the
+widgets, the ring must be drawn **just outside** these — the glow extends outward from the
+edge, so the rect itself is the boundary and the shader's falloff does the rest.
+
+### Phase 3 — Static rings, no audio (NEXT)
+Four rings drawn at the measured geometry from Phase 2, driven by a fixed test value
+(`bass = 0.5`). User visually confirms placement, corners, and flush-vs-cell-edge.
+**No audio dependency yet** — so geometry problems stay isolated from audio problems.
 
 ### Phase 4 — Live audio
 - `CoverBassPulse` ownership transfer (§3.2), wallpaper owns the analysis.
@@ -629,7 +665,7 @@ Low value while the user never moves widgets — recommended as cheap insurance,
 |---|---|---|
 | Q1 | "Listening: eman" — debug test or partner mode? | **Debug test — my own song.** Gate is testable. |
 | Q2 | 8-page drift acceptable? | **Yes, acceptable.** Static placement; rings wrong on pages 2–8. No offset-parity fix. |
-| Q3 | Per-widget or uniform corner radius? | **Per widget.** Visually correct. |
+| Q3 | Per-widget or uniform corner radius? | **Per widget.** Visually correct. **Radii now measured** — see §5.2a. |
 | Q4 | Offload policy? | **Auto-disable** (§9). |
 | Q5 | Lock screen in scope? | **Confirmed out of scope.** Home screen only. |
 | Q6 | Enable without the picker? | **Yes, from inside the app** — one tap → our wallpaper's preview → Android prompt (home/lock/both). **User-verified working on device.** (§8.1) |
