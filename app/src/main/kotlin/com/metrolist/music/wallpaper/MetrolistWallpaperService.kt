@@ -256,7 +256,12 @@ class MetrolistWallpaperService : WallpaperService() {
                     "PROBE frames=$frameCount hw=$hardwareCanvasSeen rings=${rings?.size ?: 0} " +
                         "alpha=${"%.2f".format(ringAlpha)} " +
                         "playing=${HomeRingAudioState.isPlaying} " +
-                        "session=${HomeRingAudioState.audioSessionId}",
+                        "session=${HomeRingAudioState.audioSessionId} " +
+                        "sessionValid=${HomeRingAudioState.audioSessionValid} " +
+                        "gate=${HomeRingSettings.debugWidgetOn} " +
+                        "active=${HomeRingAudioState.isActive()} " +
+                        "bass=${CoverBassPulse.smoothedBass} " +
+                        "color=${Integer.toHexString(HomeRingColorSource.color)}",
                 )
                 frameCount = 0
             }

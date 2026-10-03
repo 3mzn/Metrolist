@@ -1,9 +1,8 @@
 # SPEC — Home Screen Ring Visualizer (Live Wallpaper)
 
-**Status:** Phase 1 ✅ committed `058b42a39` — **GATE PASSED**. Phase 2 ✅ complete,
-geometry pixel-verified. Phase 3 ✅ complete — rings rendering correctly, user-visible
-falloff and corner fit confirmed on device. Phase 4 (live audio) next, awaiting
-authorisation.
+**Status:** Phases 0–4 ✅ **complete and verified on device.** Rings are live, reacting to
+real bass. Remaining: §4c crisp core stroke (deferred by user), Phase 5 calibration screen
+(optional), and the release decision (debug build currently carries the wallpaper).
 **Created:** 2026-10-03
 **Branch:** `testing`
 **Supersedes:** nothing. Extends `SPEC_SPOTIFY_CANVAS.md` (shares `CoverBassPulse`).
@@ -805,14 +804,42 @@ converting `2dp` at density 2.8125 px/dp → ≈5.6 px + bass × 5.6 px. Expect 
 thin bright outline tracing each widget — at wallpaper scale it may need a larger base
 width than the MiniPlayer's 2 dp to be visible.
 
-#### 4d Remaining Phase 4 work
+#### 4d Remaining Phase 4 work ✅ **ALL DONE — verified on device 2026-10-03**
 
-- `CoverBassPulse` ownership transfer (§3.2) — the only change to existing player code.
-- Colour from `borderSongColor`, single global source (§4.3).
-- Two new preferences: wallpaper hotspot strength, wallpaper peak brightness.
-- `Widget UI Debug Test` gate — rings fully inactive on the partner's track.
-- Offload interlock (§9), following the crossfade precedent at `PlayerSettings.kt:454`.
-- Replace the synthetic breathing bass with the real value.
+- ✅ `CoverBassPulse` ownership transfer (§3.2) — `retain()`/`unretain()` plus a monotonic
+  `advanceFrame` guard, because composition and the wallpaper are two independent 60 fps
+  drivers in one process.
+- ✅ Colour from cover art, single global source (§4.3), via `HomeRingColorSource`.
+- ✅ Two new preferences: `HomeRingHotspotKey`, `HomeRingIntensityKey`.
+- ✅ `Widget UI Debug Test` gate — rings fully inactive on the partner's track.
+- ✅ Offload interlock (§9), following the crossfade precedent at `PlayerSettings.kt:454`.
+- ✅ Synthetic breathing bass replaced with the real `CoverBassPulse.smoothedBass`.
+
+**Measured on device, playing "Used To" (Drake):**
+
+```
+PROBE frames=120 hw=true rings=4 alpha=0.38 playing=true session=15345
+       sessionValid=true gate=true active=true bass=0.357 color=ffd1d1d1
+PROBE ... alpha=0.65 ... bass=0.813
+PROBE ... alpha=0.64 ... bass=0.917
+PROBE ... alpha=0.36 ... bass=0.083
+```
+
+`bass` genuinely varies with the music (0.083 → 0.917) and `alpha` tracks it through the
+MiniPlayer curve. `color=ffd1d1d1` is a real extracted colour, matching the track's pale
+artwork.
+
+**First attempt showed a black wallpaper — diagnosed as the gate, not a bug.** The
+`Widget UI Debug Test` toggle was off, so the widget showed the partner's track and the
+rings were correctly inactive. With it on, the rings appear. The `gate=` / `active=` fields
+were added to the PROBE line specifically to make that distinction readable from logcat
+rather than guessed at.
+
+**Bridge:** `HomeRingAudioState`, published by `MusicService` from inside `updateWidgetUI`
+— already the app's "playback state changed" hook, so one insertion point covers every
+transition. Necessary because the wallpaper cannot reach the player the way the UI does:
+`LocalPlayerConnection` is a Compose `staticCompositionLocalOf` and `ExoPlayer` has no
+Hilt binding.
 
 **Legacy summary bullets from the original plan, retained for traceability:**
 - `CoverBassPulse` ownership transfer (§3.2), wallpaper owns the analysis.
