@@ -633,11 +633,12 @@ With the phone connected, unlocked, on the home screen, and the probe wallpaper 
 |---|---|---|---|---|
 | Metrolist (Partner) | `[74,638,932,466]` | **66 px** | no | — |
 | Nothing X | `[78,1173,416,416]` | **56 px** | yes | **+1** |
-| Claude | `[584,1171,419,419]` | **46 px** | yes | **−1** |
+| Claude | `[584,1171,416,416]` | **56 px** | yes | **−1** |
 | Brave | `[74,1696,932,135]` | **18 px** | no | — |
 
 Corner radii confirmed on device during Phase 3 — see §10 Phase 3c for the measurement
 method and the correction of the partner radius from an estimate of 40 to a measured 66.
+Claude's row was **corrected after release** to match Nothing X; see §10 Phase 3e.
 
 Note the ring rects are the **visible** bounds. Because the wallpaper renders *behind* the
 widgets, the ring must be drawn **just outside** these — the glow extends outward from the
@@ -701,6 +702,25 @@ edge-walk) it returned **56.3**. Then applied to the partner widget it returned 
 Also refined Claude 44 → 46.
 
 **Final radii:** partner **66**, Nothing X **56**, Claude **46**, Brave **18**.
+
+##### 3e ⚠️ CORRECTION (user, 2026-10-03) — Claude was 419×419 / R=46; it is 416×416 / R=56
+
+Caught on-device in the **release** build, not debug: the user reported the ring glow
+"leaking out a little bit too far" at **all four corners** of the Claude widget, and it was
+subtle enough to be maddening rather than obvious.
+
+Diagnosis: a **size** error reads along the straight edges; a **radius** error reads **only
+at the corners**. The symptom was corner-only, which points at the 10 px radius gap
+(46 vs Nothing X's 56) rather than the 3 px size gap (419 vs 416). Claude is the same 2×2
+grid cell as Nothing X, so it should carry the same geometry.
+
+Claude now matches Nothing X exactly — **416×416, R=56**. User-confirmed visually after the
+rebuild ("perfect now").
+
+Worth recording honestly: the Phase 2 measurement was **confidently wrong**, and the
+"pixel-verified" framing in §5.2a overclaimed. Two independent methods agreed on the wrong
+answer, which is exactly how a bad measurement earns false confidence. The device test is
+what caught it; neither method was going to.
 
 #### 3d ⚠️ Unbounded shader time — the orbit-freeze bug
 
@@ -898,10 +918,81 @@ Hilt binding.
 - `Widget UI Debug Test` gating.
 - Offload interlock (§9), following the crossfade precedent at `PlayerSettings.kt:454`.
 
+### Phase 4b — Release-build findings (15.0.1)
+
+The first **release** build surfaced two bugs that the debug build never showed. Both were
+found by the user on-device, and both are recorded here because the *reason* they escaped is
+the useful part.
+
+#### 4b-i ⚠️ `widgetUpdateInFlight` latches permanently — widgets freeze for the service's life
+
+**Symptom:** "the widget test debug UI feature is extremely inconsistent. Sometimes it just
+doesn't update the widget at all when music is playing, just stays saying it's quiet."
+
+**Root cause** (`MusicService.kt:4977-4990`):
+
+```kotlin
+widgetUpdateInFlight = true
+scope.launch {
+    if (isCrossfading) return@launch   // ← returns BEFORE the try
+    try { while (true) { ... } } finally { widgetUpdateInFlight = false }
+}
+```
+
+The flag is set **before** the launch, but the early `return@launch` sits **outside** the
+`try`, so it bypasses the `finally`. One playback change landing during a crossfade latches
+the flag on permanently; every later `updateWidgetUI` then returns at the in-flight guard and
+**no widget ever refreshes again** until the service dies. Crossfade is intermittent, which is
+why it read as "inconsistent" rather than "broken".
+
+**Fix:** move the crossfade check *inside* the `try`, so the `finally` always runs.
+
+**Why the wallpaper was unaffected — and why that misled the diagnosis.** `HomeRingAudioState.publish`
+runs at the *top* of `updateWidgetUI`, **before** the in-flight guard. So the rings stayed
+correctly reactive while the widget beside them was frozen. That asymmetry is what made the
+user read the whole feature as broken.
+
+**Detection method worth repeating:** `android.util.Log.i("HEARTBEAT", …)` fires on *every*
+widget update. Its complete **absence** from logcat while audio was demonstrably playing was
+the decisive evidence — far stronger than reasoning about the code. Same tag survived R8,
+unlike `Timber.tag(…).d()` in some paths.
+
+#### 4b-ii "Settings don't apply" — not a bug; the frozen widget was the misleading signal
+
+Reported alongside 4b-i: "the wallpaper ring settings don't change anything, even the crisp
+line, the hotspot intensity, everything."
+
+Instrumented `HomeRingSettings` to log its resolved values, and the stored prefs were already
+correct and already reaching the render loop:
+
+```
+I HomeRingSettings: hotspot=10.35 peak=1.0 gate=true stroke=[brave,partner] rawIntensity=HIGH
+D MetrolistWallpaper: PROBE … hotspot=10.351271 peak=1.0 stroke=[brave,partner]
+```
+
+Nothing was wrong with the settings path. The widget is the user's only "is this alive?"
+indicator, and 4b-i had frozen it — so settings that *were* applying looked dead. Recorded
+because the honest conclusion was "my diagnosis was wrong", and the instrumentation that
+proved it should not be thrown away. Added to the probe log permanently.
+
+#### 4b-iii Debug-test-OFF path — audited, no change needed
+
+Verified that a partner's song still renders correctly with `Widget UI Debug Test` off, since
+debug mode writes into the **same** widget cache the partner uses. The cache has exactly three
+writers:
+
+| Writer | Gated on the toggle? | When OFF |
+|---|---|---|
+| Firestore snapshot (`PartnerHeartbeatMonitor:106-119`) | yes — skips when on | writes partner's song ✅ |
+| Debug block (`MusicService:5069-5080`) | yes — skips when off | silent ✅ |
+| Toggle-off cleanup (`StorageSettings:604-606`) | — | clears debug state, re-resolves ✅ |
+
+`PartnerWidgetReceiver:47` and `PartnerWidgetManager:537` only *read* via `renderFromCache()`
+and cannot clobber. The toggle-off handler does an explicit `firestore.get()` via
+`refreshNow()`, so the partner's **current** song appears immediately rather than waiting on a
+change event. Not changed — audited and left alone.
+
 ### Phase 5 — Calibration screen *(optional)*
-Screenshot + four draggable/resizable frames, user snaps each to its widget, persists
-corrections. Insurance against a HyperOS grid change silently misaligning the rings.
-Low value while the user never moves widgets — recommended as cheap insurance, not required.
 
 ---
 

@@ -261,7 +261,10 @@ class MetrolistWallpaperService : WallpaperService() {
                         "gate=${HomeRingSettings.debugWidgetOn} " +
                         "active=${HomeRingAudioState.isActive()} " +
                         "bass=${CoverBassPulse.smoothedBass} " +
-                        "color=${Integer.toHexString(HomeRingColorSource.color)}",
+                        "color=${Integer.toHexString(HomeRingColorSource.color)} " +
+                        "hotspot=${HomeRingSettings.hotspotMult} " +
+                        "peak=${HomeRingSettings.peak} " +
+                        "stroke=[${HomeRingSettings.strokeRings.sorted().joinToString(",")}]",
                 )
                 frameCount = 0
             }

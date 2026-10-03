@@ -919,7 +919,10 @@ fun AppearanceSettings(
                 Slider(
                     value = tempHomeHotspot,
                     onValueChange = { tempHomeHotspot = it },
-                    valueRange = 1f..30f,
+                    // Wallpaper goes to 60x; the ring's own alpha is clamped in the shader,
+                    // so a strong setting saturates into a longer comet tail rather than
+                    // blowing out. The MiniPlayer slider above stays at 30x.
+                    valueRange = 1f..60f,
                     modifier = Modifier.fillMaxWidth(),
                 )
             }

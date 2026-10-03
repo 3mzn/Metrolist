@@ -4975,11 +4975,17 @@ class MusicService :
         widgetUpdateInFlight = true
 
         scope.launch {
-            // Pause widget/heartbeat work mid-fade: every byte of screen-off radio
-            // belongs to the incoming track's media refill. The 200ms ticker
-            // retries right after the fade; nothing is lost.
-            if (isCrossfading) return@launch
             try {
+                // Pause widget/heartbeat work mid-fade: every byte of screen-off radio
+                // belongs to the incoming track's media refill. The 200ms ticker
+                // retries right after the fade; nothing is lost.
+                //
+                // This must sit INSIDE the try. An early `return@launch` above it skips
+                // the finally below, which latches widgetUpdateInFlight on permanently:
+                // every later updateWidgetUI returns at the in-flight guard and no widget
+                // ever refreshes again for the life of the service. The wallpaper is
+                // unaffected because HomeRingAudioState.publish runs before that guard.
+                if (isCrossfading) return@launch
                 while (true) {
                     val (playing, isLikedRequested) = pendingWidgetUpdate ?: break
                     pendingWidgetUpdate = null

@@ -79,10 +79,13 @@ object HomeRings {
             orbitDirection = 1f,
         ),
         // 2×2 Claude widget, lower right. Orbiting dot, opposite to Nothing X.
+        // Geometry matches the Nothing X 2×2 exactly (416×416, R=56): the corner leak was
+        // the 10px radius error, which reads at the corners and not along the straight
+        // edges, whereas the 3px size error reads everywhere.
         HomeRingGeometry(
             id = "claude",
-            x = 584, y = 1171, width = 419, height = 419,
-            cornerRadiusPx = 46f,
+            x = 584, y = 1171, width = 416, height = 416,
+            cornerRadiusPx = 56f,
             hasHotspot = true,
             orbitDirection = -1f,
         ),

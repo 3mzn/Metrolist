@@ -1,3 +1,8 @@
+---v15.0.1
+- Fixed the partner widget freezing: switching tracks with crossfade on could leave the widget stuck on an old song until the app restarted
+- Fixed the ring glow sitting slightly outside the corners of the right-hand widget
+- Orbiting dot strength in Settings -> Appearance -> Live wallpaper now goes up to 60x
+
 This is the coolest shit i've ever made so i'm bumping version to 15.0.0
 
 ---v15.0.0

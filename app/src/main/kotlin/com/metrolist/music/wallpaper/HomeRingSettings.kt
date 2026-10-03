@@ -64,12 +64,10 @@ object HomeRingSettings {
     /** True when [ringId] should draw the crisp stroke. */
     fun hasStroke(ringId: String): Boolean = ringId in strokeRings
 
-    /** The MiniPlayer's crisp core stroke over the glow. Off by default — see §4c. */
-    @Volatile
-    var drawStroke: Boolean = false
-        private set
-
     private var job: Job? = null
+
+    /** Last logged settings snapshot, so only genuine changes reach the log. */
+    @Volatile private var lastSnapshot: String? = null
 
     /**
      * Peak brightness per intensity band — copied from the MiniPlayer's `peak`
@@ -82,20 +80,31 @@ object HomeRingSettings {
             BorderGlowIntensity.HIGH -> 1f
         }
 
-    /** Starts collecting. Safe to call repeatedly — a previous scope is cancelled first. */
+    /** Starts collecting. Safe to call repeatedly - a previous scope is cancelled first. */
     fun start(scope: CoroutineScope, context: Context) {
         stop()
         job = scope.launch {
             runCatching {
                 context.dataStore.data.collectLatest { prefs ->
+                    val rawIntensity = prefs[HomeRingIntensityKey]
                     hotspotMult = prefs[HomeRingHotspotKey] ?: DEFAULT_HOTSPOT
                     peak = peakFor(
-                        prefs[HomeRingIntensityKey]?.let { name ->
+                        rawIntensity?.let { name ->
                             runCatching { BorderGlowIntensity.valueOf(name) }.getOrNull()
                         } ?: BorderGlowIntensity.MEDIUM,
                     )
                     debugWidgetOn = prefs[PartnerWidgetManager.WIDGET_UI_DEBUG_TEST_KEY] ?: false
                     strokeRings = prefs[HomeRingStrokeRingsKey] ?: emptySet()
+
+                    // Log only on an actual change. DataStore emits for every write to the
+                    // store, and this collector is the wallpaper's only proof that a setting
+                    // change actually reached the render loop.
+                    val snapshot = "$hotspotMult/$rawIntensity/$peak/$debugWidgetOn/" +
+                        strokeRings.sorted().joinToString(",")
+                    if (snapshot != lastSnapshot) {
+                        lastSnapshot = snapshot
+                        android.util.Log.i(TAG, "settings -> hotspot=$hotspotMult peak=$peak gate=$debugWidgetOn stroke=[${strokeRings.sorted().joinToString(",")}] rawIntensity=$rawIntensity")
+                    }
                 }
             }.onFailure {
                 // A cancelled scope lands here too; only a real failure is worth logging.
