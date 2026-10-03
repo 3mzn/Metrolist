@@ -10,6 +10,7 @@ import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import java.time.LocalDateTime
 import java.time.ZoneOffset
 
@@ -86,6 +87,13 @@ enum class BorderGlowIntensity {
 val HomeRingEnabledKey = booleanPreferencesKey("homeRingEnabled")
 val HomeRingHotspotKey = floatPreferencesKey("homeRingHotspot")
 val HomeRingIntensityKey = stringPreferencesKey("homeRingIntensity")
+
+/**
+ * Which rings get the MiniPlayer's crisp core stroke over the glow, by
+ * [HomeRingGeometry.id]. **Default empty** — the soft glow alone is the better look at
+ * wallpaper scale, where a 2dp outline reads as a hard frame.
+ */
+val HomeRingStrokeRingsKey = stringSetPreferencesKey("homeRingStrokeRings")
 val HidePlayerThumbnailKey = booleanPreferencesKey("hidePlayerThumbnail")
 val CropAlbumArtKey = booleanPreferencesKey("cropAlbumArt")
 val SeekExtraSeconds = booleanPreferencesKey("seekExtraSeconds")

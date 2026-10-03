@@ -9,6 +9,7 @@ import android.content.Context
 import com.metrolist.music.constants.BorderGlowIntensity
 import com.metrolist.music.constants.HomeRingHotspotKey
 import com.metrolist.music.constants.HomeRingIntensityKey
+import com.metrolist.music.constants.HomeRingStrokeRingsKey
 import com.metrolist.music.utils.dataStore
 import com.metrolist.music.widget.PartnerWidgetManager
 import kotlinx.coroutines.CoroutineScope
@@ -51,6 +52,23 @@ object HomeRingSettings {
     var debugWidgetOn: Boolean = false
         private set
 
+    /**
+     * Which rings draw the crisp core stroke, by [HomeRingGeometry.id]. Empty by default
+     * (4c) - the soft glow alone is the better look at wallpaper scale. A subset is
+     * perfectly valid, e.g. only the two wide flat rings.
+     */
+    @Volatile
+    var strokeRings: Set<String> = emptySet()
+        private set
+
+    /** True when [ringId] should draw the crisp stroke. */
+    fun hasStroke(ringId: String): Boolean = ringId in strokeRings
+
+    /** The MiniPlayer's crisp core stroke over the glow. Off by default — see §4c. */
+    @Volatile
+    var drawStroke: Boolean = false
+        private set
+
     private var job: Job? = null
 
     /**
@@ -77,6 +95,7 @@ object HomeRingSettings {
                         } ?: BorderGlowIntensity.MEDIUM,
                     )
                     debugWidgetOn = prefs[PartnerWidgetManager.WIDGET_UI_DEBUG_TEST_KEY] ?: false
+                    strokeRings = prefs[HomeRingStrokeRingsKey] ?: emptySet()
                 }
             }.onFailure {
                 // A cancelled scope lands here too; only a real failure is worth logging.

@@ -178,5 +178,57 @@ object HomeRingShader {
 
             canvas.restoreToCount(save)
         }
+
+        /**
+         * The MiniPlayer's crisp core stroke, drawn over the glow.
+         *
+         * Port of `BorderGlowShader.kt:173-181`, same maths: width is
+         * `2dp + bass × 2dp`, the rect is grown by half the width so the stroke is
+         * **centred on the boundary**, and the corner radius grows with it — which is what
+         * keeps the line parallel to the widget's own rounded corner instead of pinching.
+         *
+         * Because the wallpaper renders *behind* the widgets, only the outer half of this
+         * stroke is ever visible. That reads as a defined bright edge sitting just outside
+         * the widget, which is the intent.
+         */
+        fun drawStroke(
+            canvas: android.graphics.Canvas,
+            paint: android.graphics.Paint,
+            color: Int,
+            alpha: Float,
+            bass: Float,
+            density: Float,
+        ) {
+            val g = geometry
+            val strokeWidth = (BASE_STROKE_DP + bass * BASE_STROKE_DP) * density
+            val half = strokeWidth / 2f
+            val a = (alpha * 255f).toInt().coerceIn(0, 255)
+
+            // The shader from the glow pass must come off, or Paint would re-apply it here.
+            paint.shader = null
+            paint.style = android.graphics.Paint.Style.STROKE
+            paint.strokeWidth = strokeWidth
+            paint.color = android.graphics.Color.argb(
+                a,
+                android.graphics.Color.red(color),
+                android.graphics.Color.green(color),
+                android.graphics.Color.blue(color),
+            )
+
+            val r = g.cornerRadiusPx + half
+            canvas.drawRoundRect(
+                g.x - half,
+                g.y - half,
+                g.right + half,
+                g.bottom + half,
+                r,
+                r,
+                paint,
+            )
+
+            paint.style = android.graphics.Paint.Style.FILL
+        }
     }
+
+    private const val BASE_STROKE_DP = 2f
 }

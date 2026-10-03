@@ -275,6 +275,7 @@ class MetrolistWallpaperService : WallpaperService() {
             if (!hardware || activeRings == null) return
 
             val driven = driveAudio() ?: return
+            val density = resources.displayMetrics.density
             for (ring in activeRings) {
                 ring.draw(
                     canvas = canvas,
@@ -285,6 +286,17 @@ class MetrolistWallpaperService : WallpaperService() {
                     timeSeconds = driven.timeSeconds,
                     hotspotMult = driven.hotspotMult,
                 )
+                // The MiniPlayer's crisp core stroke, on top of the glow. Opt-in (§4c).
+                if (HomeRingSettings.hasStroke(ring.geometry.id)) {
+                    ring.drawStroke(
+                        canvas = canvas,
+                        paint = paint,
+                        color = driven.color,
+                        alpha = driven.alpha,
+                        bass = driven.bass,
+                        density = density,
+                    )
+                }
             }
         }
 
@@ -396,6 +408,7 @@ class MetrolistWallpaperService : WallpaperService() {
 
         /** Below this the ring is indistinguishable from black; skip the draw entirely. */
         const val ALPHA_EPSILON = 0.004f
+
     }
 }
 

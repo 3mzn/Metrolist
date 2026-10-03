@@ -9,6 +9,9 @@ import android.app.Activity
 import android.app.WallpaperManager
 import android.content.ComponentName
 import com.metrolist.music.constants.HomeRingEnabledKey
+import com.metrolist.music.constants.HomeRingHotspotKey
+import com.metrolist.music.constants.HomeRingIntensityKey
+import com.metrolist.music.constants.HomeRingStrokeRingsKey
 import com.metrolist.music.wallpaper.MetrolistWallpaperService
 import android.widget.Toast
 import android.Manifest
@@ -20,6 +23,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -34,6 +38,7 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -244,6 +249,21 @@ fun AppearanceSettings(
             HomeRingEnabledKey,
             defaultValue = false,
         )
+    val (homeRingStrokeRings, onHomeRingStrokeRingsChange) =
+        rememberPreference(
+            HomeRingStrokeRingsKey,
+            defaultValue = emptySet<String>(),
+        )
+    var showHomeRingStrokeDialog by rememberSaveable { mutableStateOf(false) }
+    val (homeRingHotspot, onHomeRingHotspotChange) =
+        rememberPreference(HomeRingHotspotKey, 10f)
+    var showHomeRingHotspotDialog by rememberSaveable { mutableStateOf(false) }
+    val (homeRingIntensity, onHomeRingIntensityChange) =
+        rememberEnumPreference(
+            HomeRingIntensityKey,
+            defaultValue = BorderGlowIntensity.MEDIUM,
+        )
+    var showHomeRingIntensityDialog by rememberSaveable { mutableStateOf(false) }
     val (pulseIntensity, onPulseIntensityChange) =
         rememberEnumPreference(
             PlayerCoverPulseIntensityKey,
@@ -789,6 +809,183 @@ fun AppearanceSettings(
                     valueRange = 1f..30f,
                     modifier = Modifier.fillMaxWidth(),
                 )
+            }
+        }
+    }
+
+    // Live wallpaper: glow intensity Low/Med/High, mirroring the MiniPlayer dialog above.
+    if (showHomeRingIntensityDialog) {
+        var tempHomeIntensity by remember { mutableFloatStateOf(homeRingIntensity.ordinal.toFloat()) }
+
+        DefaultDialog(
+            onDismiss = {
+                tempHomeIntensity = homeRingIntensity.ordinal.toFloat()
+                showHomeRingIntensityDialog = false
+            },
+            buttons = {
+                Spacer(modifier = Modifier.weight(1f))
+                TextButton(
+                    onClick = {
+                        tempHomeIntensity = homeRingIntensity.ordinal.toFloat()
+                        showHomeRingIntensityDialog = false
+                    },
+                ) {
+                    Text(stringResource(android.R.string.cancel))
+                }
+                TextButton(
+                    onClick = {
+                        onHomeRingIntensityChange(BorderGlowIntensity.entries[tempHomeIntensity.roundToInt()])
+                        showHomeRingIntensityDialog = false
+                    },
+                ) {
+                    Text(stringResource(android.R.string.ok))
+                }
+            },
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier.padding(16.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.home_ring_intensity),
+                    style = MaterialTheme.typography.headlineSmall,
+                    modifier = Modifier.padding(bottom = 16.dp),
+                )
+                Text(
+                    text =
+                        when (BorderGlowIntensity.entries[tempHomeIntensity.roundToInt()]) {
+                            BorderGlowIntensity.LOW -> stringResource(R.string.mini_player_border_glow_low)
+                            BorderGlowIntensity.MEDIUM -> stringResource(R.string.mini_player_border_glow_medium)
+                            BorderGlowIntensity.HIGH -> stringResource(R.string.mini_player_border_glow_high)
+                        },
+                    style = MaterialTheme.typography.bodyLarge,
+                    modifier = Modifier.padding(bottom = 16.dp),
+                )
+                Slider(
+                    value = tempHomeIntensity,
+                    onValueChange = { tempHomeIntensity = it },
+                    valueRange = 0f..2f,
+                    steps = 1,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
+    }
+
+    // Live wallpaper: orbiting-dot strength, 1x–30x, default 10x (same shape as the
+    // MiniPlayer hotspot slider but its own preference — they must not affect each other).
+    if (showHomeRingHotspotDialog) {
+        var tempHomeHotspot by remember { mutableFloatStateOf(homeRingHotspot) }
+
+        DefaultDialog(
+            onDismiss = {
+                tempHomeHotspot = homeRingHotspot
+                showHomeRingHotspotDialog = false
+            },
+            buttons = {
+                Spacer(modifier = Modifier.weight(1f))
+                TextButton(
+                    onClick = {
+                        tempHomeHotspot = homeRingHotspot
+                        showHomeRingHotspotDialog = false
+                    },
+                ) {
+                    Text(stringResource(android.R.string.cancel))
+                }
+                TextButton(
+                    onClick = {
+                        onHomeRingHotspotChange(tempHomeHotspot)
+                        showHomeRingHotspotDialog = false
+                    },
+                ) {
+                    Text(stringResource(android.R.string.ok))
+                }
+            },
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier.padding(16.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.home_ring_hotspot),
+                    style = MaterialTheme.typography.headlineSmall,
+                    modifier = Modifier.padding(bottom = 8.dp),
+                )
+                Text(
+                    text = "${tempHomeHotspot.roundToInt()}x",
+                    style = MaterialTheme.typography.bodyLarge,
+                    modifier = Modifier.padding(bottom = 16.dp),
+                )
+                Slider(
+                    value = tempHomeHotspot,
+                    onValueChange = { tempHomeHotspot = it },
+                    valueRange = 1f..30f,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
+    }
+
+    // Which rings get the crisp core stroke. A checklist rather than one switch, because
+    // the effect suits the wide flat rings better than the small rounded ones - and because
+    // a subset ("only the two wide ones") is the common case.
+    if (showHomeRingStrokeDialog) {
+        var tempRings by remember { mutableStateOf(homeRingStrokeRings) }
+
+        DefaultDialog(
+            onDismiss = { showHomeRingStrokeDialog = false },
+            buttons = {
+                Spacer(modifier = Modifier.weight(1f))
+                TextButton(
+                    onClick = {
+                        onHomeRingStrokeRingsChange(emptySet())
+                        showHomeRingStrokeDialog = false
+                    },
+                ) {
+                    Text(stringResource(R.string.home_ring_stroke_none_btn))
+                }
+                TextButton(
+                    onClick = {
+                        onHomeRingStrokeRingsChange(tempRings)
+                        showHomeRingStrokeDialog = false
+                    },
+                ) {
+                    Text(stringResource(android.R.string.ok))
+                }
+            },
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier.padding(16.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.home_ring_stroke),
+                    style = MaterialTheme.typography.headlineSmall,
+                    modifier = Modifier.padding(bottom = 16.dp),
+                )
+                HOME_RING_STROKE_OPTIONS.forEach { (id, labelRes) ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                tempRings = if (id in tempRings) tempRings - id else tempRings + id
+                            }
+                            .padding(vertical = 10.dp),
+                    ) {
+                        Checkbox(
+                            checked = id in tempRings,
+                            onCheckedChange = {
+                                tempRings = if (id in tempRings) tempRings - id else tempRings + id
+                            },
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(
+                            text = stringResource(labelRes),
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
+                    }
+                }
             }
         }
     }
@@ -1431,50 +1628,6 @@ fun AppearanceSettings(
                             onClick = { onBorderGlowChange(!borderGlow) },
                         ),
                     )
-                    // Home-screen ring visualizer — SPEC_HOME_WALLPAPER_RINGS.md §8.1, §4.
-                    // Enabling fires the system live-wallpaper prompt directly at our
-                    // component, so the user never browses a picker.
-                    add(
-                        Material3SettingsItem(
-                            icon = painterResource(R.drawable.music_note),
-                            title = { Text(stringResource(R.string.home_ring_wallpaper)) },
-                            description = {
-                                Text(
-                                    if (homeRingOn) {
-                                        stringResource(R.string.home_ring_wallpaper_on)
-                                    } else {
-                                        stringResource(R.string.home_ring_wallpaper_off)
-                                    },
-                                )
-                            },
-                            trailingContent = {
-                                Switch(
-                                    checked = homeRingOn,
-                                    onCheckedChange = { requested ->
-                                        if (!requested) {
-                                            // Off is a plain preference flip: the rings stop
-                                            // drawing but the wallpaper itself is untouched.
-                                            onHomeRingChange(false)
-                                        } else {
-                                            applyHomeWallpaper(context, onHomeRingChange)
-                                        }
-                                    },
-                                    thumbContent = {
-                                        Icon(
-                                            painter = painterResource(
-                                                id = if (homeRingOn) R.drawable.check else R.drawable.close,
-                                            ),
-                                            contentDescription = null,
-                                            modifier = Modifier.size(SwitchDefaults.IconSize),
-                                        )
-                                    },
-                                )
-                            },
-                            onClick = {
-                                if (homeRingOn) onHomeRingChange(false) else applyHomeWallpaper(context, onHomeRingChange)
-                            },
-                        ),
-                    )
                     add(
                         Material3SettingsItem(
                             icon = painterResource(R.drawable.sliders),
@@ -1497,6 +1650,99 @@ fun AppearanceSettings(
                             title = { Text(stringResource(R.string.mini_player_border_hotspot)) },
                             description = { Text("${hotspotMult.roundToInt()}x") },
                             onClick = { showHotspotDialog = true },
+                        ),
+                    )
+                },
+        )
+
+        Spacer(modifier = Modifier.height(27.dp))
+
+        // ── Live wallpaper ────────────────────────────────────────────────
+        // SPEC_HOME_WALLPAPER_RINGS.md. Enabling fires the system live-wallpaper prompt
+        // directly at our component, so the user never browses a picker.
+        Material3SettingsGroup(
+            title = stringResource(id = R.string.home_ring_group),
+            items =
+                buildList {
+                    add(
+                        Material3SettingsItem(
+                            icon = painterResource(R.drawable.music_note),
+                            title = { Text(stringResource(R.string.home_ring_wallpaper)) },
+                            description = {
+                                Text(
+                                    if (homeRingOn) {
+                                        stringResource(R.string.home_ring_wallpaper_on)
+                                    } else {
+                                        stringResource(R.string.home_ring_wallpaper_off)
+                                    },
+                                )
+                            },
+                            trailingContent = {
+                                Switch(
+                                    checked = homeRingOn,
+                                    onCheckedChange = { requested ->
+                                        if (requested) {
+                                            applyHomeWallpaper(context, onHomeRingChange)
+                                        } else {
+                                            // Off is a plain preference flip: the rings stop
+                                            // drawing but the wallpaper itself is untouched.
+                                            onHomeRingChange(false)
+                                        }
+                                    },
+                                    thumbContent = {
+                                        Icon(
+                                            painter = painterResource(
+                                                id = if (homeRingOn) R.drawable.check else R.drawable.close,
+                                            ),
+                                            contentDescription = null,
+                                            modifier = Modifier.size(SwitchDefaults.IconSize),
+                                        )
+                                    },
+                                )
+                            },
+                            onClick = {
+                                if (homeRingOn) onHomeRingChange(false) else applyHomeWallpaper(context, onHomeRingChange)
+                            },
+                        ),
+                    )
+                    add(
+                        Material3SettingsItem(
+                            icon = painterResource(R.drawable.sliders),
+                            title = { Text(stringResource(R.string.home_ring_intensity)) },
+                            description = {
+                                Text(
+                                    when (homeRingIntensity) {
+                                        BorderGlowIntensity.LOW -> stringResource(R.string.mini_player_border_glow_low)
+                                        BorderGlowIntensity.MEDIUM -> stringResource(R.string.mini_player_border_glow_medium)
+                                        BorderGlowIntensity.HIGH -> stringResource(R.string.mini_player_border_glow_high)
+                                    },
+                                )
+                            },
+                            onClick = { showHomeRingIntensityDialog = true },
+                        ),
+                    )
+                    add(
+                        Material3SettingsItem(
+                            icon = painterResource(R.drawable.sliders),
+                            title = { Text(stringResource(R.string.home_ring_hotspot)) },
+                            description = { Text("${homeRingHotspot.roundToInt()}x") },
+                            onClick = { showHomeRingHotspotDialog = true },
+                        ),
+                    )
+                    add(
+                        Material3SettingsItem(
+                            icon = painterResource(R.drawable.graphic_eq),
+                            title = { Text(stringResource(R.string.home_ring_stroke)) },
+                            description = {
+                                Text(
+                                    if (homeRingStrokeRings.isEmpty()) {
+                                        stringResource(R.string.home_ring_stroke_none)
+                                    } else {
+                                        stringResource(R.string.home_ring_stroke_count, homeRingStrokeRings.size)
+                                    },
+                                )
+                            },
+                            onClick = { showHomeRingStrokeDialog = true },
                         ),
                     )
                 },
@@ -2398,3 +2644,14 @@ private fun applyHomeWallpaper(
         Toast.makeText(context, R.string.wallpaper_probe_no_handler, Toast.LENGTH_LONG).show()
     }
 }
+
+/**
+ * Ring ids from `HomeRings`, paired with the labels shown in the "crisp edge" checklist.
+ * Order matches the home screen top-to-bottom so the list reads like the layout.
+ */
+private val HOME_RING_STROKE_OPTIONS = listOf(
+    "partner" to R.string.home_ring_stroke_partner,
+    "nothing" to R.string.home_ring_stroke_nothing,
+    "claude" to R.string.home_ring_stroke_claude,
+    "brave" to R.string.home_ring_stroke_brave,
+)

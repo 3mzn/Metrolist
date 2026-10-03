@@ -793,16 +793,23 @@ val a = if (dimmed) 0.2f else (0.2f + bass * (peak - 0.2f)).coerceIn(0.2f, peak)
 The *curve* is identical while playing; only the stopped/hidden endpoint differs, which is
 the user's explicit earlier instruction and what §4.4 originally specified.
 
-#### 4c Deferred variant — crisp core stroke (user request)
+#### 4c Crisp core stroke ✅ **SHIPPED as a per-ring option**
 
-The MiniPlayer draws a second layer over the glow: a crisp solid stroke whose width grows
-with bass, `2dp + bass × 2dp` (`BorderGlowShader.kt:174`). **Deliberately omitted** from
-the wallpaper port so the glow-only version can be judged first.
+Ported from `BorderGlowShader.kt:173-181`, same maths: width `2dp + bass × 2dp`, rect
+grown by half the width so the stroke is **centred on the boundary**, corner radius grown
+with it so the line stays parallel to the widget's own corner.
 
-Parked here as an explicit follow-up: add it as a second pass over the same rect,
-converting `2dp` at density 2.8125 px/dp → ≈5.6 px + bass × 5.6 px. Expect it to read as a
-thin bright outline tracing each widget — at wallpaper scale it may need a larger base
-width than the MiniPlayer's 2 dp to be visible.
+**Design decided by the user after seeing it:** worth having, but **not the default**, and
+it should be **selectable per ring** — the effect suits the two wide flat rings (Partner,
+Brave) better than the small heavily-rounded ones (Nothing X, Claude).
+
+Implemented as one "Crisp edge" row opening a checklist dialog over the four ring ids,
+with a Clear shortcut. Stored as `stringSetPreferencesKey`; **default empty** (glow only).
+Because the wallpaper renders behind the widgets, only the outer half of the stroke is ever
+visible — which reads as a defined bright edge just outside the widget.
+
+*Bug caught during this step:* the dialog's OK and Clear buttons applied the change but
+never dismissed it. Neither the compiler nor the test suite could see that.
 
 #### 4d Remaining Phase 4 work ✅ **ALL DONE — verified on device 2026-10-03**
 
@@ -913,7 +920,8 @@ Low value while the user never moves widgets — recommended as cheap insurance,
 | Q7 | Can the original wallpaper be restored? | **Not pixel-exact** (Android 13+ blocks reading it). Restore is by re-opening the picker and re-selecting. Black is the fallback. |
 | Q8 | Which rings must match the MiniPlayer? | **The two 2×2 only** (Nothing X, Claude). Metrolist + Brave stay dotless. |
 | Q9 | Copy the MiniPlayer's alpha exactly, even its bug? | **No** — keep the corrected premultiplied alpha. Behaviour/animation identical, rendering stays a true glow. |
-| Q10 | Crisp core stroke? | **Omit for now**, user wants to see glow-only first. Parked as §4c for later comparison. |
+| Q10 | Crisp core stroke? | **Yes, as a per-ring option, default OFF.** Checklist dialog over the four ring ids; suits the wide flat rings better than the rounded ones. (4c) |
+| Q14 | Settings placement? | **New "Live wallpaper" group** in Appearance, its own — not inside the MiniPlayer group. Holds enable, glow intensity, orbiting-dot strength, crisp edge. |
 | Q11 | Corner radius — measured or 32dp? | **Measured** (66/56/46/18). |
 | Q12 | Hotspot strength + peak brightness — share the MiniPlayer sliders? | **Separate wallpaper controls**, for both. |
 | Q13 | Dim on mute / casting? | **Yes**, match the MiniPlayer's 0.2 floor. |

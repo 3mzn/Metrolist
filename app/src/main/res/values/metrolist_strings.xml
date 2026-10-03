@@ -1243,5 +1243,17 @@
     <string name="home_ring_wallpaper">Home screen rings</string>
     <string name="home_ring_wallpaper_on">Rings around your home screen widgets, reacting to bass</string>
     <string name="home_ring_wallpaper_off">Replaces the wallpaper with a bass-reactive glow. Rings only react while the partner widget shows your own song.</string>
+    <string name="home_ring_group">Live wallpaper</string>
+    <string name="home_ring_intensity">Glow intensity</string>
+    <string name="home_ring_hotspot">Orbiting dot strength</string>
+    <string name="home_ring_stroke">Crisp edge</string>
+    <string name="home_ring_stroke_desc">Adds a thin solid outline over the glow, like the mini player ring</string>
+    <string name="home_ring_stroke_none">Off for every ring</string>
+    <string name="home_ring_stroke_count">On for %1$d of 4 rings</string>
+    <string name="home_ring_stroke_none_btn">Clear</string>
+    <string name="home_ring_stroke_partner">Partner (top)</string>
+    <string name="home_ring_stroke_nothing">Nothing X (left)</string>
+    <string name="home_ring_stroke_claude">Claude (right)</string>
+    <string name="home_ring_stroke_brave">Brave search (bottom)</string>
     <string name="audio_offload_disabled_by_home_ring">Off while the home screen ring visualizer is on — offload bypasses the audio the rings react to</string>
 </resources>
