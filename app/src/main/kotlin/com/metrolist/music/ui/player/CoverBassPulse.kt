@@ -92,18 +92,36 @@ object CoverBassPulse {
      * Keeps the capture alive regardless of [release] calls until [unretain] is called.
      * Process-wide and thread-safe enough for our two callers (main thread in both cases).
      */
+    /**
+     * Keeps the capture alive regardless of [release] calls until [unretain] is called.
+     *
+     * **Every consumer must hold a claim while it needs data**, not just the wallpaper.
+     * A consumer that instead calls [init] once and [release] opportunistically will break:
+     * it only asks again when its own composable restarts, so if another holder lets go
+     * first the capture dies underneath it and its visuals silently stop updating. That
+     * was a real bug — the MiniPlayer ring died ~2s after foregrounding, and came back
+     * only when a preference toggle re-ran its effect.
+     */
     fun retain(token: String) {
         retainers += token
     }
 
-    /** Drops a retention; releases the Visualizer once nobody holds it any more. */
+    /** Drops this consumer's claim; the Visualizer dies only once nobody holds it. */
     fun unretain(token: String) {
         retainers -= token
-        if (retainers.isEmpty()) release()
+        if (retainers.isEmpty()) hardRelease()
     }
 
     /** True while some consumer still needs the capture. */
     fun isRetained(): Boolean = retainers.isNotEmpty()
+
+    /**
+     * True when a live capture is already bound to [sessionId], so a caller can skip
+     * [init] entirely. The wallpaper checks this every frame; `init` is cheap when it
+     * early-returns, but making the intent explicit keeps per-frame callers honest.
+     */
+    fun isCapturing(sessionId: Int): Boolean =
+        visualizer != null && sessionId > 0 && sessionId == lastInitSession
 
     /**
      * Monotonic guard for [advanceFrame]. Composition and the wallpaper's render loop are
@@ -148,14 +166,23 @@ object CoverBassPulse {
     fun init(audioSessionId: Int, owner: String) {
         if (audioSessionId <= 0) return
         // A live capture for this session is already good enough — adopt it. Without this,
-        // a second consumer calling init with its own owner token would tear down and
-        // recreate the Visualizer every time ownership ping-ponged between the player
-        // screen and the wallpaper.
+        // the player screen and the wallpaper would tear down and recreate the Visualizer
+        // every time ownership ping-ponged between them.
         if (visualizer != null && audioSessionId == lastInitSession) return
-        if (visualizer != null && owner == this.owner) return
-        lastInitSession = audioSessionId
         try {
-            release()
+            // Force the previous instance down even while retained. `init` means "give me
+            // a capture for THIS session"; honouring a retainer here would leave the old
+            // Visualizer unreleased and then overwrite the reference, leaking it — and the
+            // two instances would fight over the same audio session.
+            //
+            // ORDER MATTERS: hardRelease() clears lastInitSession, so the session must be
+            // recorded *after* it. Recording it first left it null again, and the next
+            // init() for the same session would then tear down and rebuild the Visualizer
+            // again — every single call. The wallpaper calls init() once per frame, so that
+            // churn meant the Visualizer was recreated 60x a second and never delivered a
+            // capture: the rings sat frozen while the in-app visuals looked fine.
+            hardRelease()
+            lastInitSession = audioSessionId
             this.owner = owner
             val v = Visualizer(audioSessionId)
             v.captureSize = 1024
@@ -187,16 +214,25 @@ object CoverBassPulse {
         }
     }
 
+    /**
+     * Drops this consumer's claim on the capture. The Visualizer only dies once **nobody**
+     * holds it — both the player screen and the live wallpaper must [retain], otherwise
+     * whichever one lets go last silently kills the other.
+     */
     fun release() {
-        // A retainer (the live wallpaper) still needs the data even though the player
-        // screen has stopped wanting it.
         if (retainers.isNotEmpty()) return
+        hardRelease()
+    }
+
+    /** Unconditional teardown, ignoring retainers. Only for [init] replacing a session. */
+    private fun hardRelease() {
         try {
             visualizer?.release()
         } catch (_: Exception) {
         } finally {
             visualizer = null
             owner = null
+            lastInitSession = null
         }
     }
 

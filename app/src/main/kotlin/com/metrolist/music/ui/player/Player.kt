@@ -215,6 +215,13 @@ import com.metrolist.music.constants.SleepTimerFadeOutKey
 import com.metrolist.music.constants.SleepTimerStopAfterCurrentSongKey
 
 
+/**
+ * Retention token for the shared `CoverBassPulse` capture held by the player screen.
+ * The live wallpaper holds a second token; the Visualizer only dies once neither does.
+ * See [CoverBassPulse.retain].
+ */
+private const val PULSE_HOLDER = "playerScreen"
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun BottomSheetPlayer(
@@ -440,7 +447,7 @@ fun BottomSheetPlayer(
         val wantPulse = pulseActive && isPlaying && !isMuted && !isCasting &&
             hasAudioPermission && !hidePlayerThumbnail
         if (!wantPulse) {
-            CoverBassPulse.release()
+            CoverBassPulse.unretain(PULSE_HOLDER)
             return@LaunchedEffect
         }
         var sessionId = currentSession()
@@ -451,9 +458,13 @@ fun BottomSheetPlayer(
             waits++
         }
         if (sessionId == C.AUDIO_SESSION_ID_UNSET || sessionId <= 0) {
-            CoverBassPulse.release()
+            CoverBassPulse.unretain(PULSE_HOLDER)
             return@LaunchedEffect
         }
+        // Claim before init: the live wallpaper also holds this capture, and releasing
+        // here must not kill data this effect still needs but will not re-request until
+        // its own keys change.
+        CoverBassPulse.retain(PULSE_HOLDER)
         CoverBassPulse.init(sessionId, mediaMetadata?.id ?: "player")
         try {
             var lastNs = 0L
@@ -464,7 +475,7 @@ fun BottomSheetPlayer(
                 }
             }
         } finally {
-            CoverBassPulse.release()
+            CoverBassPulse.unretain(PULSE_HOLDER)
         }
     }
 

@@ -835,6 +835,48 @@ rings were correctly inactive. With it on, the rings appear. The `gate=` / `acti
 were added to the PROBE line specifically to make that distinction readable from logcat
 rather than guessed at.
 
+#### 4e ⚠️ Three bugs in shared-capture ownership — found by the user, not by tests
+
+Sharing one `Visualizer` between two independent consumers (player screen and wallpaper)
+turned out to be the genuinely hard part. **All three of these were invisible to the test
+suite** — 144/144 stayed green through every one. They only surfaced on-device.
+
+**Bug 1 — consumer that never re-asks.** The player screen calls `init()` when its effect
+*starts* and `release()` when its conditions lapse. When the app is foregrounded the
+wallpaper hides and drops its claim, which released the Visualizer out from under a player
+screen that was still composed and still wanted data — but only asks again when its own
+keys change. **Symptom:** the MiniPlayer ring worked for ~2 s after foregrounding, then
+faded out (the 250 ms release glide), and came back when toggling cover-pulse or border-glow
+re-ran the effect. Fix: every consumer must hold a claim (`retain`/`unretain`), and the
+capture dies only when nobody holds it.
+
+**Bug 2 — leaked Visualizer on session change.** `init()` called `release()` before
+building the replacement. With retention, that became a no-op, so the old instance was never
+released and the reference was overwritten — two `Visualizer`s on one audio session. Fix: a
+private `hardRelease()` that ignores retainers, used only by `init`.
+
+**Bug 3 — the one that actually bit, an ordering mistake.** In `init()`:
+
+```kotlin
+lastInitSession = audioSessionId   // recorded here
+hardRelease()                      // ...which nulls lastInitSession again
+```
+
+So `lastInitSession` was null after every `init()`, which made the *next* `init()` for the
+same session fail its own "already capturing" check and rebuild the Visualizer **again**.
+The wallpaper calls `init()` once per frame, so it recreated the analyser 60 times a
+second — it could never deliver a capture, and the rings sat frozen at a tiny value while
+the in-app visuals looked perfectly healthy.
+
+**Symptom:** `bass` frozen at `0.0014` across every log line, with `playing=true` and
+`active=true`. Fix: record the session **after** `hardRelease()`. Also added
+`isCapturing(session)` so per-frame callers can skip the call entirely — the churn was
+masking the ordering bug, and not calling it every frame keeps that class of mistake visible.
+
+**Lesson:** sharing a process-wide singleton between two independent lifecycles is where
+the real risk lives, and unit tests did not catch any of it. Verify ownership changes on a
+device, alternating between the two consumers.
+
 **Bridge:** `HomeRingAudioState`, published by `MusicService` from inside `updateWidgetUI`
 — already the app's "playback state changed" hook, so one insertion point covers every
 transition. Necessary because the wallpaper cannot reach the player the way the UI does:

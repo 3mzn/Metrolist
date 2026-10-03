@@ -305,7 +305,12 @@ class MetrolistWallpaperService : WallpaperService() {
             // local audio to visualise, so the rings stay completely inactive.
             val gateOpen = HomeRingSettings.debugWidgetOn
             val audioActive = gateOpen && HomeRingAudioState.isActive()
-            if (audioActive && HomeRingAudioState.audioSessionId > 0) {
+            if (audioActive && HomeRingAudioState.audioSessionId > 0 &&
+                !CoverBassPulse.isCapturing(HomeRingAudioState.audioSessionId)
+            ) {
+                // Only when there is genuinely nothing bound. Asking every frame is fine in
+                // principle (init early-returns) but it hides ordering mistakes in
+                // CoverBassPulse, and it did hide one.
                 CoverBassPulse.init(HomeRingAudioState.audioSessionId, RETAIN_TOKEN)
             }
 
