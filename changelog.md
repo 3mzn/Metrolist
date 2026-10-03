@@ -1,3 +1,12 @@
+This is the coolest shit i've ever made so i'm bumping version to 15.0.0
+
+---v15.0.0
+- Home screen rings: a live wallpaper that draws glowing, bass-reactive rings around your home screen widgets. Settings → Appearance → Live wallpaper
+- Rings react to your actual music in real time, and take their colour from the album art
+- The two small widgets get a bright dot orbiting their ring; the two wide ones just pulse
+- Optional crisp edge, selectable per widget, for a more defined outline
+- Rings only light up while the partner widget is showing your own song
+
 ---v14.1.0
 - New Canvas Cache section in Settings → Storage: see how much space Canvas videos take, set a size limit, and clear cached videos or "no Canvas" records
 
