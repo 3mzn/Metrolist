@@ -992,7 +992,47 @@ and cannot clobber. The toggle-off handler does an explicit `firestore.get()` vi
 `refreshNow()`, so the partner's **current** song appears immediately rather than waiting on a
 change event. Not changed — audited and left alone.
 
-### Phase 5 — Calibration screen *(optional)*
+#### 4b-iv ⚠️ The enable toggle did nothing (15.0.2)
+
+**Symptom:** turning "Home screen rings" off left the wallpaper running. The rings kept
+drawing exactly as before.
+
+**Root cause — two independent defects:**
+
+1. **`HomeRingEnabledKey` was never read by the wallpaper.** It was read in exactly two
+   places, neither of which is the render path: `AppearanceSettings.kt:249` (the settings UI)
+   and `PlayerSettings.kt:138` (the offload interlock). The wallpaper's actual gate was
+   `HomeRingSettings.debugWidgetOn` — the *Widget UI Debug Test*, an unrelated preference.
+   So the toggle flipped a value nothing in the render path consulted.
+
+2. **Android has no API to *unset* a live wallpaper.** You can only *change* it to another
+   one. So "off" was never achievable through a preference at all.
+
+**The comment was wrong, and I wrote it.** `AppearanceSettings.kt` carried:
+
+```kotlin
+// Off is a plain preference flip: the rings stop
+// drawing but the wallpaper itself is untouched.
+```
+
+That asserts the rings stop drawing. They did not. Same failure mode as the "pixel-verified"
+Claude radius in §3e — a comment describing intended behaviour rather than actual behaviour.
+
+**Fix:**
+- `SET_WALLPAPER` permission added (normal permission, granted at install).
+- Toggle-off now calls `WallpaperManager.getInstance(context).clear()`, which resets to the
+  system default. Both the `Switch` and the row's `onClick` path do this.
+- `HomeRingSettings.enabled` added as a **second** gate, so the rings stop even while the
+  wallpaper component is still bound. This matters because the service outlives the
+  Activity — once the system has bound it, a preference read is the only thing that can
+  stop it.
+- New string `home_ring_disable_failed` for the failure toast.
+
+**Why the second gate is not redundant:** `debugWidgetOn` answers "is there local audio to
+visualise?". `enabled` answers "does the user want this?". They are different questions, and
+only the second one can be answered from a preference.
+
+### Phase 5 - Calibration screen *(optional)*
 
 ---
 

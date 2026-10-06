@@ -1243,6 +1243,7 @@
     <string name="home_ring_wallpaper">Home screen rings</string>
     <string name="home_ring_wallpaper_on">Rings around your home screen widgets, reacting to bass</string>
     <string name="home_ring_wallpaper_off">Replaces the wallpaper with a bass-reactive glow. Rings only react while the partner widget shows your own song.</string>
+    <string name="home_ring_disable_failed">Couldn't remove the live wallpaper. Try changing it manually in your launcher.</string>
     <string name="home_ring_group">Live wallpaper</string>
     <string name="home_ring_intensity">Glow intensity</string>
     <string name="home_ring_hotspot">Orbiting dot strength</string>

@@ -1,3 +1,6 @@
+---v15.0.2
+- Fixed the home screen rings toggle doing nothing: turning it off left the wallpaper running
+
 ---v15.0.1
 - Fixed the partner widget freezing: switching tracks with crossfade on could leave the widget stuck on an old song until the app restarted
 - Fixed the ring glow sitting slightly outside the corners of the right-hand widget

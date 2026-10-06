@@ -7,6 +7,7 @@ package com.metrolist.music.wallpaper
 
 import android.content.Context
 import com.metrolist.music.constants.BorderGlowIntensity
+import com.metrolist.music.constants.HomeRingEnabledKey
 import com.metrolist.music.constants.HomeRingHotspotKey
 import com.metrolist.music.constants.HomeRingIntensityKey
 import com.metrolist.music.constants.HomeRingStrokeRingsKey
@@ -53,6 +54,15 @@ object HomeRingSettings {
         private set
 
     /**
+     * The user's own on/off switch. Separate from [debugWidgetOn] because the wallpaper
+     * service outlives the Activity: once the system has bound it, only a preference read
+     * can stop it drawing.
+     */
+    @Volatile
+    var enabled: Boolean = false
+        private set
+
+    /**
      * Which rings draw the crisp core stroke, by [HomeRingGeometry.id]. Empty by default
      * (4c) - the soft glow alone is the better look at wallpaper scale. A subset is
      * perfectly valid, e.g. only the two wide flat rings.
@@ -94,6 +104,7 @@ object HomeRingSettings {
                         } ?: BorderGlowIntensity.MEDIUM,
                     )
                     debugWidgetOn = prefs[PartnerWidgetManager.WIDGET_UI_DEBUG_TEST_KEY] ?: false
+                    enabled = prefs[HomeRingEnabledKey] ?: false
                     strokeRings = prefs[HomeRingStrokeRingsKey] ?: emptySet()
 
                     // Log only on an actual change. DataStore emits for every write to the

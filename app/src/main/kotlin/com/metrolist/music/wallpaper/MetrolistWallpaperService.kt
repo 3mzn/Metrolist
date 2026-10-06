@@ -318,7 +318,9 @@ class MetrolistWallpaperService : WallpaperService() {
 
             // §4.3 gate: the widget must show *my* song. On the partner's track there is no
             // local audio to visualise, so the rings stay completely inactive.
-            val gateOpen = HomeRingSettings.debugWidgetOn
+            // `enabled` is the user's own switch - the service outlives the Activity, so
+            // this is the only thing that can stop it once the system has bound it.
+            val gateOpen = HomeRingSettings.debugWidgetOn && HomeRingSettings.enabled
             val audioActive = gateOpen && HomeRingAudioState.isActive()
             if (audioActive && HomeRingAudioState.audioSessionId > 0 &&
                 !CoverBassPulse.isCapturing(HomeRingAudioState.audioSessionId)

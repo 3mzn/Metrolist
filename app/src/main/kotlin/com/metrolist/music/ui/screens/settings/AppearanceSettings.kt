@@ -1687,8 +1687,18 @@ fun AppearanceSettings(
                                         if (requested) {
                                             applyHomeWallpaper(context, onHomeRingChange)
                                         } else {
-                                            // Off is a plain preference flip: the rings stop
-                                            // drawing but the wallpaper itself is untouched.
+                                            // Android has no API to *unset* a live wallpaper, so
+                                            // "off" must actually clear it. A preference flip alone
+                                            // leaves the service bound and the rings drawing.
+                                            runCatching {
+                                                WallpaperManager.getInstance(context).clear()
+                                            }.onFailure {
+                                                Toast.makeText(
+                                                    context,
+                                                    R.string.home_ring_disable_failed,
+                                                    Toast.LENGTH_LONG,
+                                                ).show()
+                                            }
                                             onHomeRingChange(false)
                                         }
                                     },
@@ -1704,7 +1714,20 @@ fun AppearanceSettings(
                                 )
                             },
                             onClick = {
-                                if (homeRingOn) onHomeRingChange(false) else applyHomeWallpaper(context, onHomeRingChange)
+                                if (homeRingOn) {
+                                    runCatching {
+                                        WallpaperManager.getInstance(context).clear()
+                                    }.onFailure {
+                                        Toast.makeText(
+                                            context,
+                                            R.string.home_ring_disable_failed,
+                                            Toast.LENGTH_LONG,
+                                        ).show()
+                                    }
+                                    onHomeRingChange(false)
+                                } else {
+                                    applyHomeWallpaper(context, onHomeRingChange)
+                                }
                             },
                         ),
                     )
