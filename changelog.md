@@ -1,3 +1,6 @@
+---v15.0.4
+- Withdraws the 15.0.3-TEST build: identical code to 15.0.3, the experimental kick-detector change is reverted
+
 ---v15.0.3
 - Fixed the partner widget cover art not loading while offline, now uses a permanent on-device cover cache
 
