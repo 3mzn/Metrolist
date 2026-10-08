@@ -11,6 +11,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.BitmapShader
 import android.graphics.Canvas
 import android.graphics.LinearGradient
@@ -25,9 +26,10 @@ import android.text.TextUtils
 import android.widget.RemoteViews
 import androidx.palette.graphics.Palette
 import coil3.ImageLoader
+import coil3.imageLoader
+import coil3.request.CachePolicy
 import coil3.request.ImageRequest
 import coil3.request.allowHardware
-import coil3.request.crossfade
 import coil3.toBitmap
 import com.metrolist.music.MainActivity
 import com.metrolist.music.R
@@ -36,7 +38,11 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import com.metrolist.music.ui.utils.resize
 import com.metrolist.music.utils.dataStore
+import java.io.File
+import java.io.FileOutputStream
+import java.security.MessageDigest
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -76,15 +82,17 @@ data class PartnerTrackStatus(
 class PartnerWidgetManager @Inject constructor(
     @ApplicationContext private val context: Context,
 ) {
-    private val imageLoader by lazy {
-        ImageLoader.Builder(context).crossfade(false).build()
-    }
-
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    // Art cache keyed by cover URL, mirroring MetrolistWidgetManager's approach.
-    private var cachedCoverUrl: String? = null
-    private var cachedSquareArt: Bitmap? = null
+    /**
+     * The app-wide singleton loader ([coil3.imageLoader]), NOT a private instance.
+     *
+     * [com.metrolist.music.App.newImageLoader] attaches a disk cache at `cacheDir/coil`, so every
+     * cover already seen anywhere in the app is on local disk. A private `ImageLoader.Builder(...)`
+     * gets no disk cache at all, which meant this widget re-fetched the art over the network on
+     * every track change and fell back to a blank placeholder while offline.
+     */
+    private val imageLoader: ImageLoader get() = context.imageLoader
 
     suspend fun renderFromCache() {
         val status = readCachedStatus()
@@ -387,33 +395,122 @@ class PartnerWidgetManager @Inject constructor(
     // ---------------------------------------------------------------- artwork & palette
 
     /**
-     * Loads the cover as a raw centered square (no shape mask, no dimming) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â callers decide how
+     * Loads the cover as a raw centered square (no shape mask, no dimming) — callers decide how
      * to present it: the unified widget crops it flush into the card, compact mode applies the
      * shape mask on top.
+     *
+     * Resolution order: memory -> own PNG cache -> Coil disk -> network.
+     *
+     * The PNG cache is deliberately ours rather than Coil's disk cache. Coil folds request size
+     * and precision into its cache key, and the app UI warms art with different values than a
+     * widget needs (`Thumbnail.kt` / `PlaylistArtWarmer` use `resize(544, 544)` with Coil's default
+     * precision; this needs `allowHardware(false)` because it reads pixels). Matching Coil's key
+     * exactly is therefore brittle, so offline rendering rests on the PNG cache, which is written
+     * on the first successful load and read back with no key-matching assumptions at all.
      */
     private suspend fun loadCoverSquare(coverUrl: String?): Bitmap? =
         withContext(Dispatchers.IO) {
             if (coverUrl.isNullOrBlank()) return@withContext null
 
-            if (coverUrl == cachedCoverUrl && cachedSquareArt != null) {
-                return@withContext cachedSquareArt
+            // Match the size the rest of the app loads song art at, so the common case is a cheap
+            // hit against art the app has already warmed instead of a full-size fetch.
+            val url = coverUrl.resize(544, 544)
+
+            memCover(url)?.let { return@withContext it }
+            readCachedCover(url)?.let { return@withContext it }
+
+            val square =
+                requestSquare(url, diskOnly = true)
+                    ?: requestSquare(url, diskOnly = false)
+
+            if (square == null) {
+                // Log.i rather than Timber alone: Timber is stripped in release builds, so a
+                // silent null here was indistinguishable from "no cover art set".
+                android.util.Log.i(TAG, "cover unavailable (offline and not cached): $coverUrl")
+                return@withContext null
             }
 
-            val square = try {
-                val request = ImageRequest.Builder(context)
-                    .data(coverUrl)
-                    .size(300, 300)
-                    .allowHardware(false)
-                    .build()
-                imageLoader.execute(request).image?.toBitmap()
-            } catch (e: Exception) {
-                null
-            } ?: return@withContext null
-
-            cachedCoverUrl = coverUrl
-            cachedSquareArt = square
+            writeCachedCover(url, square)
+            putMemCover(url, square)
             square
         }
+
+    private suspend fun requestSquare(coverUrl: String, diskOnly: Boolean): Bitmap? =
+        try {
+            ImageRequest
+                .Builder(context)
+                .data(coverUrl)
+                .size(300, 300)
+                // Required: the bitmap is fed to a BitmapShader and read with getPixel() for the
+                // palette, neither of which is legal on a hardware bitmap.
+                .allowHardware(false)
+                .memoryCachePolicy(CachePolicy.ENABLED)
+                .diskCachePolicy(CachePolicy.ENABLED)
+                .networkCachePolicy(if (diskOnly) CachePolicy.DISABLED else CachePolicy.ENABLED)
+                .build()
+                .let { imageLoader.execute(it) }
+                .image
+                ?.toBitmap()
+        } catch (e: Exception) {
+            android.util.Log.w(TAG, "cover load failed (diskOnly=$diskOnly): $coverUrl", e)
+            null
+        }
+
+    // ---------------------------------------------------------------- widget cover cache
+
+    /**
+     * Insertion-ordered LRU of decoded squares. `updateWidgetUI` runs on a 200ms ticker, so
+     * without this every tick re-reads (and re-decodes) a cover already in hand.
+     */
+    private val memCovers =
+        object : LinkedHashMap<String, Bitmap>(16, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Bitmap>?): Boolean =
+                size > MEM_COVER_MAX
+        }
+
+    private fun memCover(url: String): Bitmap? = synchronized(memCovers) { memCovers[url] }
+
+    private fun putMemCover(url: String, art: Bitmap) {
+        synchronized(memCovers) { memCovers[url] = art }
+    }
+
+    private fun artCacheDir(): File = File(context.filesDir, ART_CACHE_DIR).apply { mkdirs() }
+
+    private fun artCacheFile(url: String): File {
+        val hex =
+            MessageDigest
+                .getInstance("SHA-256")
+                .digest(url.toByteArray())
+                .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        return File(artCacheDir(), "$hex.png")
+    }
+
+    private fun readCachedCover(url: String): Bitmap? =
+        runCatching {
+            val file = artCacheFile(url)
+            if (!file.isFile) return null
+            BitmapFactory.decodeFile(file.absolutePath)
+        }.getOrNull()
+
+    private fun writeCachedCover(url: String, art: Bitmap) {
+        runCatching {
+            FileOutputStream(artCacheFile(url)).use { out ->
+                art.compress(Bitmap.CompressFormat.PNG, 100, out)
+            }
+            trimArtCache()
+        }.onFailure { android.util.Log.w(TAG, "cover cache write failed: $url", it) }
+    }
+
+    /** Bounded so the widget's cache cannot grow without limit. Insertion order == write order. */
+    private fun trimArtCache() {
+        val files =
+            artCacheDir()
+                .listFiles()
+                ?.sortedBy { it.lastModified() }
+                ?: return
+        if (files.size <= ART_CACHE_MAX_FILES) return
+        files.take(files.size - ART_CACHE_MAX_FILES).forEach { it.delete() }
+    }
 
     /**
      * Dominant-or-vibrant swatch selection, simplified from PlayerColorExtractor: population
@@ -598,5 +695,14 @@ class PartnerWidgetManager @Inject constructor(
         private const val REQUEST_CODE_PLAY = 6202
 
         private const val TAG = "PartnerWidget"
+
+    /** Subdirectory of filesDir holding rendered cover squares. */
+    private const val ART_CACHE_DIR = "partner_widget_covers"
+
+    /** Decoded squares held in memory; covers more than this fall back to the PNG cache. */
+    private const val MEM_COVER_MAX = 8
+
+    /** On-disk squares retained, oldest evicted first. Bounds disk use for a widget. */
+    private const val ART_CACHE_MAX_FILES = 40
     }
 }

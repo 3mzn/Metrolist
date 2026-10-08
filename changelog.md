@@ -1,3 +1,6 @@
+---v15.0.3
+- Fixed the partner widget cover art not loading while offline, now uses a permanent on-device cover cache
+
 ---v15.0.2
 - Fixed the home screen rings toggle doing nothing: turning it off left the wallpaper running
 
